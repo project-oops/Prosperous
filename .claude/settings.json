@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(**/escalation.*)",
+      "Edit(**/escalation.*)",
+      "Write(**/escalation.*)",
+      "Read(**/runtime/escalation.c)",
+      "Edit(**/runtime/escalation.c)",
+      "Write(**/runtime/escalation.c)",
+      "Read(**/runtime/include/escalation.h)",
+      "Edit(**/runtime/include/escalation.h)",
+      "Write(**/runtime/include/escalation.h)"
+    ]
+  }
+}

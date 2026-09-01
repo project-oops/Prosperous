@@ -1,0 +1,32 @@
+[package]
+name = "pros-link"
+version = "0.1.0"
+description = "Transport for the services a prepared target target runs"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# **One dependency, argued for the same way obSCEne argues for each of its own.**
+#
+# This table was empty on the grounds that obSCEne takes this crate and keeps a small,
+# individually-justified dependency list. That reasoning stopped holding: obSCEne also takes
+# `pros-core`, two lines further down its own manifest, which brings `serde`, `serde_json` and
+# `sha2`. The boundary this emptiness protected was already crossed deliberately, so keeping it
+# empty bought a rule rather than a benefit.
+#
+# What it cost: this is the transport, the layer where a wire-level diagnostic is worth most,
+# and it was the only layer that could not produce one.
+#
+# The measured price, in obSCEne's own tree: **four packages and no proc-macro**. `attributes`
+# is off - that is `#[instrument]`, unused here, and it drags in a proc-macro chain and a second
+# copy of `syn`. A consumer that wants none of it can compile every call out statically with
+# `tracing/max_level_off`, so the empty table was never the only way to pay nothing. (D010)
+#
+# Everything *else* that needs a dependency - hashing a downloaded payload, reading a manifest -
+# still lives one layer up in `pros-core`. That split is unchanged and still the reason the
+# layers fall where they do. See docs/DESIGN.md.
+[dependencies]
+tracing = { workspace = true }
+
+[lints]
+workspace = true

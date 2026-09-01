@@ -1,0 +1,43 @@
+[package]
+name = "pros-cli"
+version = "0.1.0"
+description = "The command line over the target library"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "pros"
+path = "src/main.rs"
+
+# **A shim holds nothing, so it depends on almost nothing.**
+#
+# Everything this program does is in the two crates below. What is left here is argument
+# parsing and the shape of what a person reads, which is the one job a library should not
+# be doing on their behalf.
+[dependencies]
+pros-core = { workspace = true }
+pros-link = { workspace = true }
+
+# Logging, so `pros` and the window can be turned up the same way.
+oops-log = { workspace = true }
+
+# Argument parsing, and the only thing here that is not this project. It earns its place
+# across eleven subcommands and the help text they generate; hand-rolling that would be a
+# second-rate copy of it and a lot of code in a crate whose whole point is having none.
+clap = { version = "4", features = ["derive"] }
+
+# The integration tests drive the built binary and stand a fake target in front of it.
+# `pros-link` is already a dependency above; this says the tests use its fake directly.
+[dev-dependencies]
+pros-link = { workspace = true }
+
+[lints]
+workspace = true
+
+# Windows is the only one of the three that carries an icon inside the executable. A Linux ELF and
+# a macOS CLI binary have nowhere to put one - theirs live in packaging metadata, which a bare
+# command-line tool has none of. Target-gated rather than conditional inside `build.rs`, so on
+# Linux and macOS it is not fetched, not built, and not in the lockfile's way.
+[target.'cfg(windows)'.build-dependencies]
+winresource.workspace = true

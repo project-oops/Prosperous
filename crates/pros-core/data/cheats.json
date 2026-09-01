@@ -1,0 +1,69 @@
+{
+  "about": [
+    "Cheat tables, in the JSON form the cheat runners on this platform read.",
+    "",
+    "PROVENANCE. Read from TeeKay87/HEN-Cheats-Collection, which holds 790 PS5 tables among",
+    "5000 in total. Each entry below was downloaded and hashed here rather than taken on",
+    "trust.",
+    "",
+    "THE URLS ARE PINNED TO A COMMIT, NOT TO A BRANCH. A branch url serves whatever is there",
+    "today, so its digest goes stale the moment anybody pushes - and a stale digest reads as",
+    "a corrupted download, which sends somebody hunting a network fault that does not exist.",
+    "Pinned at c78f5ea6c136, these files cannot change under the digests below.",
+    "",
+    "The filename carries the title id, the game version the table was written for, and a",
+    "hash: PPSA01460_01.015.001_4eed96b4.json. A TABLE FOR ONE GAME VERSION DOES NOT APPLY TO",
+    "ANOTHER - the addresses move, and applying the wrong one writes to whatever is there now.",
+    "",
+    "Four entries is a demonstration, not a library. The collection is browsable at the source",
+    "url, and anything in it can be added here by pasting its raw url and its digest.",
+    "",
+    "The format is docs/manifest.schema.json - the same one payloads use."
+  ],
+  "payloads": [
+    {
+      "name": "Marvel's Spider-Man: Miles Morales",
+      "filename": "PPSA01460_01.015.001_4eed96b4.json",
+      "version": "01.015.001",
+      "category": "Cheat Tables",
+      "description": "Cheat table for Marvel's Spider-Man: Miles Morales, game version 01.015.001.",
+      "url": "https://raw.githubusercontent.com/TeeKay87/HEN-Cheats-Collection/c78f5ea6c1365d724bce3dbbb91597b03e9cfec4/cheats/json/PPSA01460_01.015.001_4eed96b4.json",
+      "source": "https://github.com/TeeKay87/HEN-Cheats-Collection",
+      "last_update": "2026-08-26",
+      "checksum": "e51ef057511671d4175e6d4f3b6fa25228d7e2d6f9597daecaf43909ec21be7a"
+    },
+    {
+      "name": "Ratchet & Clank: Rift Apart",
+      "filename": "PPSA01474_01.005.003_8eaa1ec5.json",
+      "version": "01.005.003",
+      "category": "Cheat Tables",
+      "description": "Cheat table for Ratchet & Clank: Rift Apart, game version 01.005.003.",
+      "url": "https://raw.githubusercontent.com/TeeKay87/HEN-Cheats-Collection/c78f5ea6c1365d724bce3dbbb91597b03e9cfec4/cheats/json/PPSA01474_01.005.003_8eaa1ec5.json",
+      "source": "https://github.com/TeeKay87/HEN-Cheats-Collection",
+      "last_update": "2026-08-26",
+      "checksum": "084bb747236e58183c50d6bb4ad82e746db188a42a59d5e35b03c83ff02cfb96"
+    },
+    {
+      "name": "Immortals Fenyx Rising",
+      "filename": "PPSA01507_04.004.000_c329b52f.json",
+      "version": "04.004.000",
+      "category": "Cheat Tables",
+      "description": "Cheat table for Immortals Fenyx Rising, game version 04.004.000.",
+      "url": "https://raw.githubusercontent.com/TeeKay87/HEN-Cheats-Collection/c78f5ea6c1365d724bce3dbbb91597b03e9cfec4/cheats/json/PPSA01507_04.004.000_c329b52f.json",
+      "source": "https://github.com/TeeKay87/HEN-Cheats-Collection",
+      "last_update": "2026-08-26",
+      "checksum": "fc132a6c5e580282922a1e1172298c3be66b4f72957b45e595b6078fd70e9e53"
+    },
+    {
+      "name": "Call of Duty: Black Ops Cold War",
+      "filename": "PPSA01628_01.026.000_0842825b.json",
+      "version": "01.026.000",
+      "category": "Cheat Tables",
+      "description": "Cheat table for Call of Duty: Black Ops Cold War, game version 01.026.000.",
+      "url": "https://raw.githubusercontent.com/TeeKay87/HEN-Cheats-Collection/c78f5ea6c1365d724bce3dbbb91597b03e9cfec4/cheats/json/PPSA01628_01.026.000_0842825b.json",
+      "source": "https://github.com/TeeKay87/HEN-Cheats-Collection",
+      "last_update": "2026-08-26",
+      "checksum": "3e346d8521cc295168b87958c28cb93e330eeef63c79bab1dbf97799ada44418"
+    }
+  ]
+}

@@ -1,0 +1,220 @@
+name: Release
+
+# Archives of `pros` and `pros-gui` per platform.
+#
+#   push to main      -> build, refresh the rolling `latest-main` release
+#   push to a v* tag  -> build, create a draft versioned release
+#   workflow_dispatch -> manual draft with the given tag
+#
+# **This exists because the documentation already promised it.**
+# `docs/guide/getting-started.md` opens by telling a reader to "download the build for your
+# machine from the releases page and unpack it" - and nothing populated that page, so the
+# first instruction in the guide was a dead end.
+#
+# Archives use stable, version-less filenames so a link can survive release to release.
+#
+# Every job begins the standard OOPS preamble: check out the collection, check this repository
+# out *into* it, then `oops bootstrap`. Prosperous resolves `oops-libs` by relative path, so a
+# flat checkout fails as a missing directory rather than as a missing dependency.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    # A documentation change cannot alter a binary. Skipping them keeps a wording fix from
+    # burning a release run, and with cancel-in-progress below, from cancelling one that is
+    # actually producing artifacts.
+    paths-ignore:
+      - "README.md"
+      - "docs/**"
+      - "LICENSE-*"
+      - ".gitignore"
+      - ".gitattributes"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            suffix: .exe
+            archive: zip
+            friendly: windows
+          - name: Linux
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            suffix: ""
+            archive: tar.gz
+            friendly: linux
+          - name: macOS
+            os: macos-latest
+            target: aarch64-apple-darwin
+            suffix: ""
+            archive: tar.gz
+            friendly: macos
+    # `bash` on every platform. The entry points are bash scripts and `OOPS/bin/oops` has no
+    # extension, so under the Windows runner's default PowerShell it is not an executable at
+    # all. The `Pack (zip)` step overrides this.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/OOPS
+          path: OOPS
+      - uses: actions/checkout@v4
+        with:
+          path: OOPS/prosperous
+
+      # `pros-gui` is an eframe window, and eframe does not build on a bare Linux runner: it
+      # needs the X11 and wayland development packages at link time. The failure is a wall of
+      # missing-symbol errors naming neither the window nor this project.
+      - name: Windowing libraries, for pros-gui
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libxkbcommon-dev libwayland-dev libxcb1-dev libx11-dev \
+            libgl1-mesa-dev libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: OOPS/prosperous
+          key: release-${{ matrix.friendly }}
+
+      - name: Siblings this build needs
+        run: OOPS/bin/oops bootstrap prosperous
+
+      - name: Resolve tag
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          else
+            tag="main-$(echo "$GITHUB_SHA" | cut -c1-7)"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "staged=prosperous-${tag}-${{ matrix.friendly }}" >> "$GITHUB_OUTPUT"
+
+      # Through the front door, so this and `./bin/prosperous build` cannot drift. The verb
+      # passes extra arguments to cargo, which is why `--target` reaches it at all.
+      - name: Build
+        run: ./bin/prosperous build --target ${{ matrix.target }}
+        working-directory: OOPS/prosperous
+
+      # Both binaries. The README calls them two programs that do nearly the same things, and
+      # shipping only the command line would make that untrue in the one place it matters.
+      - name: Stage archive
+        working-directory: OOPS/prosperous
+        run: |
+          dir="dist/${{ steps.meta.outputs.staged }}"
+          mkdir -p "$dir"
+          cp "target/${{ matrix.target }}/release/pros${{ matrix.suffix }}" "$dir/"
+          cp "target/${{ matrix.target }}/release/pros-gui${{ matrix.suffix }}" "$dir/"
+          cp README.md LICENSE-MIT LICENSE-APACHE "$dir/"
+
+      - name: Pack (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        working-directory: OOPS/prosperous/dist
+        run: Compress-Archive -Path "${{ steps.meta.outputs.staged }}" -DestinationPath "prosperous-${{ matrix.friendly }}.zip"
+
+      - name: Pack (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        working-directory: OOPS/prosperous/dist
+        run: tar -czf "prosperous-${{ matrix.friendly }}.tar.gz" "${{ steps.meta.outputs.staged }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prosperous-${{ matrix.friendly }}
+          path: OOPS/prosperous/dist/prosperous-${{ matrix.friendly }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  release-tag:
+    name: Draft release (tag)
+    if: |
+      always() && needs.build.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v'))
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve tag
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Prosperous ${{ steps.meta.outputs.tag }}
+          draft: true
+          generate_release_notes: true
+          files: dist/*
+
+  release-rolling:
+    name: Refresh latest-main release
+    if: |
+      always() && needs.build.result == 'success' &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Delete previous latest-main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete latest-main --yes --cleanup-tag --repo "${{ github.repository }}" || true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-main
+          name: "Latest main build"
+          prerelease: true
+          make_latest: "false"
+          draft: false
+          target_commitish: ${{ github.sha }}
+          body: |
+            Auto-built from `main` at `${{ github.sha }}`.
+
+            Two programs: `pros` (command line) and `pros-gui` (window). Neither installs
+            anything - unpack and run. Put an empty `.portable` directory beside them and
+            they keep their data there rather than in a user profile.
+          files: dist/*

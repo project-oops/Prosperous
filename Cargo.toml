@@ -1,0 +1,77 @@
+[workspace]
+resolver = "3"
+members = ["crates/pros-core", "crates/pros-link", "pros-cli", "pros-gui"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/project-oops/Prosperous"
+rust-version = "1.85"
+publish = false
+
+[workspace.dependencies]
+
+# The tool's own icon, on Windows only, and a build dependency rather than a real one.
+#
+# An executable's icon is not this project's subject matter. It is here because the alternative is
+# worse: a `.rc` file compiled by hand in a build script has to find `rc.exe` or `llvm-rc` and get
+# it right across the MSVC and GNU toolchains, to embed one small resource. This does that and
+# nothing else, and it disappears entirely on the two platforms where an executable cannot carry
+# an icon at all.
+winresource = "0.1"
+pros-link = { path = "crates/pros-link" }
+pros-core = { path = "crates/pros-core" }
+
+# Shared with the rest of the collection. Paths while nothing is published; these gain a
+# `version` when they are, so a clone of this repository alone still builds.
+#
+# `pros-link` takes the facade too, as of D025. It was held empty on obSCEne's behalf until
+# measuring showed obSCEne already accepts `pros-core` and its tree two lines below, so the
+# emptiness was buying a rule rather than a benefit.
+oops-build = { path = "../oops-libs/crates/oops-build" }
+oops-log = { path = "../oops-libs/crates/oops-log" }
+# The in-app documentation reader. Only the window takes it - it is the one crate in the
+# library that pulls egui, which is why it is a crate rather than a module of a shared one.
+oops-docs = { path = "../oops-libs/crates/oops-docs" }
+# The facade itself, for the macros. `oops-log` sets the subscriber up and deliberately does
+# not wrap `info!`/`debug!` - wrapping them would break `#[instrument]` and structured fields.
+# `attributes` off: it is `#[instrument]`, which nothing here uses, and it costs a
+# proc-macro chain and a second copy of `syn` - five packages of build time for a
+# feature nobody called. Turn it back on in the crate that wants it; cargo unifies.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+oops-paths = { path = "../oops-libs/crates/oops-paths" }
+
+# GUI. Immediate-mode, which suits a panel that is redrawn wholesale every time a check
+# comes back rather than edited field by field.
+#
+# **Pinned to the same version and the same backend as orbistoun's shell**, deliberately.
+# The two windows do the same kind of work over the same library, and a shared GUI crate
+# is a thing worth having eventually - which it will only be if the move is a move rather
+# than a port. wgpu rather than glow for the same reason, plus one of this project's own:
+# a lossless frame grab has to be displayed somewhere. (D009)
+eframe = { version = "0.29", default-features = false, features = [
+    "default_fonts",
+    "wgpu",
+] }
+egui = "0.29"
+
+# The lints table is the point of having a workspace this small.
+#
+# Borrowed from the sibling projects, with one difference: `unsafe_code` is
+# **forbidden** here rather than disciplined. orbistoun cannot forbid it - it runs guest
+# code in its own address space - and this cannot need it, because it is a network client
+# and nothing more. A crate that reaches for `unsafe` here has misunderstood its job.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# A network client is made of timeouts and partial reads. These are where it goes wrong.
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"

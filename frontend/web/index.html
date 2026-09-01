@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prosperous</title>
+<meta name="description" content="Remote management for anything that runs Orbis software, and the library underneath it.">
+<link rel="icon" href="assets/logo.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+/* The palette is the logo's. Its border is a 20px stroke on a 620px square with
+   a 105px radius - so roughly a thirtieth of the edge, rounded by a sixth - and
+   the frame below keeps that proportion rather than those pixels. */
+:root {
+  --accent: #4da6ff;
+  --bg: #000000;
+  --fg: #f2f2f2;
+  --muted: #8b9096;
+  --frame-width: 14px;
+  --frame-radius: 44px;
+  --frame-gap: 18px;
+  --pixel: "Press Start 2P", "Courier New", monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* One frame, the height of the viewport, with everything centred in it both
+   ways. min-height rather than height so a narrow screen scrolls instead of
+   clipping the buttons. */
+.frame {
+  min-height: calc(100vh - (var(--frame-gap) * 2));
+  margin: var(--frame-gap);
+  border: var(--frame-width) solid var(--accent);
+  border-radius: var(--frame-radius);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2.2rem;
+  padding: 3rem 1.5rem;
+  text-align: center;
+}
+
+h1 {
+  font-family: var(--pixel);
+  /* Pixel faces have no hinting to spare; keep it off fractional sizes. */
+  font-size: clamp(1.5rem, 7vw, 4rem);
+  line-height: 1.35;
+  margin: 0;
+  letter-spacing: 0.02em;
+  word-break: break-word;
+}
+
+h1 .mark { color: var(--accent); }
+
+/* The icon and the name are one unit, so they sit closer to each other than the
+   frame's gap puts everything else. */
+.head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.4rem;
+}
+
+.logo {
+  display: block;
+  width: clamp(96px, 22vmin, 168px);
+  height: auto;
+}
+
+.tagline {
+  margin: 0;
+  max-width: 46ch;
+  font-size: clamp(0.95rem, 2.2vw, 1.15rem);
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+#downloads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: center;
+  align-items: center;
+  min-height: 3rem;
+}
+
+.btn {
+  font-family: var(--pixel);
+  font-size: 0.7rem;
+  line-height: 1;
+  text-decoration: none;
+  color: var(--bg);
+  background: var(--accent);
+  border: 3px solid var(--accent);
+  border-radius: 12px;
+  padding: 0.95rem 1.15rem;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  transition: transform 80ms ease, filter 80ms ease;
+}
+
+.btn:hover, .btn:focus-visible { filter: brightness(1.15); transform: translateY(-2px); }
+.btn.ghost { background: transparent; color: var(--accent); }
+.btn.ghost:hover { background: var(--accent); color: var(--bg); filter: none; }
+.btn .size { font-size: 0.6rem; opacity: 0.75; }
+
+.note { margin: 0; color: var(--muted); font-size: 0.9rem; }
+.note a { color: var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .btn { transition: none; }
+  .btn:hover, .btn:focus-visible { transform: none; }
+}
+</style>
+</head>
+<body>
+  <main class="frame">
+    <header class="head">
+      <!-- Decorative: the name is the h1 immediately below, so a screen reader
+           announcing the icon too would just say it twice. -->
+      <img class="logo" src="assets/logo.svg" alt="">
+      <h1><span class="mark">Prospero</span>us</h1>
+    </header>
+    <p class="tagline">Remote management for anything that runs Orbis software, and the library underneath it.</p>
+    <div id="downloads" aria-live="polite"></div>
+    <a class="btn ghost" href="docs/">Docs</a>
+  </main>
+
+<script>
+// The buttons are built from the release that actually exists rather than from
+// asset names written here. A hardcoded link to a build nobody has published yet
+// is a 404 that looks like a download, which is the failure this project's
+// conventions are most explicit about.
+(function () {
+  var REPO = "project-oops/Prosperous";
+  var TAG = "latest-main";
+  var box = document.getElementById("downloads");
+
+  function platform(name) {
+    var n = name.toLowerCase();
+    if (n.indexOf("windows") > -1 || n.indexOf("win") > -1) return "Windows";
+    if (n.indexOf("linux") > -1) return "Linux";
+    if (n.indexOf("macos") > -1 || n.indexOf("darwin") > -1) return "macOS";
+    return name;
+  }
+
+  function mib(bytes) {
+    return (bytes / 1048576).toFixed(1) + " MiB";
+  }
+
+  function note(html) {
+    box.innerHTML = '<p class="note">' + html + "</p>";
+  }
+
+  fetch("https://api.github.com/repos/" + REPO + "/releases/tags/" + TAG)
+    .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+    .then(function (rel) {
+      var assets = (rel.assets || []).filter(function (a) { return a.size > 0; });
+      if (!assets.length) throw 0;
+      box.innerHTML = "";
+      assets.forEach(function (a) {
+        var el = document.createElement("a");
+        el.className = "btn";
+        el.href = a.browser_download_url;
+        el.rel = "noopener";
+        el.innerHTML = platform(a.name) + '<span class="size">' + mib(a.size) + "</span>";
+        box.appendChild(el);
+      });
+    })
+    .catch(function () {
+      note('No build published yet. <a href="https://github.com/' + REPO +
+           '/releases">Releases</a>');
+    });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+# Line endings are pinned, not left to whoever clones this.
+#
+# `core.autocrlf` is a per-machine setting, so without this file the same commit checks out
+# differently on two developers's disks. `prosperous.sh` is the sharp end: a CR on the shebang
+# line makes it unrunnable anywhere but Windows, and the error names the interpreter rather
+# than the line ending. See [OOPS conventions section 8](https://github.com/project-oops/OOPS/blob/main/docs/CONVENTIONS.md#8-gates).
+#
+# `text=auto` rather than a list of extensions: git detects binary content itself, and a list
+# only protects the extensions somebody remembered. A fixture that must not be touched at all
+# needs an explicit `-text` line below - `eol=lf` still rewrites a file that legitimately
+# contains CRLF, which a captured line protocol might.
+* text=auto eol=lf

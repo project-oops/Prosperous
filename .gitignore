@@ -1,0 +1,33 @@
+/target
+# Cargo.lock IS committed. This workspace ships binaries (`pros`, `pros-gui`),
+# and the other three Rust workspaces in the collection commit theirs too - the bare
+# `Cargo.lock` line here was the library default `cargo new` writes, left in by mistake.
+
+# Payload binaries are never tracked. The manifest says where to fetch them; a copy in
+# the tree is a redistribution obligation and a stale mirror at the same time.
+# See docs/DESIGN.md and the provenance check.
+*.elf
+*.bin
+*.prx
+*.sprx
+*.pkg
+
+# The Windows build directory, for the icon-bearing executable.
+/target-win/
+
+# Claude Code's per-person overrides. `settings.json` beside it IS shared - SELFish uses it to
+# deny reads and edits of `escalation.*` - but the `.local` one is whoever is sitting here, and
+# tracking it means their overrides arrive in everybody else's clone. SELFish had it committed
+# as a byte-identical copy of the shared file, which is the shape this prevents.
+.claude/settings.local.json
+
+# Whatever the person editing this happens to run. None of it is anybody else's business,
+# and every one of these has been committed to some repository by accident at least once.
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

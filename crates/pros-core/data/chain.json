@@ -1,0 +1,120 @@
+{
+  "about": [
+    "THE RECOMMENDED STARTUP CHAINS, AND WHY EACH ENTRY IS WHERE IT IS.",
+    "",
+    "Tracked in this repository rather than written on one machine: an ordering constraint is",
+    "a fact about how these payloads work, so it is the same on every target and belongs where",
+    "it can be reviewed, corrected and versioned like anything else here.",
+    "",
+    "MORE THAN ONE CHAIN, because there is more than one way to bring a PS5 up and they are not",
+    "variations on each other. A payload-manager chain loads a dozen separate payloads in an",
+    "order that matters. An etaHEN chain loads one payload that contains most of them. Advice",
+    "written for the first is wrong for the second, so they are separate presets rather than one",
+    "list with exceptions.",
+    "",
+    "`order` is a rank, not an index. Lower runs earlier. Gaps are deliberate so something can",
+    "be slotted between two of these without renumbering the file.",
+    "",
+    "`why` must say what *breaks* if it runs later, or state plainly that nothing does. A",
+    "payload with no ordering requirement is the normal case and says so - inventing a reason",
+    "for one would make every other line here less believable.",
+    "",
+    "Names are matched the way everything else here matches them: the payload's own name, with",
+    "a version allowed on the end. `kstuff-lite` matches `kstuff-lite_v1.09.elf`.",
+    "",
+    "THIS FILE CAN BE ADDED TO WITHOUT A REBUILD. A `chains.json` of the same shape beside the",
+    "target registry is read at startup; a preset there with a name used here replaces this one,",
+    "and any other name is a preset of your own. Nothing here is privileged except by being the",
+    "answer somebody gets before they have written a file of their own.",
+    "",
+    "A PRESET NAME IS ONE WORD. It is written on a target's line in the registry as `chain=<name>`, and that file is whitespace-delimited - so a name with a space in it would be half a name and half an address.",
+    "",
+    "`result` is what a person is told they will end up with, in their words, before they agree to deploy it. The program prints it and knows nothing about what it says - so a chain added here explains itself, and one whose explanation is wrong is corrected here rather than in code.",
+    "",
+    "elfldr is in the payload-manager chain ON PURPOSE and it is not there for an ordinary console. It keeps 9021 open after the boot chain has finished so payloads can be sent over the network - which is what this program is for. A console that only plays games needs none of that and is not broken for answering nothing on 9021. Take the entry out if that is your machine; the entry's own `why` explains what you lose.",
+    "",
+    "`manager_order` is where an entry goes in THE MANAGER'S OWN LIST, when that is not where it goes in an autoloader's. Only the loader needs it: an autoloader's list wants it early, because it is what makes 9021 exist for everything after it, and the manager's own list wants it LAST, because everything else has already loaded by then and the point is that it is still running afterwards. One rank cannot say both.",
+    "",
+    "THE `payload-manager` CHAIN IS TAKEN FROM A WORKING CONSOLE, not assembled from the payload list. It held etaHEN - a rival chain with a preset of its own, which would have been deployed alongside the very payloads it replaces - and both kstuff and kstuff-lite, which this file's own text says never to do. A chain is a thing that runs somewhere, and the honest way to write one down is to copy one that does.",
+    "",
+    "`autoloader: false` keeps an entry out of an autoloader's list entirely. Only the loader needs it: the y2jb autoloader loads elf_loader itself and its README says explicitly not to list it, so an entry there would be a second copy of something already running."
+  ],
+  "presets": [
+    {
+      "name": "payload-manager",
+      "about": "The chain a working console actually runs, taken from one rather than assembled from the catalogue: eight payloads in the manager's own list, plus the manager itself when an autoloader is what starts things.",
+      "entries": [
+        {
+          "name": "kstuff-lite",
+          "order": 10,
+          "why": "patches the kernel so unsigned code can run, and goes first because until it has, memory cannot be made executable and non-payload homebrew and fake packages are unavailable - measured in etaHEN's own loader, which waits for an RWX mprotect to succeed before continuing. ONE KERNEL PATCH, NOT TWO: kstuff and kstuff-lite do the same job and this chain names only this one, because it is the one the console this chain was taken from actually runs."
+        },
+        {
+          "name": "elfldr",
+          "order": 95,
+          "why": "keeps the ELF loader on 9021 open after the boot chain has finished, so payloads can be sent over the network. LAST, AND ONLY IN THE MANAGER'S OWN LIST. Measured from the y2jb autoloader's own README: \"Do NOT include the kernel exploit (e.g. lapse.js) or the elf_loader in autoload.txt; they are loaded automatically\" - so an entry for it in an autoloader's list is a second copy of something that is already running. This file said the opposite until 2026-09-01, on the reasoning that everything after it loads through it; that is true and it is the autoloader's job, not the list's. In the manager's own list it belongs last: elfldr's lifetime is the boot chain, so by the time that list has run the first one has exited, and this is what puts one back and leaves it up. THIS IS A DEVELOPMENT CHOICE, NOT A REPAIR: a console that answers nothing on 9021 after boot is working correctly.",
+          "manager_order": 95,
+          "autoloader": false
+        },
+        {
+          "name": "nanoDNS",
+          "order": 20,
+          "why": "no ordering requirement: it serves DNS and nothing in a startup chain waits on it."
+        },
+        {
+          "name": "ShadowMountPlus",
+          "order": 30,
+          "why": "mounts content in the background and needs the kernel patched first, so it belongs after kstuff. Nothing else waits on it."
+        },
+        {
+          "name": "ps5upload",
+          "order": 40,
+          "why": "no ordering requirement: it is a transfer service, and nothing in a startup chain waits on it."
+        },
+        {
+          "name": "ftpsrv",
+          "order": 50,
+          "why": "file access, and the way everything else gets fixed from another machine. Early on purpose: if something later in the chain hangs the target, whether this came up first decides between a repair over the network and a walk to the console with a USB stick."
+        },
+        {
+          "name": "klogsrv",
+          "order": 60,
+          "why": "the system log. Nothing depends on it and it depends on nothing, so its position is free - but it is placed before the payloads that might fail, because a log started afterwards cannot say why they did."
+        },
+        {
+          "name": "shsrv",
+          "order": 70,
+          "why": "a shell, and the second way back in. It can run a payload already on the target's disk, so it is what remains when the loader is the thing that broke."
+        },
+        {
+          "name": "pldmgr",
+          "order": 90,
+          "why": "the payload manager, and it goes LAST in an autoloader's list. It runs a startup list of its own once it is up, so anything the autoloader is going to do should be done before it starts. An autoloader list that omits it never starts it - and the manager's own list then never runs, silently."
+        }
+      ],
+      "result": "A console that comes back after every restart with: unsigned code allowed to run, a DNS proxy, background content mounting, fast transfers from your machine, a file server on 2121, the kernel log readable on 3232, a shell on 2323, and the ELF loader on 9021 still listening afterwards so payloads can be sent ad hoc. Everything is a separate payload, so any one of them can be replaced or dropped without touching the others - and any one of them going wrong leaves the rest standing."
+    },
+    {
+      "name": "etaHEN",
+      "about": "One payload that contains most of the others. etaHEN embeds kstuff, serves the loader on 9021, and brings up FTP, klog and the package installer itself - so listing those separately is at best redundant and at worst a second copy fighting the first for a port.",
+      "entries": [
+        {
+          "name": "etaHEN",
+          "order": 10,
+          "why": "brings up the jailbreak daemon and loads kstuff itself, then serves the loader on 9021 and starts FTP, the kernel log and the package installer. When it is present it is what establishes the environment everything else assumes, so nothing may precede it - and the payloads it already contains must not be listed again beside it."
+        },
+        {
+          "name": "ShadowMountPlus",
+          "order": 80,
+          "why": "mounts content in the background and needs the kernel patched first, which etaHEN has done by this point. Not part of etaHEN, so it is listed."
+        },
+        {
+          "name": "pldmgr",
+          "order": 90,
+          "why": "the payload manager, LAST as always - it runs a startup list of its own once it is up, so anything this list is going to do should be done before it starts. Optional under etaHEN, which has its own way of loading payloads; listed here for somebody who wants both."
+        }
+      ],
+      "result": "A console brought up by one payload rather than a dozen. etaHEN patches the kernel, then serves the ELF loader, an FTP server, the kernel log and a package installer itself - so after a restart those are running and there is nothing separate to keep in step with them. Fewer moving parts and one version to track, at the cost of not being able to replace any single piece: if etaHEN's FTP server is not the one you want, the answer is a different chain rather than a different payload."
+    }
+  ]
+}

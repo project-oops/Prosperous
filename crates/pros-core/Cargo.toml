@@ -1,0 +1,49 @@
+[package]
+name = "pros-core"
+version = "0.1.0"
+description = "Registry, payload manifest and workflows over the target transport"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# **This is the layer that is allowed dependencies, and that is the whole reason it is a
+# separate crate.**
+#
+# `pros-link` keeps a short one for the same reason, because obSCEne takes it and holds
+# a three-dependency policy argued for line by line. Everything that genuinely needs a
+# library lives here instead, where that project never sees it.
+#
+# Each one still has to earn its place.
+[dependencies]
+# The transport. Everything here is a decision *about* a target; nothing here speaks to one.
+pros-link = { workspace = true }
+
+# The payload repository is JSON, and it is somebody else's JSON - a file written by a tool
+# this project does not control, carrying descriptions written by whoever published a
+# payload. Escapes, nesting and encodings are exactly where a hand-rolled reader is quietly
+# wrong, and quietly wrong about a checksum field is the one failure this crate exists to
+# prevent.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging. A facade, not an output: this crate must not write to the terminal - that would
+# decide the interface of every tool using it - and `tracing` is pointed wherever the binary
+# says, including nowhere. See OOPS conventions section 9.
+tracing = { workspace = true }
+
+# Which build this is, and where this machine lets us write. Both were solved here first and
+# both were solved somewhere else too; see the shared crates for what each copy got wrong.
+oops-build = { workspace = true }
+oops-paths = { workspace = true }
+
+# Verifying a download before it is executed with kernel-adjacent privileges. That sentence
+# is the entire argument: this is the risk surface, and hand-rolling the hash that guards it
+# would be the least defensible saving available.
+sha2 = "0.10"
+
+[build-dependencies]
+# The other half of the same crate: `emit` runs at build time, `stamp!` at run time.
+oops-build = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,60 @@
+name: check
+
+# Every job begins the same three steps: check out the collection, check this repository
+# out *into* it, and ask `oops bootstrap` for the siblings this project needs. See
+# docs/BUILDING.md. This workflow is where that shape came from; the other four now match
+# it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: build, lint and test
+    runs-on: ubuntu-latest
+    steps:
+      # The entry point, without submodules. This job needs Prosperous and what Prosperous
+      # depends on - not all five - so `bootstrap` below asks for exactly that rather than
+      # paying for five checkouts to build one.
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/OOPS
+          path: OOPS
+
+      # Checked out INTO the OOPS layout, because the layout is a build requirement rather
+      # than a convenience: Prosperous resolves oops-libs by relative path, as a sibling.
+      #
+      # `fetch-depth: 0` is deliberate. The provenance step asks git what is *tracked*,
+      # and a shallow checkout still answers that correctly - but the guard refuses to
+      # pass when it cannot look, so anything that leaves it without a repository turns
+      # into a failure rather than a quiet success. A full checkout removes the question.
+      - uses: actions/checkout@v4
+        with:
+          path: OOPS/prosperous
+          fetch-depth: 0
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+
+      # Fetches oops-libs, which this workspace takes by path. Without it the build fails as
+      # a missing directory rather than as a missing dependency, which is a much worse error
+      # to read.
+      - name: Siblings this build needs
+        run: OOPS/bin/oops bootstrap prosperous
+
+      # One step, because there is one dev command and CI running something *else* is how
+      # a green pipeline and a broken working copy come to disagree. `oops check prosperous`
+      # is a thin wrapper over `./bin/prosperous check` - the same command, reached the
+      # same way a person reaches it.
+      #
+      # It runs, in order: no payload binaries are tracked, formatting, clippy at
+      # `-D warnings`, the tests, and a doc build with warnings as errors. The integration
+      # tests stand a fake target on the hardware's own port numbers, which are free on a
+      # runner and are checked rather than assumed - a bind failure fails the test by name.
+      - name: oops check prosperous
+        run: OOPS/bin/oops check prosperous

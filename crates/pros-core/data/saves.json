@@ -1,0 +1,23 @@
+{
+  "about": [
+    "Deliberately empty. This is not a gap waiting to be filled in.",
+    "",
+    "SAVE DATA ON THIS PLATFORM IS SIGNED FOR THE CONSOLE THAT WROTE IT. A save downloaded",
+    "from anywhere else is not a save you can use - it is a file the target rejects. A list",
+    "of downloadable saves would therefore be a list of things that do not work, and every",
+    "entry in it would look exactly like an entry that does.",
+    "",
+    "It is also somebody's own data. Everything else listed here was published on purpose by",
+    "the people who made it; nobody publishes a save for strangers to install.",
+    "",
+    "WHAT THIS SECTION IS FOR: your own saves, copied off your own target and back onto it.",
+    "That works, needs no list, and is what the local and remote panes do.",
+    "",
+    "The file exists so the format is documented and so the section can say why it is empty",
+    "instead of looking broken. Adding entries is supported - the machinery does not care what",
+    "it is moving - but nothing shipped will fill it in.",
+    "",
+    "The format is docs/manifest.schema.json - the same one payloads use."
+  ],
+  "payloads": []
+}

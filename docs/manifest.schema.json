@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/project-oops/Prosperous/main/docs/manifest.schema.json",
+  "title": "Prosperous payload manifest",
+  "description": "A list of payloads, where to get them, and what can be checked about them. Read the provenance notes: most of this format was copied from one tool's cache file rather than agreed by anybody, and this document is the first place it has been written down as a format at all.",
+
+  "$comment": "PROVENANCE. Every field except `port` was taken from the repository_cache.json that a payload manager keeps at /data/pldmgr/repository_cache.json on a jailbroken console. That file is ONE TOOL'S CACHE, not a standard: this project has seen exactly one instance of it, on one console, and has no evidence of a consensus behind it - no published schema, no specification, no second implementation examined. Copying it was still the right call, because interoperating with the file that actually exists on people's consoles beats inventing a format nobody else can read. But nothing here should be cited as a community standard, including by this project.",
+
+  "type": ["object", "array"],
+  "oneOf": [
+    {
+      "$comment": "The shape this project writes: a wrapper, so the file can explain itself. `about` is prose for whoever opens the file and is never parsed.",
+      "type": "object",
+      "properties": {
+        "about": {
+          "description": "Free prose for a human reader. Ignored entirely when reading.",
+          "type": ["string", "array"],
+          "items": { "type": "string" }
+        },
+        "payloads": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/payload" }
+        }
+      },
+      "required": ["payloads"],
+      "additionalProperties": true
+    },
+    {
+      "$comment": "The shape a console's repository_cache.json actually has: a bare array, no wrapper. Both are read, because refusing the one that exists in the wild would be a format arguing with reality.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/payload" }
+    }
+  ],
+
+  "$defs": {
+    "payload": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": true,
+      "$comment": "Unknown fields are kept, not rejected. A reader that discarded what it did not recognise would silently strip whatever the next version of anybody's tool adds, and the stripping would look identical to the field never having been there.",
+      "properties": {
+        "name": {
+          "$comment": "observed: pldmgr repository_cache.json",
+          "type": "string",
+          "description": "The name the payload's own project uses, and the key everything else matches on. Compared case-insensitively, because a repository spelling it `nanoDNS` and a list spelling it `nanodns` are one payload and not two.",
+          "minLength": 1
+        },
+        "filename": {
+          "$comment": "observed: pldmgr repository_cache.json",
+          "type": "string",
+          "description": "What the file is called once it is on disk."
+        },
+        "url": {
+          "$comment": "observed: pldmgr repository_cache.json",
+          "type": "string",
+          "description": "Where to fetch it. An entry with no url can be described and listed but not downloaded, which is a normal state and not an error.",
+          "format": "uri"
+        },
+        "source": {
+          "$comment": "observed: pldmgr repository_cache.json",
+          "type": "string",
+          "description": "Where the payload comes from - usually its project page. For a person, not for fetching."
+        },
+        "source_direct": {
+          "$comment": "observed: pldmgr repository_cache.json",
+          "type": "string",
+          "description": "A second, more direct source url, as seen in the wild. Not used for fetching."
+        },
+        "version": {
+          "$comment": "observed: pldmgr repository_cache.json",
+          "type": "string",
+          "description": "Version as the project writes it, commonly `v1.2`. Matched against the boot list as name + separator + version, so `elfldr_v0.11` and `elfldr` are the same payload while `kstuff` and `kstuff-lite_v1` are not."
+        },
+        "last_update": {
+          "$comment": "observed: pldmgr repository_cache.json",
+          "type": "string",
+          "description": "When the entry was last touched upstream. Informational; nothing here compares it."
+        },
+        "checksum": {
+          "$comment": "observed: pldmgr repository_cache.json - always 64 bare hex characters in the instance measured, i.e. SHA-256 with no algorithm prefix",
+          "type": "string",
+          "description": "A digest of the file. 64 hex characters is read as SHA-256; a `sha256:` prefix is also accepted. AN ENTRY WITH NO CHECKSUM, OR ONE IN AN ALGORITHM THIS CANNOT CHECK, IS NOT DOWNLOADED - the refusal happens before the fetch, not after, so nothing unverifiable is ever written to disk.",
+          "pattern": "^([Ss][Hh][Aa]-?256[:=])?[0-9a-fA-F]{64}$"
+        },
+        "category": {
+          "$comment": "observed: pldmgr repository_cache.json",
+          "type": "string",
+          "description": "What the payload is for - `loader`, `service`, `jailbreak`, and so on. Whoever curates the list decides the vocabulary; this project groups by whatever it finds rather than imposing a taxonomy of its own. An entry with no category is grouped as `not categorised` and is not quietly filed under something plausible."
+        },
+        "description": {
+          "$comment": "observed: pldmgr repository_cache.json",
+          "type": "string",
+          "description": "Prose about what it does. NEVER PARSED. Descriptions in the wild mention port numbers, and reading a number out of somebody's sentence is guessing at meaning - a wrong guess there reports one payload's state from another payload's socket. Use `port` for that."
+        },
+        "extract_file": {
+          "$comment": "observed: pldmgr repository_cache.json",
+          "type": "string",
+          "description": "Which file to take out, when the url points at an archive."
+        },
+        "asset_pattern": {
+          "$comment": "observed: pldmgr repository_cache.json",
+          "type": "string",
+          "description": "How to pick the right asset out of a release with several."
+        },
+        "port": {
+          "$comment": "PROSPEROUS ADDITION - not present in pldmgr's file, not observed anywhere else, and therefore certain to be ignored by other tools. Kept optional so a file carrying it stays readable by anything that reads the original shape.",
+          "type": "integer",
+          "description": "The TCP port it listens on once running, if it listens. THIS IS THE FIELD THAT MAKES PRESENCE ANSWERABLE. Whether a payload is loaded is decided by connecting to a port; without one, the only honest answer is `unknown`, which is true and useless. Five services have ports this project measured against a console; every other entry is unknowable until a list says otherwise - and because the list is a file, widening that needs an edit rather than a rebuild. A wrong port does not fail loudly: it reports some other listener's state under this name. Write one you have verified, never one inferred from a description.",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "unlocks": {
+          "$comment": "PROSPEROUS ADDITION - as with `port`, not present in pldmgr's file and certain to be ignored by other tools.",
+          "type": "string",
+          "description": "What becomes possible once this answers. Only meaningful beside `port`, since without one there is nothing to be answering. This is the third column of a check: a reader told `8082 is open` has a worse tool than one told `saves can be decrypted`. Write what a person could then do, not what the payload is. Omitting it is fine - the entry is then described as itself, which is worse prose and the same fact."
+        },
+        "required": {
+          "$comment": "PROSPEROUS ADDITION - as with `port`. THIS ONE CHANGES A VERDICT.",
+          "type": "boolean",
+          "description": "Whether there is no workflow at all without this. A required payload that is missing BLOCKS the check, exactly as one of the five built-in services does. Absent is not the same as false: declaring something required is a claim about somebody's whole workflow, and the only person who can make it is the one editing this file. Set it for what you genuinely cannot work without, and leave it off otherwise - a list where everything is required produces a check that is always blocked and therefore says nothing."
+        }
+      }
+    }
+  }
+}

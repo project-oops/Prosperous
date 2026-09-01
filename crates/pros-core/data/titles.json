@@ -1,0 +1,129 @@
+{
+  "about": [
+    "Homebrew games - engine reimplementations and source ports.",
+    "",
+    "NO COMMERCIAL TITLES ARE LISTED HERE AND NONE WILL BE. A list of urls for commercial",
+    "games is a list of pirated games. Every entry below is an open-source engine published",
+    "by its own authors.",
+    "",
+    "MOST OF THEM NEED DATA FILES FROM A COPY YOU OWN. The engine is free; Doom's WAD and",
+    "Diablo's MPQ are not, and are not distributed here. An entry that needs data says so in",
+    "its description - a game that installs cleanly and then refuses to start is the worst",
+    "version of this to debug, because nothing failed.",
+    "",
+    "The split between this file and packages.json is THIS PROJECT'S, not upstream's: they are one",
+    "release and one kind of artifact. Things you run to do something are in packages.json;",
+    "things you run to play are in titles.json. Nothing depends on the split being right.",
+    "",
+    "PROVENANCE. Every entry is an asset of the ps5-payload-dev/websrv release v0.34,",
+    "published 2026-08-02. The digests are the ones GitHub states for those assets, and two",
+    "of them were checked here by downloading the file and hashing it - the API and the bytes",
+    "agreed, which is why the rest are trusted without pulling a gigabyte to prove it.",
+    "",
+    "These install under /data/homebrew, which was measured on a target rather than guessed.",
+    "",
+    "The format is docs/manifest.schema.json - the same one payloads use. Nothing about",
+    "fetching or verifying cares what kind of thing it is moving."
+  ],
+  "payloads": [
+    {
+      "name": "CrispyDoom",
+      "filename": "CrispyDoom.zip",
+      "version": "v0.34",
+      "category": "Homebrew Games",
+      "description": "Doom source port. Needs a Doom WAD you already own - installs without one and will not start.",
+      "url": "https://github.com/ps5-payload-dev/websrv/releases/download/v0.34/CrispyDoom.zip",
+      "source": "https://github.com/ps5-payload-dev/websrv",
+      "last_update": "2026-08-02",
+      "checksum": "c0c37713703e109f43b1b598cf5790d969097a2baf961693a0fd0e03956a3c59"
+    },
+    {
+      "name": "DevilutionX",
+      "filename": "DevilutionX.zip",
+      "version": "v0.34",
+      "category": "Homebrew Games",
+      "description": "Diablo engine reimplementation. Needs DIABDAT.MPQ from your own copy.",
+      "url": "https://github.com/ps5-payload-dev/websrv/releases/download/v0.34/DevilutionX.zip",
+      "source": "https://github.com/ps5-payload-dev/websrv",
+      "last_update": "2026-08-02",
+      "checksum": "2980f34b7eb2aae58452a8925576f628a5d8bd36043ff84b698439df08071868"
+    },
+    {
+      "name": "EDuke32",
+      "filename": "EDuke32.zip",
+      "version": "v0.34",
+      "category": "Homebrew Games",
+      "description": "Duke Nukem 3D source port. Needs the original game data.",
+      "url": "https://github.com/ps5-payload-dev/websrv/releases/download/v0.34/EDuke32.zip",
+      "source": "https://github.com/ps5-payload-dev/websrv",
+      "last_update": "2026-08-02",
+      "checksum": "7cf20188a037ff2b357a1102a2cd0d4c768de0ba6034d1e984ef8aeec055ae71"
+    },
+    {
+      "name": "Mari0",
+      "filename": "Mari0.zip",
+      "version": "v0.34",
+      "category": "Homebrew Games",
+      "description": "Super Mario Bros with Portal guns. Freely distributed - no data files needed.",
+      "url": "https://github.com/ps5-payload-dev/websrv/releases/download/v0.34/Mari0.zip",
+      "source": "https://github.com/ps5-payload-dev/websrv",
+      "last_update": "2026-08-02",
+      "checksum": "e0331ed5a22e7fe72843d268cd2c8b297d761a75b7c83d828f5cc58a82a72ce3"
+    },
+    {
+      "name": "Omnispeak",
+      "filename": "Omnispeak.zip",
+      "version": "v0.34",
+      "category": "Homebrew Games",
+      "description": "Commander Keen: Goodbye Galaxy engine. Needs the original game data.",
+      "url": "https://github.com/ps5-payload-dev/websrv/releases/download/v0.34/Omnispeak.zip",
+      "source": "https://github.com/ps5-payload-dev/websrv",
+      "last_update": "2026-08-02",
+      "checksum": "7a4d82bf58ef7406a4c9050ec298195c548d387febc28fd814c3bf9026bb231b"
+    },
+    {
+      "name": "OpenJazz",
+      "filename": "OpenJazz.zip",
+      "version": "v0.34",
+      "category": "Homebrew Games",
+      "description": "Jazz Jackrabbit engine. Needs the original game data.",
+      "url": "https://github.com/ps5-payload-dev/websrv/releases/download/v0.34/OpenJazz.zip",
+      "source": "https://github.com/ps5-payload-dev/websrv",
+      "last_update": "2026-08-02",
+      "checksum": "1e191e2a533be235a87d78069cb4ccc0c65ef754f38fb1a79bf98683a8f60823"
+    },
+    {
+      "name": "VVVVVV",
+      "filename": "VVVVVV.zip",
+      "version": "v0.34",
+      "category": "Homebrew Games",
+      "description": "VVVVVV, whose source is open. Needs data.zip from your own copy.",
+      "url": "https://github.com/ps5-payload-dev/websrv/releases/download/v0.34/VVVVVV.zip",
+      "source": "https://github.com/ps5-payload-dev/websrv",
+      "last_update": "2026-08-02",
+      "checksum": "f04265d943ad4128de430fa7bce6ec737b447904075afeebb11b709365846d3c"
+    },
+    {
+      "name": "Wolf4SDL",
+      "filename": "Wolf4SDL.zip",
+      "version": "v0.34",
+      "category": "Homebrew Games",
+      "description": "Wolfenstein 3D source port. Needs the original game data.",
+      "url": "https://github.com/ps5-payload-dev/websrv/releases/download/v0.34/Wolf4SDL.zip",
+      "source": "https://github.com/ps5-payload-dev/websrv",
+      "last_update": "2026-08-02",
+      "checksum": "eefbaff066d6b8b230fb61085a28deb3ee6e6fdee46aba198a5572e5be699b68"
+    },
+    {
+      "name": "YQuake2",
+      "filename": "YQuake2.zip",
+      "version": "v0.34",
+      "category": "Homebrew Games",
+      "description": "Quake II engine. Needs the pak files from your own copy.",
+      "url": "https://github.com/ps5-payload-dev/websrv/releases/download/v0.34/YQuake2.zip",
+      "source": "https://github.com/ps5-payload-dev/websrv",
+      "last_update": "2026-08-02",
+      "checksum": "b628f6e489aae2e6cd788fd641826521fb0c9aa9649f88cbb43818707990bb14"
+    }
+  ]
+}

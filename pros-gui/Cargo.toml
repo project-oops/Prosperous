@@ -1,0 +1,43 @@
+[package]
+name = "pros-gui"
+version = "0.1.0"
+description = "The window over the target library"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "pros-gui"
+path = "src/main.rs"
+
+# **This crate holds no logic**, the same rule the command line follows and the same rule
+# orbistoun's shell follows. It reads state and draws it; every decision it presents is made
+# in a crate below it and is reachable from `pros` too.
+[dependencies]
+pros-core = { workspace = true }
+pros-link = { workspace = true }
+eframe = { workspace = true }
+egui = { workspace = true }
+# The system's own file dialog, for choosing a file to run.
+#
+# **Argued for rather than assumed**, like every other dependency here. Without one there is
+# no way to run something that is not already in a folder this program manages - which is the
+# ordinary case when somebody is debugging homebrew they have just built, and asking them to
+# copy it somewhere first is asking them to do the tool's job.
+#
+# Three new packages, all of which - `log`, `raw-window-handle`, `windows-sys` - are already in
+# the window library's tree. Default features off: those pull in GTK on Linux, and the portal
+# is what a modern desktop answers with anyway.
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+
+oops-log = { workspace = true }
+oops-docs = { workspace = true }
+
+[lints]
+workspace = true
+
+# The Windows executable carries the icon Explorer and the taskbar show.
+# Gated by target so it is not fetched or built on Linux or macOS, where an
+# executable has nowhere to put one. Same arrangement as the CLI crates.
+[target.'cfg(windows)'.build-dependencies]
+winresource.workspace = true

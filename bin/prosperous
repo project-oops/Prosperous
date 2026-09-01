@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# prosperous - the one dev command for this repository.
+#
+# The seven verbs every OOPS project carries, so `oops test prosperous` and
+# `./bin/prosperous test` are one command reached two ways:
+#
+#   ./bin/prosperous build        # release build of the workspace
+#   ./bin/prosperous test         # the test suite
+#   ./bin/prosperous lint         # clippy at -D warnings
+#   ./bin/prosperous fmt          # format in place
+#   ./bin/prosperous check        # the full gate. What CI runs.
+#   ./bin/prosperous clean        # remove build output
+#   ./bin/prosperous doc          # build the API docs
+#
+# And this project's own two:
+#
+#   ./bin/prosperous provenance   # no payload binaries are tracked
+#   ./bin/prosperous target       # the read-only tests against a real target
+#
+# NOTE: this workspace takes oops-libs by relative path, as a sibling, so a clone of only
+# this repository does not build. `oops bootstrap prosperous` fetches it.
+#
+# Cross-platform bash (Linux, macOS, Git Bash on Windows).
+set -euo pipefail
+
+# This script lives in bin/, so the repository root is one level up. It used to sit at the
+# root and assume the caller was already there.
+#
+# `SELF` is captured absolute before the cd, because usage() reads this file back and a
+# relative path to it does not survive changing directory.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+die() { printf '\n\033[1;31m%s\033[0m\n' "$*" >&2; exit 1; }
+step() { printf '\n\033[1;36m-- %s\033[0m\n' "$*"; }
+
+# Payload binaries are never tracked.
+#
+# The whole distribution policy rests on this: the payloads are GPL-3.0, so shipping a
+# binary obliges you to offer its source while pointing at upstream obliges nothing. A
+# policy with no check is a habit, and habits do not survive a hurried afternoon.
+provenance() {
+    step "no payload binaries are tracked"
+
+    # **Refuses to pass when it could not look.** The first version swallowed the failure
+    # with `|| true`, so outside a git repository it reported success having checked
+    # nothing - which is the same shape as every guard that has ever been trusted wrongly.
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
+        die "not a git repository, so nothing could be checked - this is not a pass"
+
+    local found
+    # Extension is not enough, and that is not hypothetical: a 16 KB x86-64 ELF sat tracked at
+    # `src/porthole/build/porthole_selftest` in the sibling project and every extension pattern
+    # passed it, because the file has no extension at all. obSCEne's own guard missed it, and so
+    # would this one. Content is what a loader reads, so content is what this checks.
+    #
+    # Images are the only binaries any of these repositories is meant to track.
+    tracked_binaries() {
+        git ls-files | while IFS= read -r f; do
+            case "$f" in *.png|*.ico|*.svg|*.jpg|*.gif|*.woff2) continue ;; esac
+            [ -f "$f" ] || continue
+            case "$(head -c 4 "$f" | od -An -tx1 | tr -d ' ')" in
+                7f454c46*|4d5a*|cffaedfe*|cefaedfe*) printf '%s\n' "$f" ;;
+            esac
+        done
+    }
+
+    found=$(git ls-files -- '*.elf' '*.bin' '*.prx' '*.sprx' '*.pkg')
+    if [ -n "$found" ]; then
+        echo "$found"
+        die "these are payload binaries and must not be tracked - ship the manifest instead"
+    fi
+
+    found="$(tracked_binaries)"
+    if [ -n "$found" ]; then
+        echo "$found"
+        die "these are executables, whatever they are named - they must not be tracked"
+    fi
+}
+
+check() {
+    provenance
+    step "cargo fmt --all -- --check"
+    cargo fmt --all -- --check
+    step "cargo clippy --all-targets -- -D warnings"
+    cargo clippy --all-targets -- -D warnings
+    step "cargo test"
+    cargo test
+    # A link in a doc comment that points nowhere is a documentation defect, and this
+    # project's documentation is load-bearing: the reasoning behind a decision lives beside
+    # the code that rests on it. A warning nobody fails on is a warning nobody reads.
+    step "cargo doc (warnings are errors)"
+    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --quiet
+    printf '\n\033[1;32mall checks passed\033[0m\n'
+}
+
+# The tests that need a real target.
+#
+# Separate from `check` on purpose. Everything in `check` runs anywhere; these need a
+# machine that is switched on, and a suite that sometimes needs target is a suite whose
+# failures nobody can interpret. They are `#[ignore]` by default, so an ordinary run reports
+# them as **ignored** rather than as passing.
+target() {
+    [ -n "${PROS_TARGET:-}" ] ||
+        die "set PROS_TARGET to the target's address first"
+    step "against $PROS_TARGET (read-only)"
+    cargo test -p pros-core --test against_a_target -- --ignored --nocapture --test-threads=1
+    printf '
+[1;32mthe target agrees[0m
+'
+}
+
+# --- the shared OOPS verbs -------------------------------------------------
+# `check` above is still the gate and still runs these and more; these exist so the pieces
+# can be asked for one at a time, and so the same word means the same thing in all four.
+
+# Extra arguments pass through, so the release workflow's `--target <triple>` reaches the
+# same verb a person runs rather than a second copy of the command living in CI. This is
+# what orbistoun already does, and the reason its release job can go through the front door.
+build() { step "cargo build --release --workspace $*"; cargo build --release --workspace "$@"; }
+test_() { step "cargo test --workspace"; cargo test --workspace; }
+lint()  { step "cargo clippy --all-targets -- -D warnings"; cargo clippy --all-targets -- -D warnings; }
+fmt()   { step "cargo fmt --all"; cargo fmt --all; }
+clean() { step "cargo clean"; cargo clean; }
+doc()   { step "cargo doc --no-deps --workspace"; cargo doc --no-deps --workspace; }
+
+# The end of the header is found rather than hardcoded, so documenting a new verb cannot
+# silently truncate the help.
+usage() {
+    local last
+    last=$(( $(grep -n '^set -euo' "$SELF" | head -1 | cut -d: -f1) - 1 ))
+    sed -n "2,${last}p" "$SELF" | sed 's/^# \{0,1\}//'
+}
+
+case "${1:-check}" in
+    check) check ;;
+    build) build ;;
+    test)  test_ ;;
+    lint)  lint ;;
+    fmt)   fmt ;;
+    clean) clean ;;
+    doc)   doc ;;
+    provenance) provenance ;;
+    target) target ;;
+    -h|--help|help) usage ;;
+    *) die "unknown verb: $1 (try ./bin/prosperous --help)" ;;
+esac
