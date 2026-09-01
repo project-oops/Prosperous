@@ -46,6 +46,9 @@ jobs:
       # to read.
       - name: Siblings this build needs
         run: OOPS/bin/oops bootstrap prosperous
+        env:
+          # Empty unless the org secret exists, and empty is the old behaviour.
+          OOPS_CI_TOKEN: ${{ secrets.OOPS_CI_TOKEN }}
 
       # One step, because there is one dev command and CI running something *else* is how
       # a green pipeline and a broken working copy come to disagree. `oops check prosperous`

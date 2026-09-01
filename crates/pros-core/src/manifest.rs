@@ -385,9 +385,23 @@ pub fn default_path() -> Option<std::path::PathBuf> {
 ///
 /// **Separate from the manifest on purpose.** The manifest is a description and is worth
 /// editing by hand; this holds binaries, which are not, and which this project never ships.
+///
+/// # Why this is the data directory and not the cache one
+///
+/// It was the cache directory, on the reasoning that anything here carries a url and a digest
+/// and can therefore be fetched again - which is a good rule and was the wrong answer, because
+/// **the payloads screen never agreed to it**. Every other section takes its local folder from
+/// `data_root()/<section>`, and the payloads section is a section: the listing behind its
+/// `run`, `send` and `delete here` buttons was reading `data_root()/payloads` while downloads,
+/// the size column, and every *is it here already* question were reading the cache one.
+///
+/// So a payload fetched through this program landed in a directory the same screen did not
+/// list, and the button that would have sent it said it was not on this machine. One name, two
+/// directories, and the half of the screen that measured disagreeing with the half that acted -
+/// which is this project's own defect, in the folder its files live in.
 #[must_use]
 pub fn staging() -> Option<std::path::PathBuf> {
-    let mut path = crate::target::cache_directory()?;
+    let mut path = crate::target::directory()?;
     path.push("payloads");
     Some(path)
 }

@@ -279,22 +279,8 @@ struct Shown<'a> {
     sources: &'a pros_core::sources::Sources,
     /// What is ticked.
     chosen: &'a std::collections::BTreeSet<String>,
-    /// What this machine holds, so a row knows whether it has anything to send.
-    here: &'a [pros_core::library::Item],
     /// Whether anything can be started right now.
     idle: bool,
-    /// Whether there is a target to send to.
-    connected: bool,
-}
-
-/// Whether this machine holds a file of that name, ready to be sent.
-///
-/// Read from the listing already taken for the section rather than by asking the filesystem:
-/// this is called once per row per frame, and a `stat` per row per frame to answer a question
-/// that changes when a download lands is machinery around something already known.
-fn what_is_here(here: &[pros_core::library::Item], file: &str) -> bool {
-    here.iter()
-        .any(|item| item.name.eq_ignore_ascii_case(file) && item.kind != pros_core::library::Kind::Folder)
 }
 
 /// What the payload table was asked to do, collected while it draws.
@@ -306,8 +292,6 @@ struct Wanted {
     ticked: Option<String>,
     /// A row whose list entry should be pointed at the project's latest release.
     relist: Option<String>,
-    /// A row to send to the loader and start, by filename.
-    run: Option<String>,
 }
 
 /// The word and colour for one finding, from its verdict and how much it matters.
@@ -3899,6 +3883,32 @@ impl App {
             }
             self.sources_control(ui);
         });
+        // **The folder every judgement on this screen is made against, on the screen.**
+        //
+        // This is the one two-sided section with no path box, because its left pane is a table
+        // rather than a directory listing. That made the directory invisible - and *is it on
+        // this machine* is answered entirely by what is in it. A row saying `not on this
+        // machine` and a folder holding the file were both on screen at once with no way to
+        // see that they were talking about different places.
+        ui.horizontal(|ui| {
+            ui.weak("here:");
+            ui.weak(&self.state.local_path)
+                .on_hover_text("what `run`, `send` and `delete here` are judged against");
+            ui.weak(format!(
+                "({} file{})",
+                self.state.local.len(),
+                if self.state.local.len() == 1 { "" } else { "s" }
+            ));
+            if ui
+                .button("re-read")
+                .on_hover_text(
+                    "list it again - it is read when this screen is opened, so a file put                      there since is not known about yet",
+                )
+                .clicked()
+            {
+                self.read_local();
+            }
+        });
 
         if self.manifest.is_none() {
             ui.add_space(6.0);
@@ -4034,7 +4044,6 @@ impl App {
         let on_target = on_target.as_slice();
         let mut asked = Wanted::default();
         let idle = self.state.is_idle();
-        let connected = self.state.target().is_some();
         egui::Grid::new("payloads").striped(true).show(ui, |ui| {
             headings(
                 ui,
@@ -4062,9 +4071,7 @@ impl App {
                         on_target,
                         sources: &self.sources,
                         chosen: &chosen,
-                        here: &self.state.local,
                         idle,
-                        connected,
                     },
                     &mut asked,
                 );
@@ -4072,18 +4079,6 @@ impl App {
         });
         if let Some(name) = asked.ticked {
             self.state.listing.toggle(&name);
-        }
-        // **From the row, not from the selection.** The toolbar above acts on what is ticked,
-        // and a tick is one key shared by two panes over three spellings of one payload - the
-        // manifest's filename, whatever the file on this disk is called, and the directory the
-        // manager keeps it in. Every one of those is a separate row, so ticking the payload
-        // somebody was looking at could leave the toolbar acting on a row that has no local
-        // copy, or none at all. This row knows which file it is; it does not have to be told.
-        if let Some(file) = asked.run
-            && let Some(target) = self.state.target().cloned()
-        {
-            let from = PathBuf::from(self.state.local_path.trim()).join(&file);
-            self.state.begin(Job::Send(target, file, from));
         }
         // After the grid, for the usual reason: starting a job borrows what it was drawn from.
         if let Some(name) = asked.relist
@@ -4104,9 +4099,7 @@ impl App {
             on_target,
             sources,
             chosen,
-            here,
             idle,
-            connected,
         } = *what;
         // No grid of its own: it draws into the caller's, which is what keeps every group's
         // columns in line with every other group's.
@@ -4136,32 +4129,7 @@ impl App {
                 .unwrap_or_else(|| row.payload.name.clone());
             let mut on = chosen.contains(&key);
             if ui.checkbox(&mut on, "").changed() {
-                asked.ticked = Some(key.clone());
-            }
-            // **Run, on the row, for the payload the row is about.** A folder on the target is
-            // how the manager stores every payload it has, and it says nothing about whether
-            // the file on this machine can be sent - which is the only file this reads.
-            let held = what_is_here(here, &key);
-            if ui
-                .add_enabled(
-                    idle && connected && held,
-                    egui::Button::new("run").small(),
-                )
-                .on_hover_text(
-                    "send this file to the loader and start it now - it lives in memory until \
-                     the next restart, and nothing is written to the target's disk. A payload \
-                     that loads others will load them all again.",
-                )
-                .on_disabled_hover_text(if !connected {
-                    "no target selected"
-                } else if held {
-                    "wait for what is already running"
-                } else {
-                    "not on this machine - download it first, and this can send it"
-                })
-                .clicked()
-            {
-                asked.run = Some(key);
+                asked.ticked = Some(key);
             }
             ui.label(&row.payload.name);
             ui.weak(bytes).on_hover_text(size_hover);

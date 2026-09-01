@@ -12,8 +12,8 @@
 //! # The name is localised, and this does not pretend otherwise
 //!
 //! The file carries a set of languages and says which is the default. So the rule is: the
-//! default language's name, or any language's name if the default names none, or **nothing**
-//! - and nothing means the identifier is shown, which is what the caller had anyway.
+//! default language's name, or any language's name if the default names none, or **nothing** -
+//! and nothing means the identifier is shown, which is what the caller had anyway.
 //!
 //! A name is never invented. A title with no readable name reads as its identifier, which is
 //! true, rather than as a guess, which might not be.
