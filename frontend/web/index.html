@@ -124,6 +124,28 @@ h1 .mark { color: var(--accent); }
   .btn { transition: none; }
   .btn:hover, .btn:focus-visible { transform: none; }
 }
+
+/* Where this sits in the collection, and where its code is. A project page that
+   only points inward leaves a reader who arrived from a release with no way back
+   to the other three, and no way to the source at all. */
+.sitefoot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  justify-content: center;
+  margin: 2.25rem 0 0;
+  padding: 0;
+}
+.sitefoot a {
+  font-family: var(--pixel);
+  font-size: 0.55rem;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  padding-bottom: 0.2rem;
+}
+.sitefoot a:hover, .sitefoot a:focus-visible { color: var(--accent); border-bottom-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -137,6 +159,10 @@ h1 .mark { color: var(--accent); }
     <p class="tagline">Remote management for anything that runs Orbis software, and the library underneath it.</p>
     <div id="downloads" aria-live="polite"></div>
     <a class="btn ghost" href="docs/">Docs</a>
+    <p class="sitefoot">
+      <a href="../OOPS/">The OOPS collection</a>
+      <a href="https://github.com/project-oops/Prosperous">Source on GitHub</a>
+    </p>
   </main>
 
 <script>
