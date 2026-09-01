@@ -49,7 +49,11 @@ fn listing_row(
         hit = Some(Hit::Tick);
     }
 
-    let side = if target_side { entry.there.as_ref() } else { entry.here.as_ref() };
+    let side = if target_side {
+        entry.there.as_ref()
+    } else {
+        entry.here.as_ref()
+    };
     let folder = target_side && entry.folder_there();
     if folder {
         // **Opened on a double click, like every file browser.** A single click used to open
