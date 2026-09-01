@@ -2109,15 +2109,19 @@ impl App {
         self.state.exporting = Some(crate::state::Exporting {
             name: format!(
                 "{target}-{}",
-                if held.autoloader { "autoloader" } else { "manager" }
+                if held.autoloader {
+                    "autoloader"
+                } else {
+                    "manager"
+                }
             ),
             preset,
             notes,
             disabled,
-            into: pros_core::recovery::baseline::path()
-                .map_or_else(|| "nowhere on this machine".to_owned(), |at| {
-                    at.display().to_string()
-                }),
+            into: pros_core::recovery::baseline::path().map_or_else(
+                || "nowhere on this machine".to_owned(),
+                |at| at.display().to_string(),
+            ),
             taken: pros_core::recovery::baseline::all()
                 .0
                 .into_iter()
@@ -2173,7 +2177,10 @@ impl App {
 
         ui.weak(format!("into {}", export.into));
         ui.add_space(4.0);
-        ui.label(format!("{} entries, in this order:", export.preset.entries.len()));
+        ui.label(format!(
+            "{} entries, in this order:",
+            export.preset.entries.len()
+        ));
         // Ordered as the preset orders them, not as they were read - for a manager's list those
         // differ by exactly the entry whose two positions had to be told apart, and showing the
         // read order here would hide that from the one person who could catch it.
@@ -2187,7 +2194,11 @@ impl App {
                 "{} disabled {} left out - a line the manager will not resolve is not part of \
                  what this target loads",
                 export.disabled,
-                if export.disabled == 1 { "line" } else { "lines" }
+                if export.disabled == 1 {
+                    "line"
+                } else {
+                    "lines"
+                }
             ));
         }
         if !export.notes.is_empty() {
@@ -5684,8 +5695,10 @@ impl App {
             .kept_lines()
             .map(String::as_str)
             .collect::<Vec<_>>()
-            .join("
-");
+            .join(
+                "
+",
+            );
         if text.is_empty() {
             ui.weak(if self.state.log_filter.trim().is_empty() {
                 if following {

@@ -1336,8 +1336,7 @@ mod baseline_tests {
     #[test]
     fn an_exported_entry_carries_the_reason_a_preset_already_gives_it() {
         let read = ["kstuff-lite".to_owned(), "ftpsrv".to_owned()];
-        let (preset, notes) =
-            baseline::from_list("mine", "a target", &read, super::Kind::Manager);
+        let (preset, notes) = baseline::from_list("mine", "a target", &read, super::Kind::Manager);
         assert_eq!(preset.name, "mine");
         for entry in &preset.entries {
             let already = baseline::about(&entry.name).expect("both are in a shipped preset");
@@ -1350,8 +1349,7 @@ mod baseline_tests {
     #[test]
     fn an_entry_nobody_explains_says_nobody_has() {
         let read = ["somebodys-own-payload".to_owned()];
-        let (preset, notes) =
-            baseline::from_list("mine", "a target", &read, super::Kind::Manager);
+        let (preset, notes) = baseline::from_list("mine", "a target", &read, super::Kind::Manager);
         assert!(preset.entries[0].why.contains("not written down"));
         assert_eq!(notes.len(), 1, "and it is said out loud: {notes:?}");
     }
@@ -1371,8 +1369,7 @@ mod baseline_tests {
             "ftpsrv".to_owned(),
             "elfldr".to_owned(),
         ];
-        let (preset, notes) =
-            baseline::from_list("mine", "a target", &read, super::Kind::Manager);
+        let (preset, notes) = baseline::from_list("mine", "a target", &read, super::Kind::Manager);
         let loader = preset
             .entries
             .iter()
@@ -1380,7 +1377,10 @@ mod baseline_tests {
             .expect("it was in the list");
         assert_eq!(loader.order, shipped.order, "the unobserved rank is kept");
         assert_eq!(loader.manager_order, Some(30), "the observed one is third");
-        assert!(!loader.autoloader, "and it still stays out of an autoloader's list");
+        assert!(
+            !loader.autoloader,
+            "and it still stays out of an autoloader's list"
+        );
         assert!(
             notes.iter().any(|note| note.contains("elfldr")),
             "said out loud: {notes:?}"
@@ -1390,7 +1390,11 @@ mod baseline_tests {
     /// **The list a target loads is the list that comes back**, in the same order.
     #[test]
     fn the_order_read_is_the_order_written() {
-        let read = ["ftpsrv".to_owned(), "klogsrv".to_owned(), "shsrv".to_owned()];
+        let read = [
+            "ftpsrv".to_owned(),
+            "klogsrv".to_owned(),
+            "shsrv".to_owned(),
+        ];
         let (preset, _) = baseline::from_list("mine", "a target", &read, super::Kind::Manager);
         let back = preset
             .in_order(super::Kind::Manager)

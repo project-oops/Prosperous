@@ -248,9 +248,7 @@ impl Offer {
             // **Here, not there.** Running sends the bytes on this machine; what the target
             // keeps under that name is not read and does not decide. The manager stores every
             // payload as a directory, so asking about the far side refused to run all of them.
-            Self::Run if entry.folder_here() => {
-                Some(format!("{name} is a folder on this machine"))
-            }
+            Self::Run if entry.folder_here() => Some(format!("{name} is a folder on this machine")),
             Self::Send if entry.here.is_none() => Some(format!("{name} is not on this machine")),
             Self::Fetch if entry.there.is_none() => Some(format!("{name} is not on the target")),
             Self::Download if entry.described.is_none() => {
@@ -294,6 +292,34 @@ impl Offer {
     }
 }
 
+/// Which row a file belongs in: the described payload it is a copy of, or itself.
+///
+/// **Matched the way every other comparison in this program matches a payload**, through
+/// [`pros_core::chain::Chain::position`]: a name matches when it is the whole entry, or when
+/// what follows it is a separator and then a version. That rule is not a convenience here - it
+/// is the one that already knows `kstuff` must not swallow `kstuff-lite_v1.09`, which is two
+/// payloads reported as one in the column that says what comes back after a reboot.
+///
+/// Both spellings of the description are tried, because either can be the one a side used: the
+/// filename it names, and the payload's own name, which is what a directory on the target is
+/// called.
+fn one_payload(described: &Manifest, name: &str) -> String {
+    for payload in described.payloads() {
+        let file = payload.filename.as_deref().unwrap_or(&payload.name);
+        if is_a_copy_of(name, file) || is_a_copy_of(name, &payload.name) {
+            return file.to_owned();
+        }
+    }
+    name.to_owned()
+}
+
+/// Whether `name` is that payload, allowing a version on the end.
+fn is_a_copy_of(name: &str, payload: &str) -> bool {
+    pros_core::chain::Chain::parse(name)
+        .position(payload)
+        .is_some()
+}
+
 /// A list of entries and what is selected in it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Listing {
@@ -309,12 +335,27 @@ pub(crate) struct Listing {
 impl Listing {
     /// Builds one from a tracked list, a local folder and a target listing.
     ///
+    /// # One payload is one row, whatever each side calls it
+    ///
     /// Matching is **by name, case-insensitively**: a list writing `ELFLDR.ELF` and a disk
     /// holding `elfldr.elf` are one thing, and showing them as two invites somebody to fetch
     /// what they already have.
     ///
     /// A described entry is keyed by its filename when it has one, because that is what both
-    /// sides would call it - its display name is often something else entirely.
+    /// sides would call it - its display name is often something else entirely. **The other two
+    /// sides are then matched to it by payload rather than by spelling**, because the three of
+    /// them routinely disagree:
+    ///
+    /// | | elfldr, on one real machine |
+    /// |---|---|
+    /// | the description | `elfldr-ps5.elf` |
+    /// | this disk | `elfldr_v0.25.elf` |
+    /// | the target | `elfldr`, a directory the manager keeps it in |
+    ///
+    /// Keyed by exact name that is **three rows for one payload**, and the row a person ticks
+    /// decides which of the three the toolbar acts on. Ticking the described one offered no
+    /// `run`, because the file on this disk was a different row - and said so, in a message
+    /// naming a file that was sitting in the folder it had just been told to look in.
     pub(crate) fn build(described: &Manifest, local: &[Item], remote: &[Item]) -> Self {
         /// The entry for a name, made if this is the first mention of it.
         ///
@@ -345,10 +386,10 @@ impl Listing {
             at(&mut by_key, file).described = Some(payload.clone());
         }
         for item in local {
-            at(&mut by_key, &item.name).here = Some(side(item));
+            at(&mut by_key, &one_payload(described, &item.name)).here = Some(side(item));
         }
         for item in remote {
-            at(&mut by_key, &item.name).there = Some(side(item));
+            at(&mut by_key, &one_payload(described, &item.name)).there = Some(side(item));
         }
 
         let mut entries: Vec<Entry> = by_key.into_values().collect();
@@ -594,6 +635,51 @@ mod tests {
         );
     }
 
+    /// **Three spellings of one payload are one row.**
+    ///
+    /// Measured on a real setup: the description says `elfldr-ps5.elf`, the disk holds
+    /// `elfldr_v0.25.elf`, and the target keeps a directory called `elfldr`. As three rows, the
+    /// one carrying the description had no local file - so `run` was refused for a payload that
+    /// was downloaded, with a message naming a file that was on the disk.
+    #[test]
+    fn one_payload_is_one_row_however_each_side_spells_it() {
+        let described =
+            Manifest::from_json(r#"[{ "name": "elfldr", "filename": "elfldr-ps5.elf" }]"#)
+                .expect("reads");
+        let mut listing =
+            Listing::build(&described, &[item("elfldr_v0.25.elf")], &[folder("elfldr")]);
+        assert_eq!(listing.entries.len(), 1, "{:?}", listing.entries);
+        let only = &listing.entries[0];
+        assert_eq!(only.name, "elfldr-ps5.elf", "keyed by what describes it");
+        assert!(only.here.is_some(), "the copy on this disk found it");
+        assert!(
+            only.there.is_some(),
+            "and so did the directory on the target"
+        );
+
+        // And the row the payload table ticks - keyed by the description's filename - is the
+        // row that has the local file, which is what `run` needs.
+        listing.toggle("elfldr-ps5.elf");
+        assert!(
+            listing.offers(Offer::Run).is_ok(),
+            "{:?}",
+            listing.offers(Offer::Run)
+        );
+    }
+
+    /// **A name that merely starts the same is a different payload.**
+    ///
+    /// `kstuff` and `kstuff-lite` are two kernel patches and a chain names one of them. Merging
+    /// them here would put one payload's local copy under the other's description, which is the
+    /// same wrong answer this rule was written for in the boot list.
+    #[test]
+    fn a_longer_name_is_not_a_version_of_a_shorter_one() {
+        let described = Manifest::from_json(r#"[{ "name": "kstuff", "filename": "kstuff.elf" }]"#)
+            .expect("reads");
+        let listing = Listing::build(&described, &[item("kstuff-lite_v1.10.elf")], &[]);
+        assert_eq!(listing.entries.len(), 2, "{:?}", listing.entries);
+    }
+
     /// A folder is known per side, because every action reads one side and writes the other.
     #[test]
     fn a_folder_is_known_on_the_side_that_has_it() {
@@ -604,7 +690,10 @@ mod tests {
             .find(|entry| entry.name == "games")
             .expect("there");
         assert!(games.folder_there(), "it is a directory on the target");
-        assert!(!games.folder_here(), "and this machine does not have it at all");
+        assert!(
+            !games.folder_here(),
+            "and this machine does not have it at all"
+        );
     }
 
     /// **A file here and a directory there can still be run.**
