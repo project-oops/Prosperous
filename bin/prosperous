@@ -134,7 +134,10 @@ usage() {
 
 case "${1:-check}" in
     check) check ;;
-    build) build ;;
+    # `shift` so the verb itself is not handed to cargo. Without the passthrough, a release
+    # workflow asking for `--target x86_64-unknown-linux-gnu` built the host triple instead and
+    # the archive step then looked in a directory that was never written.
+    build) shift; build "$@" ;;
     test)  test_ ;;
     lint)  lint ;;
     fmt)   fmt ;;

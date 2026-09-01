@@ -36,8 +36,17 @@ use pros_core::manifest::{Manifest, Payload};
 use crate::state::Section;
 
 /// One side's knowledge of a thing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Side {
+    /// What **this** side calls it.
+    ///
+    /// # Why the row's name is not enough
+    ///
+    /// A row is one payload and the sides disagree about its spelling: a description saying
+    /// `elfldr-ps5.elf`, a disk holding `elfldr_v0.25.elf`, a target keeping a directory called
+    /// `elfldr`. The row is named after the description, so a path built from the row's name
+    /// asks a side for a file it does not have under that name.
+    pub name: String,
     /// How big, when the listing said.
     pub size: Option<u64>,
     /// Whether it is something to look inside rather than to copy.
@@ -97,13 +106,9 @@ impl Entry {
     /// running and sending read the file on this machine and refused when the **target** held a
     /// directory of that name - which is how the payload manager stores every payload it has,
     /// so `run` was refused for all of them on the strength of a side it never reads.
-    pub(crate) fn folder_here(&self) -> bool {
-        self.here.is_some_and(|side| side.folder)
-    }
-
     /// Whether the copy on the target is a folder.
     pub(crate) fn folder_there(&self) -> bool {
-        self.there.is_some_and(|side| side.folder)
+        self.there.as_ref().is_some_and(|side| side.folder)
     }
 
     /// Whether a download of this could be checked when it arrived.
@@ -215,8 +220,9 @@ impl Offer {
     pub(crate) const fn describes(self) -> &'static str {
         match self {
             Self::Run => {
-                "send the selected ELF to the loader and start it now - it lives in memory \
-                 until the next restart, and nothing is written to the target's disk"
+                "start the selected payload. A copy on this machine is sent to the loader and \
+                 run from memory; one that is only on the target is started where it already \
+                 is, through the shell"
             }
             Self::Send => "copy the selected items onto the target's disk",
             Self::Fetch => "copy the selected items to this machine",
@@ -241,14 +247,6 @@ impl Offer {
     fn refuses(self, entry: &Entry) -> Option<String> {
         let name = &entry.name;
         match self {
-            // Running sends the bytes from here, so it needs them here.
-            Self::Run if entry.here.is_none() => Some(format!(
-                "{name} is not on this machine - download it, then it can be run"
-            )),
-            // **Here, not there.** Running sends the bytes on this machine; what the target
-            // keeps under that name is not read and does not decide. The manager stores every
-            // payload as a directory, so asking about the far side refused to run all of them.
-            Self::Run if entry.folder_here() => Some(format!("{name} is a folder on this machine")),
             Self::Send if entry.here.is_none() => Some(format!("{name} is not on this machine")),
             Self::Fetch if entry.there.is_none() => Some(format!("{name} is not on the target")),
             Self::Download if entry.described.is_none() => {
@@ -374,6 +372,7 @@ impl Listing {
         /// What a listing entry looks like from one side.
         fn side(item: &Item) -> Side {
             Side {
+                name: item.name.clone(),
                 size: item.size,
                 folder: item.kind == Kind::Folder || item.kind == Kind::Title,
             }
@@ -432,6 +431,16 @@ impl Listing {
         let picked = self.picked();
         if picked.is_empty() {
             return Err("nothing is selected".to_owned());
+        }
+        // **One, because a run starts a payload.** Which side the selected row is on decides
+        // *how* it runs - the copy here goes to the loader, a copy that is only on the target
+        // is started where it already is - and neither is a thing to do to five rows at once.
+        // This is the only condition that greys it.
+        if offer == Offer::Run && picked.len() != 1 {
+            return Err(format!(
+                "{} are selected - run starts one payload, so select one",
+                picked.len()
+            ));
         }
         for entry in picked {
             if let Some(why) = offer.refuses(entry) {
@@ -691,7 +700,7 @@ mod tests {
             .expect("there");
         assert!(games.folder_there(), "it is a directory on the target");
         assert!(
-            !games.folder_here(),
+            games.here.is_none(),
             "and this machine does not have it at all"
         );
     }

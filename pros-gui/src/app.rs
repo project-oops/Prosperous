@@ -49,7 +49,7 @@ fn listing_row(
         hit = Some(Hit::Tick);
     }
 
-    let side = if target_side { entry.there } else { entry.here };
+    let side = if target_side { entry.there.as_ref() } else { entry.here.as_ref() };
     let folder = target_side && entry.folder_there();
     if folder {
         // **Opened on a double click, like every file browser.** A single click used to open
@@ -152,7 +152,7 @@ enum Hit {
 }
 
 /// What one side knows, for the merged view's columns.
-fn side_cell(ui: &mut egui::Ui, side: Option<crate::listing::Side>) {
+fn side_cell(ui: &mut egui::Ui, side: Option<&crate::listing::Side>) {
     match side {
         Some(crate::listing::Side { folder: true, .. }) => {
             ui.weak("dir");
@@ -281,6 +281,32 @@ struct Shown<'a> {
     chosen: &'a std::collections::BTreeSet<String>,
     /// Whether anything can be started right now.
     idle: bool,
+}
+
+/// Where on the target a payload that is already there can be started from.
+///
+/// # Why a directory is not the answer on its own
+///
+/// The payload manager keeps each payload in a directory of its own. Measured on a target:
+/// `/data/pldmgr/payloads/pldmgr/` holds `pldmgr_v0.5.1.elf` and a small `.json` beside it. So a
+/// listing of that folder shows a **directory**, and the shell cannot start one.
+///
+/// The description already says what the file inside is called, and that is where the name comes
+/// from - no extra listing, and no guess. Without a description the folder path is used as it
+/// stands, so the target refuses in its own words rather than this inventing a filename and
+/// then reporting the target's confusion about it.
+fn on_target(remote: &str, entry: &crate::listing::Entry, there: &crate::listing::Side) -> String {
+    if !there.folder {
+        return format!("{remote}/{}", there.name);
+    }
+    match entry
+        .described
+        .as_ref()
+        .and_then(|payload| payload.filename.as_deref())
+    {
+        Some(file) => format!("{remote}/{}/{file}", there.name),
+        None => format!("{remote}/{}", there.name),
+    }
 }
 
 /// What the payload table was asked to do, collected while it draws.
@@ -1297,27 +1323,42 @@ impl App {
         let mut asked = 0_usize;
         for entry in picked {
             let job = match offer {
-                // The loader takes the bytes from here and runs them; nothing is written to
-                // the target's disk, which is what makes this different from sending.
-                Offer::Run => match local.join(&entry.name) {
-                    path if path.is_file() => {
-                        Some(Job::Send(target.clone(), entry.name.clone(), path))
-                    }
-                    _ => None,
+                // **Here first, then there.** A copy on this machine goes to the loader,
+                // which takes the bytes and runs them without writing anything to the target's
+                // disk. A payload that is only on the target is started where it already is,
+                // through the shell - a different door, and the only one left when there is no
+                // local file to send.
+                Offer::Run => match (entry.here.as_ref(), entry.there.as_ref()) {
+                    (Some(here), _) => Some(Job::Send(
+                        target.clone(),
+                        here.name.clone(),
+                        local.join(&here.name),
+                    )),
+                    (None, Some(there)) => Some(Job::RunThere(
+                        target.clone(),
+                        on_target(&remote, &entry, there),
+                    )),
+                    (None, None) => None,
                 },
                 Offer::Send => {
-                    let from = local.join(&entry.name);
-                    let to = format!("{remote}/{}", entry.name);
-                    Some(if entry.here.is_some_and(|side| side.folder) {
+                    let Some(here) = entry.here.as_ref() else {
+                        continue;
+                    };
+                    let from = local.join(&here.name);
+                    let to = format!("{remote}/{}", here.name);
+                    Some(if here.folder {
                         Job::Restore(target.clone(), from, to, false)
                     } else {
                         Job::Push(target.clone(), from, to)
                     })
                 }
                 Offer::Fetch => {
-                    let from = format!("{remote}/{}", entry.name);
-                    let into = local.join(&entry.name);
-                    Some(if entry.there.is_some_and(|side| side.folder) {
+                    let Some(there) = entry.there.as_ref() else {
+                        continue;
+                    };
+                    let from = format!("{remote}/{}", there.name);
+                    let into = local.join(&there.name);
+                    Some(if there.folder {
                         Job::Backup(target.clone(), from, into)
                     } else {
                         Job::Pull(target.clone(), from, into)
@@ -3709,8 +3750,8 @@ impl App {
                             // **A column per side, each saying what that side has.** A tick
                             // in both is a thing in sync; one side filled and the other empty
                             // is the difference somebody opened this to find.
-                            side_cell(ui, entry.here);
-                            side_cell(ui, entry.there);
+                            side_cell(ui, entry.here.as_ref());
+                            side_cell(ui, entry.there.as_ref());
                             let (word, colour) = standing_of(entry);
                             ui.colored_label(colour, word);
                             ui.end_row();
@@ -3857,8 +3898,10 @@ impl App {
                 self.read_manifest();
             }
             if ui
-                .button("run a file...")
-                .on_hover_text("choose an ELF anywhere on this machine and run it")
+                .button("run from file...")
+                .on_hover_text(
+                    "choose an ELF and run it - opens in this machine's payload folder, and                      will go anywhere else on the disk",
+                )
                 .clicked()
             {
                 // **Made before the dialog opens, not waited for.** `rfd` ignores a directory
