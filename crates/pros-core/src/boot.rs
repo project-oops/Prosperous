@@ -242,7 +242,7 @@ impl Boot {
             was: self.was.clone(),
             now,
             what: format!("{} entries in the startup list", self.steps.len()),
-            into: crate::chain::PATH,
+            into: crate::chain::PATH.to_owned(),
         })
     }
 }

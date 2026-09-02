@@ -355,6 +355,18 @@ mod versioned_names {
     }
 }
 
+/// The placeholder a chain writes when a list can be on any removable device.
+pub const DEVICE: &str = "{device}";
+
+/// The placeholder for a USB stick, and only a stick.
+///
+/// **Not the same set, and the difference is measured.** The autoloader composes its search
+/// from `USB_BASES[]` - `/mnt/usb0` through `/mnt/usb7` - and nothing else; `/mnt/ext0` and
+/// `/mnt/ext1` are not in it. A chain that said `{device}` there would put two paths on the
+/// screen that the autoloader will never read, which is the shape of every wrong answer this
+/// project keeps finding: a plausible path somebody will believe.
+pub const USB: &str = "{usb}";
+
 /// A startup list a target may have, and what may be done with it.
 ///
 /// # Why there is more than one, and why they are not interchangeable
@@ -366,12 +378,12 @@ mod versioned_names {
 ///
 /// They are audited by different rules. The loader is **required** in an autoloader's list and
 /// **impossible** in the manager's, so which list is being looked at is not a detail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Held {
     /// What to call it.
-    pub label: &'static str,
+    pub label: String,
     /// Where it is on the target.
-    pub path: &'static str,
+    pub path: String,
     /// Whether this program will write to it.
     ///
     /// **Only the internal one.** A list on removable storage is somebody's way back in when
@@ -382,46 +394,96 @@ pub struct Held {
     pub autoloader: bool,
 }
 
-/// Every startup list this program knows how to look at.
+/// Every startup list the loaded chains know about.
 ///
-/// The manager's first, because it is the one that can be edited and the one most people mean.
-pub const LISTS: &[Held] = &[
-    Held {
-        label: "manager (internal)",
-        path: PATH,
-        editable: true,
-        autoloader: false,
-    },
-    Held {
-        label: "autoloader (internal)",
-        path: "/data/ps5_autoloader/autoload.txt",
-        editable: false,
-        autoloader: true,
-    },
-    Held {
-        label: "autoloader (usb0)",
-        path: "/mnt/usb0/ps5_autoloader/autoload.txt",
-        editable: false,
-        autoloader: true,
-    },
-    Held {
-        label: "autoloader (usb1)",
-        path: "/mnt/usb1/ps5_autoloader/autoload.txt",
-        editable: false,
-        autoloader: true,
-    },
-];
+/// # Why this is read rather than declared
+///
+/// It was a constant: four paths, chosen by whoever wrote them, unchangeable by the person
+/// holding the console. Two of them were disputed and there was no way to settle the dispute
+/// except by editing this file and rebuilding - which is the wrong shape for a fact about
+/// somebody else's program that somebody else may change next month.
+///
+/// So a chain says where its lists are, and this is the union of what the loaded chains say.
+/// A path is on this list because a file said so.
+///
+/// # Reading this costs a file read
+///
+/// It parses the chains, including somebody's own file. Call it once and keep the answer; the
+/// window does, because doing it per frame would read a file from disk to draw a menu.
+#[must_use]
+pub fn lists() -> Vec<Held> {
+    let mut found: Vec<Held> = Vec::new();
+    for preset in crate::recovery::baseline::all().0 {
+        for one in preset.lists {
+            for at in &one.at {
+                for (path, label) in spread(at, &one.label) {
+                    // **By path, because two chains naming the same file mean one list.** The
+                    // manager's own list is in every chain that runs the manager, and a chooser
+                    // offering it three times is three ways to open one file.
+                    if found.iter().any(|kept| kept.path == path) {
+                        continue;
+                    }
+                    found.push(Held {
+                        label,
+                        path,
+                        editable: one.editable,
+                        autoloader: one.autoloader,
+                    });
+                }
+            }
+        }
+    }
+    // **Never nothing.** A chains file somebody has emptied, or one that failed to parse, would
+    // otherwise leave the screen with no list to look at and no way to say why. The manager's
+    // path is the one this project has measured, so it is what remains.
+    if found.is_empty() {
+        found.push(Held {
+            label: "manager (internal)".to_owned(),
+            path: PATH.to_owned(),
+            editable: true,
+            autoloader: false,
+        });
+    }
+    found
+}
+
+/// One declared place, as the paths it actually means.
+///
+/// A path naming [`DEVICE`] is every removable device a target can have; anything else is
+/// itself. The label gains the device's name, so eight sticks read as eight entries rather than
+/// as one repeated.
+fn spread(at: &str, label: &str) -> Vec<(String, String)> {
+    let (mark, sticks_only) = if at.contains(USB) {
+        (USB, true)
+    } else if at.contains(DEVICE) {
+        (DEVICE, false)
+    } else {
+        return vec![(at.to_owned(), label.to_owned())];
+    };
+    crate::places::Device::all()
+        .into_iter()
+        .filter(|device| !sticks_only || matches!(device, crate::places::Device::Usb(_)))
+        .filter_map(|device| {
+            let root = device.root()?;
+            Some((
+                at.replace(mark, &root),
+                format!("{label} ({})", device.label()),
+            ))
+        })
+        .collect()
+}
 
 #[cfg(test)]
 mod lists {
-    use super::{LISTS, PATH};
+    use super::{DEVICE, PATH, USB, lists};
 
     /// **Only the internal list is written to.** A list on a stick is the way back in when the
-    /// internal setup is broken, and a tool that can damage the recovery path is worse than
-    /// one that only reads it.
+    /// internal setup is broken, and a tool that can damage the recovery path is worse than one
+    /// that only reads it. `editable` defaults to off, so this holds for a chain somebody adds
+    /// without having read about the field.
     #[test]
     fn nothing_on_removable_storage_is_editable() {
-        for held in LISTS {
+        for held in lists() {
             if held.path.starts_with("/mnt/") {
                 assert!(!held.editable, "{} would be written to", held.path);
             }
@@ -431,23 +493,77 @@ mod lists {
     /// The manager's own list is the editable one, and it is the path the manager compiles in.
     #[test]
     fn the_managers_list_is_the_one_that_can_be_edited() {
-        let editable: Vec<&str> = LISTS
-            .iter()
+        let editable: Vec<String> = lists()
+            .into_iter()
             .filter(|held| held.editable)
             .map(|held| held.path)
             .collect();
-        assert_eq!(editable, [PATH]);
+        assert_eq!(editable, [PATH.to_owned()]);
     }
 
     /// **Which kind each is, because the rules invert.** The loader is required in an
     /// autoloader's list and impossible in the manager's.
     #[test]
     fn each_list_says_which_kind_it_is() {
-        let manager = LISTS.iter().find(|held| !held.autoloader).expect("one");
+        let all = lists();
+        let manager = all.iter().find(|held| !held.autoloader).expect("one");
         assert_eq!(manager.path, PATH);
         assert!(
-            LISTS.iter().filter(|held| held.autoloader).count() >= 2,
+            all.iter().filter(|held| held.autoloader).count() >= 2,
             "an autoloader looks in more than one place"
         );
+    }
+
+    /// **A device placeholder becomes every device, and never reaches the screen as itself.**
+    ///
+    /// A path still carrying `{device}` would be offered as a directory nothing can read, and
+    /// the failure would look like a target that has no such file rather than like a chain this
+    /// program failed to expand.
+    #[test]
+    fn a_removable_list_is_offered_once_per_device() {
+        let all = lists();
+        assert!(
+            !all.iter()
+                .any(|held| held.path.contains(DEVICE) || held.path.contains(USB)),
+            "a placeholder reached the chooser: {all:?}"
+        );
+        for device in ["/mnt/usb0", "/mnt/usb7"] {
+            assert!(
+                all.iter().any(|held| held.path.starts_with(device)),
+                "{device} has no list offered"
+            );
+        }
+    }
+
+    /// **A stick placeholder does not become an external drive.**
+    ///
+    /// The autoloader searches `USB_BASES[]` - eight sticks - and `/data`. `/mnt/ext0` is not
+    /// in that list, so a chain writing `{usb}` must not produce one: a path on screen that
+    /// nothing will ever read is worse than no path, because somebody will put a file there.
+    #[test]
+    fn a_stick_placeholder_stays_on_sticks() {
+        let stuck: Vec<String> = lists()
+            .into_iter()
+            .filter(|held| held.autoloader)
+            .map(|held| held.path)
+            .collect();
+        assert!(
+            !stuck.iter().any(|path| path.starts_with("/mnt/ext")),
+            "an external drive was offered an autoloader list: {stuck:?}"
+        );
+        assert!(stuck.iter().any(|path| path.starts_with("/mnt/usb7")));
+    }
+
+    /// **One file is one entry**, however many chains name it. The manager's own list is in
+    /// every chain that runs the manager, and three ways to open one file is a chooser that
+    /// makes somebody wonder which one they are looking at.
+    #[test]
+    fn a_path_two_chains_share_is_offered_once() {
+        let all = lists();
+        let mut paths: Vec<&str> = all.iter().map(|held| held.path.as_str()).collect();
+        paths.sort_unstable();
+        let mut once = paths.clone();
+        once.dedup();
+        assert_eq!(paths, once, "a path is offered twice");
     }
 }

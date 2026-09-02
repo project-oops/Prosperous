@@ -279,12 +279,6 @@ impl Offer {
             Self::DeleteThere if entry.there.is_none() => {
                 Some(format!("{name} is not on the target"))
             }
-            // A directory has to be empty for the server to remove it, and emptying one is a
-            // walk that deletes things nobody listed. Refused here so the reason arrives
-            // before the press rather than as a server's refusal after it.
-            Self::DeleteThere if entry.folder_there() => Some(format!(
-                "{name} is a folder - empty it first, a file at a time"
-            )),
             _ => None,
         }
     }
@@ -725,9 +719,11 @@ mod tests {
             listing.offers(Offer::Run).is_ok(),
             "the local copy is a file, and that is the one that gets sent"
         );
+        // Deleting it on the target is offered too, and always was the harder question: a
+        // directory is removed by a guarded walk in `pros_core::remove`, not by refusing.
         assert!(
-            listing.offers(Offer::DeleteThere).is_err(),
-            "deleting on the target still reads the target's side, where it is a directory"
+            listing.offers(Offer::DeleteThere).is_ok(),
+            "a directory on the target is removed by walking it, not refused"
         );
     }
 }

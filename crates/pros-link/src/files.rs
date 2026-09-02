@@ -239,7 +239,7 @@ impl Session {
     pub fn delete_file(&mut self, path: &str) -> Result<()> {
         self.send(&format!("DELE {path}"))?;
         let reply = self.reply("deleting a file")?;
-        if matches!(reply.code, 250 | 200) {
+        if succeeded(reply.code) {
             return Ok(());
         }
         Err(Error::Rejected {
@@ -255,8 +255,9 @@ impl Session {
     /// listed - which is the same shape as the backup that climbed out of its own directory,
     /// with the consequences pointing the other way.
     ///
-    /// So the server's refusal is passed on as it stands. Somebody who means to remove a full
-    /// directory can empty it a file at a time, seeing each one.
+    /// So the server's refusal is passed on as it stands, and the walk lives a level up in
+    /// `pros_core::remove`, where it can be tested against a pretend target and where its
+    /// guards sit beside the backup's.
     ///
     /// # Errors
     ///
@@ -264,7 +265,7 @@ impl Session {
     pub fn remove_directory(&mut self, path: &str) -> Result<()> {
         self.send(&format!("RMD {path}"))?;
         let reply = self.reply("removing a directory")?;
-        if matches!(reply.code, 250 | 200) {
+        if succeeded(reply.code) {
             return Ok(());
         }
         Err(Error::Rejected {
@@ -377,6 +378,25 @@ struct Reply {
     code: u16,
     /// Everything the server said, including any continuation lines.
     text: String,
+}
+
+/// Whether a reply code means the command worked.
+///
+/// # Why the whole 2xx family and not a list
+///
+/// It was `250 | 200`, which is what the standard suggests for `DELE` and `RMD` - and this
+/// target answers **`226 File deleted`**. Measured on a console on 2026-09-02: a hundred and
+/// sixty-two files were deleted, and every one of them was reported as *the target refused*,
+/// with the server's own word `deleted` quoted inside the refusal. The directories holding them
+/// were then left alone, because nothing believed their contents had gone.
+///
+/// That is this project's own defect turned inside out: an outcome reported as failure that
+/// worked. A list of codes is a guess about a server somebody else wrote, and the next one will
+/// pick a different member of the family. **2xx is the family**, defined by the protocol as
+/// completion, so that is what is read - and anything else still carries the server's own words
+/// back rather than being interpreted here.
+const fn succeeded(code: u16) -> bool {
+    code >= 200 && code < 300
 }
 
 /// Lists a directory over a connection opened for the purpose.
@@ -544,7 +564,32 @@ fn split_columns(line: &str, count: usize) -> Option<(Vec<&str>, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, parse_entry, port_from_passive};
+    use super::{Kind, parse_entry, port_from_passive, succeeded};
+
+    /// **`226 File deleted` is a deletion that happened.**
+    ///
+    /// Measured on a target on 2026-09-02. `DELE` was matched against `250 | 200`, so a hundred
+    /// and sixty-two files that were deleted came back as refusals - quoting, inside the word
+    /// *refused*, the server saying `deleted`. The directories holding them were then left,
+    /// because nothing believed they had been emptied.
+    #[test]
+    fn a_completion_code_this_target_uses_is_read_as_success() {
+        for code in [200, 226, 250] {
+            assert!(succeeded(code), "{code} means it worked");
+        }
+    }
+
+    /// **Anything outside the completion family is not success**, whatever it says.
+    ///
+    /// The fix for the above is not "be generous": a `550` carrying the word *deleted* in its
+    /// text is still a refusal, and reading the text rather than the code is how the opposite
+    /// mistake gets made.
+    #[test]
+    fn a_refusal_is_still_a_refusal() {
+        for code in [110, 150, 331, 425, 500, 550, 553] {
+            assert!(!succeeded(code), "{code} is not a completion");
+        }
+    }
 
     /// The two numbers that matter are the last two, and they combine as a pair of bytes.
     #[test]

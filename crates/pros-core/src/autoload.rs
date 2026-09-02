@@ -128,7 +128,7 @@ impl Settings {
             was: self.text.clone(),
             now: lines.join("\n") + "\n",
             what: format!("{key} = {value}"),
-            into: CONFIG,
+            into: CONFIG.to_owned(),
         })
     }
 }
@@ -150,7 +150,10 @@ pub struct Change {
     ///
     /// **Carried with the change**, because there are now two editable files here and a diff
     /// that did not say which one it belonged to could be confirmed against the wrong one.
-    pub into: &'static str,
+    ///
+    /// Owned: a list's path comes from the chain that declares it, read from a file, rather
+    /// than from a constant in this program.
+    pub into: String,
 }
 
 impl Change {
@@ -339,7 +342,7 @@ mod diffing {
             what: "the startup list".to_owned(),
             was: was.to_owned(),
             now: now.to_owned(),
-            into: "/data/pldmgr/autoload.txt",
+            into: "/data/pldmgr/autoload.txt".to_owned(),
         }
     }
 
@@ -514,7 +517,7 @@ mod showing {
             what: "the startup list".to_owned(),
             was: was.to_owned(),
             now: now.to_owned(),
-            into: "/data/pldmgr/autoload.txt",
+            into: "/data/pldmgr/autoload.txt".to_owned(),
         }
     }
 

@@ -74,7 +74,14 @@ pub enum Step {
         /// Which payload.
         payload: String,
         /// The directory it lands in.
-        to: &'static str,
+        ///
+        /// **Not a constant, because it depends on the list.** A payload named in an
+        /// autoloader's list is resolved against that list's own directory, so deploying to a
+        /// stick has to put the files on the stick. It was `/data/pldmgr/payloads` whatever was
+        /// being deployed, which wrote a correct list to a stick naming files that were never
+        /// there - a chain that comes up and loads nothing, from the feature whose job is
+        /// producing one that comes up.
+        to: String,
     },
     /// Change one line of the startup list.
     ///
@@ -89,7 +96,10 @@ pub enum Step {
     /// throwing away, which is the least useful way to look at it.
     Rebuild {
         /// Which list, in full.
-        into: &'static str,
+        ///
+        /// Owned, because a list's path is read from the chain that declares it rather than
+        /// written into this program. A plan outlives the chooser it was built from.
+        into: String,
         /// Every entry, in the order they will run.
         entries: Vec<String>,
     },
@@ -376,6 +386,14 @@ pub struct Known<'a> {
     pub chain: Option<&'a Chain>,
     /// Which kind of list that is - the rules invert between them.
     pub kind: Kind,
+    /// Where that list is, when the caller is looking at one.
+    ///
+    /// **Needed because it decides where payloads go.** An autoloader resolves an entry against
+    /// the directory its own config is in, so *which list* and *where the files must land* are
+    /// one question. `None` is a caller that is not looking at a particular list, and then the
+    /// manager's directory is the answer, because that is the one place resolved by scan rather
+    /// than by relative path.
+    pub list: Option<&'a str>,
     /// The chain this target is meant to be running.
     ///
     /// **What somebody decided, not what this program knows about.** It decides which absences
@@ -387,6 +405,25 @@ pub struct Known<'a> {
 }
 
 impl Known<'_> {
+    /// The directory a payload has to be in for this list to resolve it.
+    ///
+    /// # Two different mechanisms, not two directories
+    ///
+    /// The payload manager **scans**: `SCAN_DIRS` in its own header is `/data/pldmgr` and
+    /// `/mnt/usb0..usb7/pldmgr`, and it finds a payload wherever among those it sits. So its own
+    /// list resolves an entry by looking, and the internal payload directory is the answer.
+    ///
+    /// The autoloader **joins**: `snprintf(full_path, ..., "%s%s", config_dir, line)`, so an
+    /// entry that is not an absolute path is resolved against the directory holding
+    /// `autoload.txt` and nowhere else. Its payloads therefore live beside its list, on whatever
+    /// device that list is on.
+    fn payloads_go(&self) -> String {
+        match (self.kind, self.list) {
+            (Kind::Autoloader, Some(list)) => beside(list),
+            _ => INTERNAL.to_owned(),
+        }
+    }
+
     /// Whether a payload with this name is already on this machine.
     fn is_here(&self, service: &str) -> bool {
         self.staged.iter().any(|name| named_as(name, service))
@@ -526,10 +563,18 @@ fn not_looked_yet(service: &str) -> String {
 ///    because it is the slowest, the only one that produces no digest to check, and the one
 ///    that leans on a USB stick that is somebody's way back in when everything else is broken.
 fn get_it_there(what: &Known<'_>, service: &str) -> Route {
+    get_it_there_into(what, service, &what.payloads_go())
+}
+
+/// As [`get_it_there`], for a list other than the one the findings are about.
+///
+/// Setting a target up from nothing names the list being written, which is not necessarily the
+/// one the screen was looking at when the button was pressed.
+fn get_it_there_into(what: &Known<'_>, service: &str, to: &str) -> Route {
     let send = || Move {
         step: Step::Send {
             payload: service.to_owned(),
-            to: INTERNAL,
+            to: to.to_owned(),
         },
         already: false,
     };
@@ -660,6 +705,18 @@ fn will_be_called(what: &Known<'_>, service: &str) -> Option<String> {
         .and_then(|one| one.filename.clone())
 }
 
+/// The directory holding a file.
+///
+/// A list path with its last segment removed, and no trailing slash - `/mnt/usb0/ps5_autoloader`
+/// from `/mnt/usb0/ps5_autoloader/autoload.txt`. A path with no separator has no directory to
+/// speak of, and the manager's own is the answer that cannot be wrong.
+fn beside(path: &str) -> String {
+    match path.rfind('/') {
+        Some(0) | None => INTERNAL.to_owned(),
+        Some(at) => path[..at].to_owned(),
+    }
+}
+
 /// A plan that sets a target up from nothing, in the recommended order.
 ///
 /// # What this is for
@@ -687,13 +744,19 @@ fn will_be_called(what: &Known<'_>, service: &str) -> Option<String> {
 #[must_use]
 pub fn provision(
     what: &Known<'_>,
-    into: &'static str,
+    into: &str,
     kind: Kind,
     preset: &baseline::Preset,
 ) -> (Plan, Vec<String>) {
     let mut moves: Vec<Move> = Vec::new();
     let mut entries: Vec<String> = Vec::new();
     let mut left_out: Vec<String> = Vec::new();
+    // **Where this list will resolve its entries from.** Worked out from the list being
+    // written rather than from whatever the screen happened to be showing.
+    let to = match kind {
+        Kind::Autoloader => beside(into),
+        Kind::Manager => INTERNAL.to_owned(),
+    };
 
     for placed in preset.in_order(kind) {
         // The loader is required in an autoloader's list and impossible in the manager's own.
@@ -702,7 +765,7 @@ pub fn provision(
         if !crate::recovery::can_work_in(&placed.name, kind, what.known, what.loader_is_up()) {
             continue;
         }
-        match get_it_there(what, &placed.name) {
+        match get_it_there_into(what, &placed.name, &to) {
             Route::Steps(steps) => {
                 for one in steps {
                     if !moves.iter().any(|kept| kept.step == one.step) {
@@ -730,7 +793,7 @@ pub fn provision(
 
     moves.push(Move {
         step: Step::Rebuild {
-            into,
+            into: into.to_owned(),
             entries: entries.clone(),
         },
         already: false,
@@ -738,8 +801,8 @@ pub fn provision(
     (
         Plan {
             because: format!(
-                "a working chain from nothing: {} payloads in the recommended order, and {into} \
-                 replaced with it",
+                "a working chain from nothing: {} payloads into {to}, in the recommended order, \
+                 and {into} replaced with the list that names them",
                 entries.len()
             ),
             moves,
@@ -1050,7 +1113,7 @@ fn start_it_now(what: &Known<'_>, service: &str) -> Remedy {
 #[cfg(test)]
 mod tests {
     use super::{
-        Fix, Gravity, Health, Known, Move, Step, Verdict, examine, health, named_as,
+        Fix, Gravity, Health, Known, Move, Step, Verdict, examine, health, named_as, provision,
         put_it_in_the_list,
     };
     use crate::catalogue::Catalogue;
@@ -1090,6 +1153,17 @@ mod tests {
         }
     }
 
+    /// Every payload the shipped chain names, described well enough to be planned for.
+    fn every_payload_described() -> Manifest {
+        Manifest::new(
+            crate::recovery::baseline::first()
+                .entries
+                .iter()
+                .map(|one| described(&one.name, Some("https://example/whatever")))
+                .collect(),
+        )
+    }
+
     /// A description that never says what file it arrives as.
     fn unnameable(name: &str) -> Payload {
         Payload {
@@ -1124,6 +1198,7 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -1153,6 +1228,7 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -1185,6 +1261,7 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -1215,6 +1292,7 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -1251,6 +1329,7 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &catalogue,
         };
@@ -1274,6 +1353,7 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &catalogue,
         };
@@ -1295,6 +1375,7 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &catalogue,
         };
@@ -1329,6 +1410,7 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &catalogue,
         };
@@ -1354,7 +1436,7 @@ mod tests {
         let send = Move {
             step: Step::Send {
                 payload: "klogsrv".to_owned(),
-                to: crate::payloads::INTERNAL,
+                to: crate::payloads::INTERNAL.to_owned(),
             },
             already: false,
         };
@@ -1410,7 +1492,7 @@ mod tests {
                 Move {
                     step: Step::Send {
                         payload: "a".to_owned(),
-                        to: crate::payloads::INTERNAL,
+                        to: crate::payloads::INTERNAL.to_owned(),
                     },
                     already: false,
                 },
@@ -1446,6 +1528,7 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -1483,6 +1566,7 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -1518,6 +1602,7 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -1546,11 +1631,12 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Autoloader,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
 
-        let (plan, _) = super::provision(
+        let (plan, _) = provision(
             &what,
             "/mnt/usb0/ps5_autoloader/autoload.txt",
             Kind::Autoloader,
@@ -1597,11 +1683,12 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
 
-        let (plan, _) = super::provision(
+        let (plan, _) = provision(
             &what,
             crate::chain::PATH,
             Kind::Manager,
@@ -1627,7 +1714,7 @@ mod tests {
             report: Some(&down),
             ..what
         };
-        let (plan, _) = super::provision(
+        let (plan, _) = provision(
             &quiet,
             crate::chain::PATH,
             Kind::Manager,
@@ -1656,11 +1743,12 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Autoloader,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
 
-        let (plan, left_out) = super::provision(
+        let (plan, left_out) = provision(
             &what,
             crate::chain::PATH,
             Kind::Autoloader,
@@ -1706,6 +1794,7 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -1735,6 +1824,7 @@ mod tests {
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -1774,6 +1864,7 @@ shsrv_v0.20.elf
             described: &manifest,
             chain: Some(&chain),
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -1805,6 +1896,7 @@ shsrv_v0.20.elf
             described: &manifest,
             chain: Some(&chain),
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -1844,6 +1936,7 @@ shsrv_v0.20.elf
             described: &manifest,
             chain: Some(&chain),
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -1882,6 +1975,7 @@ shsrv_v0.20.elf
             described: &manifest,
             chain: Some(&chain),
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -1917,6 +2011,7 @@ shsrv_v0.20.elf
             described: &manifest,
             chain: Some(&chain),
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -2010,11 +2105,12 @@ shsrv_v0.20.elf
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
 
-        let (plan, _) = super::provision(
+        let (plan, _) = provision(
             &what,
             crate::chain::PATH,
             Kind::Manager,
@@ -2044,11 +2140,104 @@ shsrv_v0.20.elf
         }
     }
 
+    /// **A chain deployed to a stick puts its payloads on that stick.**
+    ///
+    /// The autoloader joins an entry onto the directory holding its own `autoload.txt` -
+    /// `snprintf(full_path, ..., "%s%s", config_dir, line)` - so a list on `/mnt/usb0` resolves
+    /// its entries in `/mnt/usb0/ps5_autoloader`. Sending the files to the internal payload
+    /// directory instead produced a correct, well-ordered list naming files that were nowhere
+    /// near it: a chain that comes up and loads nothing, written by the feature whose whole job
+    /// is producing one that comes up.
+    #[test]
+    fn deploying_to_a_stick_sends_the_payloads_to_the_stick() {
+        let known = Catalogue::builtin();
+        let manifest = every_payload_described();
+        let staged: Vec<String> = known
+            .services()
+            .iter()
+            .map(|one| one.name.to_string())
+            .collect();
+        let what = Known {
+            report: None,
+            there: Some(&[]),
+            staged: &staged,
+            described: &manifest,
+            chain: None,
+            kind: Kind::Autoloader,
+            list: None,
+            preset: &crate::recovery::baseline::first(),
+            known: &known,
+        };
+
+        let (plan, _) = provision(
+            &what,
+            "/mnt/usb0/ps5_autoloader/autoload.txt",
+            Kind::Autoloader,
+            &crate::recovery::baseline::first(),
+        );
+        let sends: Vec<String> = plan
+            .moves
+            .iter()
+            .filter_map(|one| match &one.step {
+                Step::Send { to, .. } => Some(to.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(!sends.is_empty(), "nothing was sent: {plan:?}");
+        for to in &sends {
+            assert_eq!(to, "/mnt/usb0/ps5_autoloader", "{sends:?}");
+        }
+    }
+
+    /// **The manager's own list is resolved by scanning, so its payloads go where it scans.**
+    ///
+    /// `SCAN_DIRS` in the manager's own header is `/data/pldmgr` and `/mnt/usb0..usb7/pldmgr`.
+    /// It finds a payload by looking rather than by joining a path, so its list does not want
+    /// the files beside it - it wants them somewhere it scans.
+    #[test]
+    fn deploying_the_managers_own_list_sends_to_where_it_scans() {
+        let known = Catalogue::builtin();
+        let manifest = every_payload_described();
+        let staged: Vec<String> = known
+            .services()
+            .iter()
+            .map(|one| one.name.to_string())
+            .collect();
+        let what = Known {
+            report: None,
+            there: Some(&[]),
+            staged: &staged,
+            described: &manifest,
+            chain: None,
+            kind: Kind::Manager,
+            list: None,
+            preset: &crate::recovery::baseline::first(),
+            known: &known,
+        };
+
+        let (plan, _) = provision(
+            &what,
+            crate::chain::PATH,
+            Kind::Manager,
+            &crate::recovery::baseline::first(),
+        );
+        for one in &plan.moves {
+            if let Step::Send { to, .. } = &one.step {
+                assert_eq!(to, crate::payloads::INTERNAL, "{plan:?}");
+            }
+        }
+    }
+
     /// **The loader is never in an autoloader's list**, because that autoloader loads it.
     ///
-    /// From y2jb's own README: *"Do NOT include the kernel exploit or the `elf_loader` in
-    /// autoload.txt; they are loaded automatically."* This file said to put it early, on the
-    /// reasoning that everything after it loads through it - true, and the autoloader's job.
+    /// Read from y2jb's source rather than its README. `aioshellcode.js` finds and maps the
+    /// loader itself, and `autoload.js` then **waits for it to accept connections on 9021**
+    /// before it loads anything from a list at all. So by the time a list is read the loader is
+    /// already running and holding the port, and an entry for it is a second copy arriving at a
+    /// socket the first one has bound.
+    ///
+    /// This file once said to put it early, reasoning that everything after it loads through
+    /// it. That is true and it is the autoloader's job, not the list's.
     #[test]
     fn the_loader_is_left_out_of_an_autoloaders_list_entirely() {
         let preset = crate::recovery::baseline::first();
@@ -2084,6 +2273,7 @@ shsrv_v0.20.elf
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -2112,6 +2302,7 @@ shsrv_v0.20.elf
             described: &manifest,
             chain: Some(&chain),
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -2147,6 +2338,7 @@ shsrv_v0.20.elf
             described: &manifest,
             chain: Some(&chain),
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -2183,6 +2375,7 @@ shsrv_v0.20.elf
             described: &manifest,
             chain: None,
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
@@ -2237,6 +2430,7 @@ shsrv_v0.20.elf
             described: &manifest,
             chain: Some(&chain),
             kind: Kind::Manager,
+            list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };

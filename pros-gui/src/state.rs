@@ -36,7 +36,6 @@ pub(crate) enum Job {
     /// Fetch a file to a local path.
     Pull(Target, String, PathBuf),
     /// Read the target's own payload repository, at this path on the target.
-    ReadManifest(Target, String),
     /// List a directory and read it as a library.
     Browse(Target, String),
     /// Copy a local file onto the target.
@@ -92,7 +91,12 @@ pub(crate) enum Job {
     /// **Destructive, and named so.** It carries the whole list rather than one path, because
     /// what somebody confirmed was a list and doing them one job at a time would ask again
     /// for each.
-    DeleteThere(Target, Vec<String>),
+    /// Remove things from the target, each with whether it is a directory.
+    ///
+    /// **The flag travels with the path** because the two are removed by different commands,
+    /// and working it out at the far end would mean listing the parent again to ask a question
+    /// the listing on screen has already answered.
+    DeleteThere(Target, Vec<(String, bool)>),
     /// Remove files from this machine.
     DeleteHere(Vec<PathBuf>),
     /// Hold a package out for the target to fetch and register.
@@ -106,7 +110,7 @@ pub(crate) enum Job {
     /// **The only job here that writes to a target.** It carries the whole file rather than
     /// an edit, because what was reviewed line by line is a file and sending anything else
     /// would make the review a different document from the write.
-    WriteAutoload(Target, &'static str, String),
+    WriteAutoload(Target, String, String),
     /// Point a description at what its project has released now.
     ///
     /// **The one job that changes the payload list rather than a target.** It downloads the
@@ -132,7 +136,6 @@ impl Job {
             Self::Check(target) => format!("checking {}", target.name),
             Self::Shell(_, command) => format!("running {command}"),
             Self::Pull(_, path, _) => format!("fetching {path}"),
-            Self::ReadManifest(_, path) => format!("reading {path}"),
             Self::Browse(_, path) => format!("opening {path}"),
             Self::Push(_, _, to) => format!("copying to {to}"),
             Self::Backup(_, from, _) => format!("backing up {from}"),
@@ -191,7 +194,6 @@ impl Job {
             Self::Shell(..) => &[Disturbs::Report, Disturbs::There],
             // Everything else reads and changes nothing.
             Self::Check(..)
-            | Self::ReadManifest(..)
             | Self::Browse(..)
             | Self::Names(..)
             | Self::FindSaves(..)
@@ -229,7 +231,6 @@ impl Job {
             // until it comes back.
             Self::Shell(..)
             | Self::Pull(..)
-            | Self::ReadManifest(..)
             | Self::Push(..)
             | Self::Install(..)
             | Self::Backup(..)
@@ -279,7 +280,6 @@ impl Job {
             | Self::DeleteThere(..)
             | Self::DeleteHere(..)
             | Self::WriteAutoload(..) => Panel::Nothing,
-            Self::ReadManifest(..) => Panel::Payloads,
             Self::Browse(..) => Panel::Library,
         }
     }
@@ -317,8 +317,6 @@ pub(crate) enum Disturbs {
 enum Panel {
     Report,
     Said,
-    /// The payload browser's table.
-    Payloads,
     /// The library listing.
     Library,
     /// An action with no panel of its own - it either happened or it did not.
@@ -362,11 +360,6 @@ pub(crate) enum Done {
     Copied(Box<pros_core::transfer::Summary>, String),
     /// Every payload file the manager holds, once looked for.
     Payloads(Vec<pros_core::payloads::There>),
-    /// A manifest was read off the target.
-    ///
-    /// Carried rather than stored by the worker, so that the rule about a failed job
-    /// clearing its own panel applies to this exactly as it does to everything else.
-    Repository(Box<pros_core::manifest::Manifest>, String),
     /// A file was written here.
     Pulled {
         /// Where it went.
@@ -826,11 +819,21 @@ pub(crate) struct State {
     pub(crate) chain: Option<pros_core::chain::Chain>,
     /// A description that now points at a newer release, waiting to be written to the list.
     pub(crate) relisted: Option<(pros_core::manifest::Payload, pros_core::sources::Upstream)>,
-    /// A whole startup list a plan has agreed to write, once its transfers have landed.
+    /// Whole startup lists a plan has agreed to write, once its transfers have landed.
     ///
     /// Kept beside [`State::after_transfers`] and applied at the same moment, for the same
     /// reason: the entries name files that the sends in the plan are what put in place.
-    pub(crate) rebuild: Option<(&'static str, Vec<String>)>,
+    ///
+    /// # Why more than one
+    ///
+    /// **A payload-manager chain is two lists and they are not alternatives.** The autoloader's
+    /// list starts the manager; the manager then runs its own, at a path compiled into it. A
+    /// deploy that wrote one of them left a target half configured, and which half depended on
+    /// which entry happened to be selected in a dropdown.
+    ///
+    /// They are still reviewed one at a time. Each is a whole file replacing a whole file, and
+    /// two diffs under one button is one of them going unread.
+    pub(crate) rebuild: Vec<(String, Vec<String>)>,
     /// Which chain the configurator would build, by name.
     ///
     /// **A name rather than an index**, because the presets are read from a file somebody can
@@ -999,7 +1002,14 @@ pub(crate) struct State {
     pub(crate) pending_install: Option<Vec<PathBuf>>,
     /// Which target the log was last started for, so a refusal is not retried every frame.
     pub(crate) followed_for: Option<String>,
-    /// Which startup list the autoload screen is showing, into [`pros_core::chain::LISTS`].
+    /// Every startup list the loaded chains declare.
+    ///
+    /// **Read once, at startup.** Working it out parses the shipped chains and somebody's own
+    /// file, and drawing a menu is not a reason to read a file from disk every frame. A chain
+    /// added while the window is open is picked up the next time it starts, which is the same
+    /// rule the chains themselves have always had.
+    pub(crate) lists: Vec<pros_core::chain::Held>,
+    /// Which startup list the autoload screen is showing, into [`Self::lists`].
     pub(crate) list_at: usize,
     /// A chain read off a target, waiting to be written down as a preset.
     ///
@@ -1046,14 +1056,8 @@ pub(crate) struct State {
     /// What the last finished job may have made untrue.
     ///
     /// **Set here and acted on by the window**, so the state machine keeps owning what is
-    /// displayed - the same reason a repository read is taken rather than stored.
+    /// displayed rather than the worker reaching into it.
     pub(crate) disturbed: Vec<Disturbs>,
-    /// Where the target's own payload repository is thought to be.
-    ///
-    /// Typed, not assumed. It is a good guess and it is still a guess. (D007)
-    pub(crate) repository: String,
-    /// A manifest read off the target, waiting to be taken by the browser.
-    pub(crate) repository_read: Option<(pros_core::manifest::Manifest, String)>,
     /// What a person has typed into the command box.
     pub(crate) command: String,
     /// What a person has typed into the address box.
@@ -1069,7 +1073,6 @@ impl State {
         Self {
             chosen: (!targets.is_empty()).then_some(0),
             targets,
-            repository: pros_core::manifest::TARGET_REPOSITORY.to_owned(),
             // Conventional, and unmeasured by this project. The window says so beside the
             // box, and the box is editable, which is the whole handling this deserves.
             library_path: "/user/app".to_owned(),
@@ -1080,6 +1083,11 @@ impl State {
             // then reported them missing. The doctor's plans have always said `INTERNAL`; this
             // is the window agreeing with them.
             preset: pros_core::recovery::baseline::first().name,
+            // **Read here, once.** Every startup list on offer comes from the chains - the ones
+            // this repository ships and the ones somebody has added beside the registry - so a
+            // path is on the screen because a file said so rather than because this program
+            // was built believing it.
+            lists: pros_core::chain::lists(),
             install_dir: pros_core::payloads::INTERNAL.to_owned(),
             name: "ps5".to_owned(),
             // Chosen by this project rather than measured, so it is filled in rather than
@@ -1110,10 +1118,18 @@ impl State {
 
     /// The startup list currently being shown.
     pub(crate) fn list(&self) -> pros_core::chain::Held {
-        pros_core::chain::LISTS
+        self.lists
             .get(self.list_at)
-            .copied()
-            .unwrap_or(pros_core::chain::LISTS[0])
+            .or_else(|| self.lists.first())
+            .cloned()
+            // Only reachable before the lists have been read, which is before anything can be
+            // selected. `chain::lists` guarantees at least one entry afterwards.
+            .unwrap_or_else(|| pros_core::chain::Held {
+                label: "no chain declares a list".to_owned(),
+                path: String::new(),
+                editable: false,
+                autoloader: false,
+            })
     }
 
     /// Whether anything may be started right now.
@@ -1238,7 +1254,6 @@ impl State {
             Job::Check(target)
             | Job::Shell(target, _)
             | Job::Pull(target, ..)
-            | Job::ReadManifest(target, _)
             | Job::Browse(target, _)
             | Job::Push(target, ..)
             | Job::Install(target, ..)
@@ -1340,9 +1355,7 @@ impl State {
                 boot.steps.len()
             )),
             Done::System(report) => Ending::Done(format!("{} facts", report.facts.len())),
-            Done::Said(_) | Done::Repository(..) | Done::FoundSaves(_) => {
-                Ending::Done(String::new())
-            }
+            Done::Said(_) | Done::FoundSaves(_) => Ending::Done(String::new()),
         }
     }
 
@@ -1463,9 +1476,6 @@ impl State {
             Done::Fetched(name, into) => {
                 self.said = format!("{name} kept and verified: {}", into.display());
             }
-            Done::Repository(manifest, from) => {
-                self.repository_read = Some((*manifest, from));
-            }
             Done::Pulled { into, bytes } => {
                 self.said = format!("{bytes} bytes written to {}", into.display());
             }
@@ -1512,9 +1522,6 @@ impl State {
         match panel {
             Panel::Report => self.report = None,
             Panel::Said => self.said.clear(),
-            // Only what this job would have delivered. A repository that failed to arrive
-            // says nothing about the manifest already on show, which came from elsewhere.
-            Panel::Payloads => self.repository_read = None,
             // The listing goes, and so does the trail that led to it: a path that could not
             // be opened must not stay in the breadcrumb as though it had been.
             Panel::Library => self.library.clear(),
@@ -1639,28 +1646,6 @@ mod tests {
             state.trouble.is_none(),
             "the previous failure is still on screen while the next attempt runs"
         );
-    }
-
-    /// A repository that failed to arrive says nothing about the manifest already on show.
-    ///
-    /// The two came from different places: one from the target, one from a file beside the
-    /// registry. Clearing the second because the first failed would throw away something
-    /// still true.
-    #[test]
-    fn a_failed_repository_read_leaves_the_manifest_alone() {
-        let mut state = State::new(vec![target("ps5")]);
-        state.begin(Job::Check(target("ps5")));
-        state.finish(Done::Checked(Box::new(a_report()), None));
-
-        state.begin(Job::ReadManifest(target("ps5"), "/data/x.json".to_owned()));
-        state.finish(Done::Failed("no such file".to_owned()));
-
-        assert!(state.repository_read.is_none());
-        assert!(
-            state.report.is_some(),
-            "an unrelated panel was cleared by a repository read that failed"
-        );
-        assert!(state.trouble.is_some());
     }
 
     /// An answer arriving when nothing was asked is dropped rather than displayed.

@@ -60,6 +60,7 @@ pub mod payloads;
 pub mod places;
 /// Watching the target, by starting something that already knows how.
 pub mod recovery;
+pub mod remove;
 /// Showing a folder in the system's file browser.
 pub mod reveal;
 /// Where save data is.

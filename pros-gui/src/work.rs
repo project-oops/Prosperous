@@ -171,18 +171,6 @@ fn perform(job: &Job, watch: &mut dyn FnMut(&Progress), stop: &dyn Fn() -> bool)
             },
             Err(why) => Done::Failed(why.to_string()),
         },
-        Job::ReadManifest(target, path) => match files::retrieve(&target.link(), path) {
-            Ok(bytes) => {
-                match pros_core::manifest::Manifest::from_json(&String::from_utf8_lossy(&bytes)) {
-                    Ok(manifest) => Done::Repository(Box::new(manifest), path.clone()),
-                    // The library names what the document turned out to be, which is the
-                    // whole point of it refusing rather than reading an unknown shape as an
-                    // empty repository.
-                    Err(why) => Done::Failed(why.to_string()),
-                }
-            }
-            Err(why) => Done::Failed(why.to_string()),
-        },
         Job::Browse(target, path) => match files::list(&target.link(), path) {
             Ok(entries) => Done::Browsed(pros_core::library::scan(&entries)),
             Err(why) => Done::Failed(why.to_string()),
@@ -385,7 +373,7 @@ fn copying(job: &Job, watch: &mut dyn FnMut(&Progress), stop: &dyn Fn() -> bool)
             }
         }
         Job::ReadList(target, held) => {
-            match files::retrieve(&target.link(), held.path) {
+            match files::retrieve(&target.link(), &held.path) {
                 Ok(bytes) => Done::List(Box::new(pros_core::boot::Boot::parse(
                     &String::from_utf8_lossy(&bytes),
                 ))),
@@ -571,24 +559,23 @@ fn erasing(what: &[PathBuf]) -> Done {
 ///
 /// **Every refusal is collected**, so nine that went and one that did not is reported as
 /// exactly that rather than as a failure that says nothing about the nine.
-fn removing(link: &pros_link::Link, what: &[String]) -> Done {
+fn removing(link: &pros_link::Link, what: &[(String, bool)]) -> Done {
     let mut session = match files::Session::open(link) {
         Ok(session) => session,
         Err(why) => return Done::Failed(why.to_string()),
     };
-    let mut refused = Vec::new();
-    let mut gone = 0;
-    for path in what {
-        match session.delete_file(path) {
-            Ok(()) => gone += 1,
-            Err(why) => refused.push(format!("{path}: {why}")),
-        }
-    }
+    // One session for the whole selection, and one guarded walk per directory. The walk is in
+    // `pros_core::remove`, where it can be tested against a pretend target - the same reason
+    // the backup's walk lives there rather than here.
+    let gone = pros_core::remove::these(&mut session, what);
     session.close();
-    if refused.is_empty() {
-        Done::Said(format!("{gone} deleted from the target"))
+    // **A partial removal is neither.** Something went and something did not, and reporting it
+    // as done or as failed describes one half. The wording carries both, and which it is
+    // decides only whether the message is the ordinary one or the one that stops the queue.
+    if gone.kept.is_empty() {
+        Done::Said(gone.describe())
     } else {
-        Done::Failed(format!("{gone} deleted; {}", refused.join("; ")))
+        Done::Failed(gone.describe())
     }
 }
 

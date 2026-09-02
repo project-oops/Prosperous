@@ -111,6 +111,16 @@ fn up_row(ui: &mut egui::Ui, path: &str) -> bool {
     up.clicked()
 }
 
+/// Draws a path box, and says whether Return was pressed in it.
+///
+/// **Focus lost *and* Return**, rather than the key alone: a text box reports the key while it
+/// still holds focus on the frame it is pressed, so acting on the key by itself starts the same
+/// navigation again on every frame it is held down.
+fn entered(ui: &mut egui::Ui, field: egui::TextEdit<'_>) -> bool {
+    let response = ui.add(field.desired_width(f32::INFINITY));
+    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
+}
+
 /// The directory above this one, when it is not already the root.
 fn parent_of(path: &str) -> Option<String> {
     let trimmed = path.trim_end_matches('/');
@@ -649,7 +659,6 @@ pub(crate) struct App {
     /// doing, so unlike a capability it does not expire on a power cycle.
     catalogue: pros_core::catalogue::Catalogue,
     /// Where the manifest came from, so the browser can say.
-    manifest_from: String,
     /// The log being followed, when one is.
     ///
     /// **Beside the worker rather than inside it.** The worker runs one job at a time, which
@@ -688,22 +697,17 @@ impl App {
         // if there is not. **Falling back rather than showing nothing**: somebody who has
         // just installed this wants to know what a target ought to be running, and an
         // empty window tells them to already know the answer.
-        let (manifest, manifest_from) = pros_core::manifest::default_path()
-            .and_then(|path| {
-                Manifest::from_file(&path)
-                    .ok()
-                    .map(|manifest| (Some(manifest), path.display().to_string()))
-            })
-            .unwrap_or_else(|| {
+        let manifest = pros_core::manifest::default_path()
+            .and_then(|path| Manifest::from_file(&path).ok())
+            .or_else(|| {
                 // **Written out on first run, then read from disk like anything else.**
-                // A list compiled into the binary cannot be corrected without a rebuild,
-                // and this one is a description somebody should be able to edit.
+                // A list compiled into the binary cannot be corrected without a rebuild, and
+                // this one is a description somebody should be able to edit. This is also why
+                // there is no *write the recommended list* anywhere: the file already exists
+                // by the time anybody could press it.
                 let seed = pros_core::manifest::recommended();
-                let where_from = seed.save().map_or_else(
-                    |_| "the built-in list, which could not be written out".to_owned(),
-                    |path| path.display().to_string(),
-                );
-                (Some(seed), where_from)
+                let _ = seed.save();
+                Some(seed)
             });
 
         Self {
@@ -719,7 +723,6 @@ impl App {
             // Defaults when no file exists, which is the normal case - see `pros_core::catalogue`.
             catalogue: pros_core::catalogue::load()
                 .unwrap_or_else(|_| pros_core::catalogue::Catalogue::builtin()),
-            manifest_from,
         }
     }
 
@@ -837,45 +840,6 @@ impl App {
                         ui.close_menu();
                     }
                 });
-                ui.menu_button("payloads", |ui| {
-                    if ui.button("read manifest").clicked() {
-                        self.read_manifest();
-                        ui.close_menu();
-                    }
-                    // **Moved here from the payloads screen.** It acts on the list rather
-                    // than on what is displayed, which is what this menu is for - and having
-                    // it on the screen made payloads look like a different kind of section
-                    // from the ones that quietly read a list from disk.
-                    let can = self.state.target().is_some() && self.state.is_idle();
-                    if ui
-                        .add_enabled(can, egui::Button::new("merge the target's repository"))
-                        .on_hover_text("its entries carry urls and digests, so downloads verify")
-                        .on_disabled_hover_text("select a target, and wait for what is running")
-                        .clicked()
-                    {
-                        if let Some(target) = self.state.target().cloned() {
-                            // The path is typed rather than assumed - a good guess is still a
-                            // guess, and a default would carry the authority of a measurement
-                            // nobody has made. (D007)
-                            let path = self.state.repository.clone();
-                            self.state.begin(Job::ReadManifest(target, path));
-                        }
-                        ui.close_menu();
-                    }
-                    ui.horizontal(|ui| {
-                        ui.small("from:");
-                        ui.text_edit_singleline(&mut self.state.repository);
-                    });
-                    ui.separator();
-                    if ui.button("write the recommended list").clicked() {
-                        self.write_recommended();
-                        ui.close_menu();
-                    }
-                    if !self.manifest_from.is_empty() {
-                        ui.separator();
-                        ui.small(&self.manifest_from);
-                    }
-                });
                 ui.menu_button("help", |ui| {
                     if ui.button("documentation...").clicked() {
                         self.docs.open();
@@ -964,66 +928,6 @@ impl App {
         self.state.showing.registering = open;
     }
 
-    /// Writes the built-in list where a person can edit it.
-    fn write_recommended(&mut self) {
-        let Some(path) = pros_core::manifest::default_path() else {
-            self.state.trouble = Some("no home directory, so there is nowhere for it".to_owned());
-            return;
-        };
-        if path.exists() {
-            // Refused rather than overwritten: what it holds that the built-in list does
-            // not is exactly the part somebody had to find out.
-            self.state.trouble = Some(format!("{} already exists", path.display()));
-            return;
-        }
-        let written = path
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .map_err(|why| why.to_string())
-            .and_then(|()| {
-                pros_core::manifest::recommended()
-                    .to_json()
-                    .map_err(|why| why.to_string())
-            })
-            .and_then(|text| std::fs::write(&path, text).map_err(|why| why.to_string()));
-        match written {
-            Ok(()) => self.state.said = format!("written to {}", path.display()),
-            Err(why) => self.state.trouble = Some(why),
-        }
-    }
-
-    /// Takes what a target's repository knows into the list already here, and keeps it.
-    ///
-    /// **Merged and saved rather than swapped in.** Reading the target used to replace nine
-    /// entries with twenty-five, every time, which reads as an explosion instead of as
-    /// finding out about sixteen more. Now the first read grows the list once and writes it
-    /// down; the next read changes almost nothing, and says so.
-    fn absorb(&mut self, repository: &Manifest, from: &str) {
-        let before = self.manifest.clone().unwrap_or_default();
-        let merged = before.merged_with(repository);
-        let (added, changed) = merged.difference_from(&before);
-
-        match merged.save() {
-            Ok(path) => {
-                self.manifest_from = path.display().to_string();
-                // Said out loud, because a merge that silently rewrote a file is one
-                // nobody can review.
-                self.state.said = match (added, changed) {
-                    (0, 0) => format!("{from}: nothing new"),
-                    _ => format!("{from}: {added} added, {changed} filled in"),
-                };
-            }
-            // It still shows, it just is not kept. Losing the read would be worse than
-            // losing the saving of it.
-            Err(why) => {
-                self.manifest_from = format!("{from} (from the target, not saved)");
-                self.state.trouble = Some(why);
-            }
-        }
-        self.manifest = Some(merged);
-    }
-
-    /// Reads the manifest from the usual place.
     /// Reads the manifest from the usual place.
     fn read_manifest(&mut self) {
         let Some(path) = pros_core::manifest::default_path() else {
@@ -1035,15 +939,10 @@ impl App {
             // Not a failure. A machine where nobody has written one is the ordinary state
             // of a machine where nobody has written one.
             self.manifest = Some(pros_core::manifest::recommended());
-            "the built-in recommended list - it states no digests"
-                .clone_into(&mut self.manifest_from);
             return;
         }
         match Manifest::from_file(&path) {
-            Ok(manifest) => {
-                self.manifest = Some(manifest);
-                self.manifest_from = path.display().to_string();
-            }
+            Ok(manifest) => self.manifest = Some(manifest),
             // Named rather than swallowed: *there is no manifest* and *this is not a
             // manifest* are different problems, and the library words both already.
             Err(why) => self.state.trouble = Some(why.to_string()),
@@ -1413,7 +1312,13 @@ impl App {
                 self.add_files();
             }
         });
-        ui.add(egui::TextEdit::singleline(&mut self.state.local_path).desired_width(f32::INFINITY));
+        // **Return goes there.** A path box that has to be typed into and then have a button
+        // found is one where an edit sits on screen looking applied and is not - the listing
+        // below still showing the folder somebody has navigated away from.
+        if entered(ui, egui::TextEdit::singleline(&mut self.state.local_path)) {
+            self.state.listing.chosen.clear();
+            self.read_local();
+        }
         ui.separator();
 
         // **The projection: entries this side knows about.** Something described and on
@@ -2041,11 +1946,11 @@ impl App {
             // rules, so which one this is showing is not a detail.
             let held = self.state.list();
             egui::ComboBox::from_id_salt("which-list")
-                .selected_text(held.label)
+                .selected_text(&held.label)
                 .show_ui(ui, |ui| {
-                    for (at, one) in pros_core::chain::LISTS.iter().enumerate() {
+                    for (at, one) in self.state.lists.clone().iter().enumerate() {
                         if ui
-                            .selectable_label(self.state.list_at == at, one.label)
+                            .selectable_label(self.state.list_at == at, &one.label)
                             .on_hover_text(format!(
                                 "{}
 {}",
@@ -2064,7 +1969,7 @@ impl App {
                             self.state.boot = None;
                             self.state.pending_change = None;
                             if let Some(target) = self.state.target().cloned() {
-                                self.state.begin(Job::ReadList(target, *one));
+                                self.state.begin(Job::ReadList(target, one.clone()));
                             }
                         }
                     }
@@ -2091,7 +1996,7 @@ impl App {
                 })
                 .clicked()
             {
-                self.begin_export(held);
+                self.begin_export(&held);
             }
             ui.weak(held.path);
             if !held.editable {
@@ -2100,7 +2005,7 @@ impl App {
         });
         ui.separator();
 
-        self.list_findings(ui, self.state.list(), idle);
+        self.list_findings(ui, &self.state.list(), idle);
         self.boot_list(ui, connected);
         ui.add_space(10.0);
         // **The settings belong to the manager, and only to it.** Drawing them under an
@@ -2125,7 +2030,7 @@ impl App {
     /// code that does that translation, and it is the one every comparison in this program goes
     /// through; a second here would be a second answer to *is this the same payload*, which is
     /// the question this project has got wrong more times than any other.
-    fn begin_export(&mut self, held: pros_core::chain::Held) {
+    fn begin_export(&mut self, held: &pros_core::chain::Held) {
         let Some(boot) = self.state.boot.as_ref() else {
             return;
         };
@@ -2313,7 +2218,7 @@ impl App {
         let Some(at) = self.state.setting_up else {
             return;
         };
-        let chosen = pros_core::chain::LISTS.get(at).copied();
+        let chosen = self.state.lists.get(at).cloned();
         let Some(held) = chosen else {
             self.state.setting_up = None;
             return;
@@ -2327,7 +2232,7 @@ impl App {
         );
         ui.add_space(4.0);
 
-        self.setup_choices(ui, at, held);
+        self.setup_choices(ui, at, &held);
         // **What is there now, so *overwritten* is a quantity rather than a word.** Only for
         // the list being shown: reading another one to count it would be a request, and this
         // panel does not make requests.
@@ -2386,7 +2291,7 @@ impl App {
             self.state.setting_up = None;
         }
         if go {
-            self.plan_a_setup(held);
+            self.plan_a_setup(&held);
         }
     }
 
@@ -2394,7 +2299,7 @@ impl App {
     ///
     /// **Which chain, then which list** - the order somebody decides them in: what this target
     /// is going to run, and then where the file that runs it goes.
-    fn setup_choices(&mut self, ui: &mut egui::Ui, at: usize, held: pros_core::chain::Held) {
+    fn setup_choices(&mut self, ui: &mut egui::Ui, at: usize, held: &pros_core::chain::Held) {
         // **Which chain, before which list.** They are asked in the order somebody decides
         // them: what this target is going to run, and then where the file that runs it goes.
         let (presets, trouble) = pros_core::recovery::baseline::all();
@@ -2417,12 +2322,12 @@ impl App {
                 });
             ui.label("into:");
             egui::ComboBox::from_id_salt("setting-up")
-                .selected_text(held.label)
+                .selected_text(&held.label)
                 .show_ui(ui, |ui| {
-                    for (which, one) in pros_core::chain::LISTS.iter().enumerate() {
+                    for (which, one) in self.state.lists.clone().iter().enumerate() {
                         if ui
-                            .selectable_label(which == at, one.label)
-                            .on_hover_text(one.path)
+                            .selectable_label(which == at, &one.label)
+                            .on_hover_text(&one.path)
                             .clicked()
                         {
                             pick = which;
@@ -2462,7 +2367,7 @@ impl App {
     }
 
     /// Builds the configurator's plan and hands it to the panel that agrees to plans.
-    fn plan_a_setup(&mut self, held: pros_core::chain::Held) {
+    fn plan_a_setup(&mut self, held: &pros_core::chain::Held) {
         let kind = if held.autoloader {
             pros_core::recovery::Kind::Autoloader
         } else {
@@ -2495,8 +2400,44 @@ impl App {
                 }
             }
         }
-        let (plan, left_out) =
-            self.with_known(|known| pros_core::doctor::provision(known, held.path, kind, &preset));
+        // **Every list this chain has, not only the one in the dropdown.** A chain that runs
+        // the payload manager has two: the autoloader's, which starts the manager, and the
+        // manager's own. Writing one of them leaves a target half configured.
+        //
+        // The chosen list is written where it was chosen. Any *other* list the chain declares
+        // is written only when it has exactly one place it can be - the manager's own has one
+        // path compiled into it, so that is unambiguous, while an autoloader's list has nine
+        // candidates and picking one of those is the choice the dropdown exists to make.
+        let mut writing = vec![(held.path.clone(), kind)];
+        for one in &preset.lists {
+            let its_kind = if one.autoloader {
+                pros_core::recovery::Kind::Autoloader
+            } else {
+                pros_core::recovery::Kind::Manager
+            };
+            if its_kind == kind || one.at.len() != 1 {
+                continue;
+            }
+            let only = &one.at[0];
+            if !writing.iter().any(|(path, _)| path == only) {
+                writing.push((only.clone(), its_kind));
+            }
+        }
+
+        let of = preset.clone();
+        let planned = writing.clone();
+        let (plan, left_out) = self.with_known(move |known| {
+            let mut plans = Vec::new();
+            let mut missed = Vec::new();
+            for (path, kind) in &planned {
+                let (one, out) = pros_core::doctor::provision(known, path, *kind, &of);
+                plans.push(one);
+                missed.extend(out);
+            }
+            missed.sort_unstable();
+            missed.dedup();
+            (pros_core::doctor::Plan::all_of(&plans), missed)
+        });
         self.state.setting_up = None;
         // **Named, not dropped quietly.** A payload with no route is left out of the list on
         // purpose - an entry naming a file the loader cannot find fails at every boot with only
@@ -2506,7 +2447,16 @@ impl App {
         }
         self.state.pending_plan = Some(crate::state::Pending {
             id: format!("set up {}", held.path),
-            label: format!("{} runs the {} chain", held.label, preset.name),
+            label: if writing.len() > 1 {
+                format!(
+                    "{} runs the {} chain - {} lists",
+                    held.label,
+                    preset.name,
+                    writing.len()
+                )
+            } else {
+                format!("{} runs the {} chain", held.label, preset.name)
+            },
             plan,
         });
     }
@@ -2522,7 +2472,7 @@ impl App {
     ///
     /// It shows the list checks only. What is answering right now is a real question and it is
     /// not this screen's.
-    fn list_findings(&mut self, ui: &mut egui::Ui, held: pros_core::chain::Held, idle: bool) {
+    fn list_findings(&mut self, ui: &mut egui::Ui, held: &pros_core::chain::Held, idle: bool) {
         let kind = if held.autoloader {
             pros_core::recovery::Kind::Autoloader
         } else {
@@ -2535,7 +2485,12 @@ impl App {
             .boot
             .as_ref()
             .map(|boot| pros_core::chain::Chain::parse(&boot.to_text()));
-        let findings = self.with_known_of(shown.as_ref(), kind, pros_core::doctor::examine_list);
+        let findings = self.with_known_of(
+            shown.as_ref(),
+            kind,
+            Some(held.path.as_str()),
+            pros_core::doctor::examine_list,
+        );
         if findings.is_empty() {
             return;
         }
@@ -3116,7 +3071,7 @@ impl App {
                                         was: settings.text().to_owned(),
                                         now,
                                         what: format!("{key} = {wanted}"),
-                                        into: pros_core::autoload::CONFIG,
+                                        into: pros_core::autoload::CONFIG.to_owned(),
                                     });
                                 }
                                 None => {}
@@ -3263,8 +3218,11 @@ impl App {
                 .clicked()
                 && let Some(target) = self.state.target().cloned()
             {
-                self.state
-                    .begin(Job::WriteAutoload(target, change.into, change.now.clone()));
+                self.state.begin(Job::WriteAutoload(
+                    target,
+                    change.into.clone(),
+                    change.now.clone(),
+                ));
                 self.state.pending_change = None;
             }
             if ui.button("discard").clicked() {
@@ -3317,6 +3275,22 @@ impl App {
                     ui.monospace(&entry.name);
                 }
             });
+        // **What a folder costs, before it is agreed to.** The rest of the list is one thing
+        // each; a directory is itself and everything under it, which somebody may never have
+        // looked inside.
+        let folders = what
+            .iter()
+            .filter(|entry| offer == crate::listing::Offer::DeleteThere && entry.folder_there())
+            .count();
+        if folders > 0 {
+            ui.colored_label(
+                egui::Color32::from_rgb(220, 120, 120),
+                format!(
+                    "{folders} of these {} a folder - everything inside goes too",
+                    if folders == 1 { "is" } else { "are" }
+                ),
+            );
+        }
         ui.small("nothing here undoes this");
         ui.horizontal(|ui| {
             if ui
@@ -3335,7 +3309,10 @@ impl App {
                     self.state.begin(Job::DeleteHere(paths));
                 } else if let Some(target) = self.state.target().cloned() {
                     let root = self.state.library_path.trim_end_matches('/').to_owned();
-                    let paths = names.iter().map(|name| format!("{root}/{name}")).collect();
+                    let paths = what
+                        .iter()
+                        .map(|entry| (format!("{root}/{}", entry.name), entry.folder_there()))
+                        .collect();
                     self.state.begin(Job::DeleteThere(target, paths));
                 }
             }
@@ -3648,9 +3625,13 @@ impl App {
     /// The right half: what is on the target.
     fn there_side(&mut self, ui: &mut egui::Ui, idle: bool, connected: bool) {
         self.there_toolbar(ui, idle, connected);
-        ui.add(
-            egui::TextEdit::singleline(&mut self.state.library_path).desired_width(f32::INFINITY),
-        );
+        // Same on this side, where it matters more: the target's own path is the one nobody
+        // can guess and everybody types.
+        if entered(ui, egui::TextEdit::singleline(&mut self.state.library_path)) {
+            self.state.listing.chosen.clear();
+            self.state.seen.clear();
+            self.browse();
+        }
         self.candidate_buttons(ui, idle, connected);
         self.locate_notice(ui);
         ui.separator();
@@ -4597,6 +4578,7 @@ impl App {
         self.with_known_of(
             self.state.chain.as_ref(),
             pros_core::recovery::Kind::Manager,
+            Some(pros_core::chain::PATH),
             act,
         )
     }
@@ -4631,6 +4613,7 @@ impl App {
         &self,
         chain: Option<&pros_core::chain::Chain>,
         kind: pros_core::recovery::Kind,
+        list: Option<&str>,
         act: impl FnOnce(&pros_core::doctor::Known<'_>) -> T,
     ) -> T {
         let preset = self.chain_of_target();
@@ -4652,6 +4635,10 @@ impl App {
             described,
             chain,
             kind,
+            // **Which file these findings are about.** An autoloader resolves an entry against
+            // the directory its own list is in, so a plan that puts payloads somewhere has to
+            // know which list it is planning for.
+            list,
             preset: &preset,
             known: &self.catalogue,
         })
@@ -4889,7 +4876,7 @@ impl App {
                                 target.clone(),
                                 Box::new(described),
                                 path,
-                                (*to).to_owned(),
+                                (*to).clone(),
                             ));
                             queued += 1;
                         }
@@ -4907,8 +4894,12 @@ impl App {
                 // Held back with the other list work, and for the same reason: the entries
                 // name files that the sends above it are what put in place.
                 Step::Rebuild { into, entries } => {
-                    self.state.rebuild = Some((*into, entries.clone()));
-                    edited += 1;
+                    // **Each list once.** A plan built from several findings can name the same
+                    // file twice, and writing it twice is two reviews of one change.
+                    if !self.state.rebuild.iter().any(|(kept, _)| kept == into) {
+                        self.state.rebuild.push((into.clone(), entries.clone()));
+                        edited += 1;
+                    }
                 }
                 // **Held back until the files are where the list will say they are.** See
                 // `State::after_transfers`: doing this now asks whether the payload is on
@@ -4958,23 +4949,35 @@ impl App {
     /// exactly the startup list this program exists to prevent - one naming something the
     /// manager cannot resolve, which fails at every boot with a log line nobody reads.
     fn finish_deferred_edits(&mut self) {
-        if self.state.after_transfers.is_empty() && self.state.rebuild.is_none() {
+        if self.state.after_transfers.is_empty() && self.state.rebuild.is_empty() {
             return;
         }
         if !self.state.is_idle() || self.state.queued() > 0 {
             return;
         }
         let waiting = std::mem::take(&mut self.state.after_transfers);
-        let rebuild = self.state.rebuild.take();
         if let Some(why) = self.state.trouble.clone() {
+            let dropped = waiting.len() + self.state.rebuild.len();
+            self.state.rebuild.clear();
             self.state.trouble = Some(format!(
-                "{why}\nso the startup list was left alone - {} edits were not made",
-                waiting.len() + usize::from(rebuild.is_some())
+                "{why}\nso the startup list was left alone - {dropped} edits were not made"
             ));
             return;
         }
-        if let Some((into, entries)) = rebuild {
-            self.prepare_rebuild(into, &entries);
+        // **One file at a time, in the order the plan put them.** The next one waits here until
+        // this one has been read and saved, because the panel below reviews a whole file and
+        // two files under one button is one of them going unread.
+        if !self.state.rebuild.is_empty() {
+            let (into, entries) = self.state.rebuild.remove(0);
+            let left = self.state.rebuild.len();
+            self.prepare_rebuild(&into, &entries);
+            if left > 0 {
+                self.state.said = format!(
+                    "{} - {left} more list{} to review after this one is saved",
+                    self.state.said,
+                    if left == 1 { "" } else { "s" }
+                );
+            }
             return;
         }
         self.apply_fixes(&waiting);
@@ -4985,7 +4988,7 @@ impl App {
     /// **Prepared, never written.** What comes out of the configurator is a file, and a file
     /// this program writes is one somebody has read first - which is the panel this hands to,
     /// not a promise made here.
-    fn prepare_rebuild(&mut self, into: &'static str, entries: &[String]) {
+    fn prepare_rebuild(&mut self, into: &str, entries: &[String]) {
         let text = entries
             .iter()
             .map(String::as_str)
@@ -4999,10 +5002,7 @@ impl App {
         let boot = pros_core::boot::Boot::parse(&now);
         // The screen follows the list being written, or it would review one file and save
         // another.
-        if let Some(at) = pros_core::chain::LISTS
-            .iter()
-            .position(|one| one.path == into)
-        {
+        if let Some(at) = self.state.lists.iter().position(|one| one.path == into) {
             self.state.list_at = at;
         }
         self.state.boot = Some(boot);
@@ -5018,7 +5018,7 @@ impl App {
                 .unwrap_or_default(),
             now: now.clone(),
             what: format!("set {into} up from nothing - {} entries", entries.len()),
-            into,
+            into: into.to_owned(),
         });
         self.state.section = Section::Autoload;
         self.state.said = format!(
@@ -6200,9 +6200,6 @@ impl eframe::App for App {
         }
         if let Some((payload, found)) = self.state.relisted.take() {
             self.take_relisted(payload, found);
-        }
-        if let Some((repository, from)) = self.state.repository_read.take() {
-            self.absorb(&repository, &from);
         }
         // **Once, on the first frame.** The manifest is already loaded by then, and doing it
         // here rather than in `new` keeps a window that opens instantly: the sweep is spaced

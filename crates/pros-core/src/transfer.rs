@@ -257,6 +257,7 @@ pub fn upload(
 ) -> Result<Summary, String> {
     let mut summary = Summary::default();
     let root = to.trim_end_matches('/');
+    let _ = session.make_directory(root);
 
     for relative in contents(from)? {
         // The same reason as a backup: a restore is a walk of unknown size started by one

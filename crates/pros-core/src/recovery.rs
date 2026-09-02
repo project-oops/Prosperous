@@ -427,7 +427,16 @@ pub fn audit(
         // with etaHEN has the loader, FTP and the kernel log running because etaHEN starts
         // them, and reporting those as missing calls a correct configuration broken - then
         // offers to put a second copy of each beside the first.
-        if !preset.entries.iter().any(|placed| {
+        // **`in_order`, not `entries`.** The preset says which entries belong in a list of
+        // *this kind*, and one of them belongs in only one of the two: the loader is excluded
+        // from an autoloader's list outright, because the autoloader already loads it - "Do
+        // NOT include the kernel exploit or the elf_loader in autoload.txt; they are loaded
+        // automatically", from the autoloader's own README.
+        //
+        // Reading the flat entry list ignored that, so auditing an autoloader's list reported
+        // the loader as missing and offered to add it - a CRITICAL finding, with a fix button,
+        // for doing the one thing the chain file's own text says never to do.
+        if !preset.in_order(kind).iter().any(|placed| {
             Chain::parse(service.name.as_ref())
                 .position(&placed.name)
                 .is_some()
@@ -467,6 +476,48 @@ mod tests {
     use super::{Gravity, Hazard, Kind, audit, is_dangerous};
     use crate::catalogue::{Catalogue, Entry};
     use crate::chain::Chain;
+
+    /// **The loader is not reported missing from an autoloader's list.**
+    ///
+    /// The autoloader loads it itself, and its README says so in as many words. An entry for it
+    /// there is a second copy of something already running - which is why the shipped chain
+    /// marks it `autoloader: false`. Auditing read the flat entry list and ignored that flag,
+    /// so a correct autoloader list was told, as a CRITICAL, that it was missing the one thing
+    /// it must not name.
+    #[test]
+    fn an_autoloader_list_is_not_told_to_add_the_loader() {
+        let preset = crate::recovery::baseline::first();
+        let loader = pros_link::service::LOADER.name.as_ref();
+        assert!(
+            preset
+                .entries
+                .iter()
+                .any(|one| one.name == loader && !one.autoloader),
+            "this test is about the entry that is excluded from an autoloader's list"
+        );
+        // Everything the preset says belongs in an autoloader's list, and nothing else.
+        let listed = preset
+            .in_order(Kind::Autoloader)
+            .into_iter()
+            .map(|one| one.name)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let found = audit(
+            &Chain::parse(&listed),
+            &Catalogue::builtin(),
+            &[],
+            Kind::Autoloader,
+            &preset,
+            Some(true),
+        );
+        assert!(
+            !found.iter().any(|hazard| matches!(
+                hazard,
+                Hazard::Missing { service, .. } if service == loader
+            )),
+            "{found:?}"
+        );
+    }
 
     /// The list measured on a real target, which had cost it its jailbreak.
     const BROKEN: &str = "!3000\nkstuff-lite_v1.09.elf\n!3000\nnanodns.elf\n!3000\n\
@@ -944,12 +995,14 @@ pub mod baseline {
         pub order: u32,
         /// Whether it belongs in an autoloader's list at all.
         ///
-        /// **`false` for the loader, from the autoloader's own README**: *"Do NOT include the
-        /// kernel exploit (e.g. `lapse.js`) or the `elf_loader` in `autoload.txt`; they are
-        /// loaded automatically."* An entry for it there is a second copy of something already
-        /// running - and this file said to put it early, on the reasoning that everything after
-        /// it loads through it. That is true, and it is the autoloader's job rather than the
-        /// list's.
+        /// **`false` for the loader**, because the autoloader has already loaded it. Read
+        /// from y2jb's source: `aioshellcode.js` maps and starts the loader, and `autoload.js`
+        /// waits for it to accept connections on 9021 before reading any list. An entry for it
+        /// is therefore a second copy arriving at a port the first one holds.
+        ///
+        /// This was carried for a while as a quotation from that project's README, which does
+        /// not contain it. The conclusion survived the checking; the citation did not, and a
+        /// wrong citation in a file of measured facts is worse than none.
         #[serde(default = "yes")]
         pub autoloader: bool,
         /// Where it belongs in **the manager's own list**, when that differs.
@@ -999,6 +1052,54 @@ pub mod baseline {
         pub result: String,
         /// What goes in it.
         pub entries: Vec<Placed>,
+        /// Where this chain keeps its startup lists.
+        ///
+        /// # Why this is not in the program
+        ///
+        /// It was: four paths written into the binary, unchangeable by the person holding the
+        /// console. That is the wrong shape twice over. It cannot express a chain whose lists
+        /// live somewhere else - and the scene moves, so there will be one - and it cannot be
+        /// corrected by the only person who can see which file their machine actually reads.
+        ///
+        /// **A chain that names no lists contributes none**, rather than falling back to
+        /// something this program would prefer. What the screen offers is the union of what the
+        /// chains declare, so a path is on it because a file said so.
+        #[serde(default)]
+        pub lists: Vec<Held>,
+    }
+
+    /// One startup list a chain uses, as the chain declares it.
+    #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+    pub struct Held {
+        /// What to call it in the chooser.
+        ///
+        /// Written out in full, `(internal)` and all, so that what somebody reads is what
+        /// somebody wrote rather than something assembled here out of parts.
+        pub label: String,
+        /// Whether it is an autoloader's list rather than the manager's own.
+        ///
+        /// Not decoration: the two are audited by opposite rules. The loader is kept out of an
+        /// autoloader's list outright, and whatever runs lists is required in it.
+        #[serde(default)]
+        pub autoloader: bool,
+        /// Whether this program will write to it.
+        ///
+        /// **Left off means read only**, which is the safe way round for a field somebody adds
+        /// by hand. A list on removable storage is the way back in when the internal setup is
+        /// broken, and a tool that can damage the recovery path is worse than one that only
+        /// reads it.
+        #[serde(default)]
+        pub editable: bool,
+        /// Every place this list may be, highest priority first.
+        ///
+        /// More than one because the autoloader's own documentation gives more than one, and
+        /// because what it means on a removable device is read two ways by people who have both
+        /// looked at it. Listing both readings costs a line in a file; picking one in code cost
+        /// an argument that could not be settled without a rebuild.
+        ///
+        /// `{device}` stands for a removable device's mount point and is expanded over every one
+        /// a target can have, so a chain describes a stick once rather than ten times.
+        pub at: Vec<String>,
     }
 
     impl Placed {
@@ -1231,6 +1332,11 @@ pub mod baseline {
                  know by editing this line in the file."
             ),
             entries: placed,
+            // **No lists.** This records what a target loads, in order. Where that target
+            // keeps its lists is what was already on the screen to read it - a fact about the
+            // chain that was deployed, not something this copy learnt - and inventing one here
+            // would let an exported chain quietly redirect where a later deploy writes.
+            lists: Vec::new(),
         };
         (preset, notes)
     }
