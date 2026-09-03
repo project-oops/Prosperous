@@ -11,6 +11,10 @@ on:
     branches: [main]
     paths:
       - "frontend/web/**"
+      # `docs/**` because this workflow *renders* docs/ through the shared script - leaving it
+      # out meant editing documentation never rebuilt the site, so the published pages silently
+      # lagged the repository. A glossary added to docs/ 404'd on a site that reported success.
+      - "docs/**"
       - "assets/logo.svg"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
