@@ -12,6 +12,13 @@ New here? The [root README](../README.md) has the pitch. Then, depending on what
 | **building it** | [BUILDING.md](BUILDING.md) |
 | **understanding it** | [DESIGN.md](DESIGN.md) |
 
+
+## The words
+
+- [GLOSSARY.md](GLOSSARY.md) - the services on the target, chains against health checks, scan
+  roots, portable mode and Porthole. The collection's glossary covers standard ELF and the
+  words that mean something else in the sibling repositories.
+
 ## Guide
 
 - **[Getting started](guide/getting-started.md)** - from a download to a target that answers,
