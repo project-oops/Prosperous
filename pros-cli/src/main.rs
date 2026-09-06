@@ -244,6 +244,24 @@ enum Command {
         #[command(flatten)]
         which: Which,
     },
+    /// Restart the user interface to clear a softlock
+    ///
+    /// Kills `SceShellUI`; the system's own `SceSysCore` respawns it, so the screen comes
+    /// back without a reboot. Nothing else is touched.
+    RestartUi {
+        #[command(flatten)]
+        which: Which,
+    },
+    /// Close a title, freeing what it holds open
+    ///
+    /// Ends every process the title owns. A stopped process is woken first so its own exit
+    /// teardown completes - killing it while stopped leaves locked files behind.
+    Close {
+        /// Which title, by identifier - `pros titles` lists them
+        id: String,
+        #[command(flatten)]
+        which: Which,
+    },
     /// Fetch a payload described by the manifest, and keep it if it is the right one
     Fetch {
         /// Which entry. Omit with --all to fetch everything that can be checked
@@ -323,9 +341,11 @@ impl Command {
             | Self::Stage { .. }
             | Self::Verify { .. } => None,
             Self::Logs { .. } => Some("klogsrv"),
-            // Both are one line typed at the shell. Starting a title is not a payload
-            // and does not want the loader.
-            Self::Sh { .. } | Self::Launch { .. } => Some("shsrv"),
+            // A line typed at the shell, a title started, and process control - all shell
+            // work, and none of it wants the loader.
+            Self::Sh { .. } | Self::Launch { .. } | Self::RestartUi { .. } | Self::Close { .. } => {
+                Some("shsrv")
+            }
             // Running a payload, and re-running one that died.
             Self::Send { .. } | Self::Supervise { .. } => Some("elfldr"),
             // Everything that reads or moves a file.
@@ -473,6 +493,8 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
         Command::Saves { which } => saves(which.name.as_deref()),
         Command::Titles { appmeta, which } => titles(&appmeta, which.name.as_deref()),
         Command::Launch { id, which } => launch(&id, which.name.as_deref()),
+        Command::RestartUi { which } => restart_ui(which.name.as_deref()),
+        Command::Close { id, which } => close(&id, which.name.as_deref()),
         Command::Fetch {
             payload,
             all,
@@ -1099,6 +1121,60 @@ fn launch(id: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::
         pros_core::launch::Said::NotAnId | pros_core::launch::Said::Refused(_) => {
             Ok(ExitCode::FAILURE)
         }
+    }
+}
+
+/// Restarts the user interface to clear a softlock.
+fn restart_ui(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let target = pick(name)?;
+    let listing = pros_link::shell::run(&target.link(), "ps", SETTLE)?;
+    let processes = pros_core::system::processes(&listing);
+    let Some(ui) = pros_core::system::shell_ui(&processes) else {
+        println!("SceShellUI is not running - nothing to restart");
+        return Ok(ExitCode::FAILURE);
+    };
+    let pid = ui.pid.clone();
+    println!("restarting the user interface (SceShellUI, PID {pid})");
+    let said = pros_link::shell::run(
+        &target.link(),
+        &pros_core::system::kill(&pid, pros_core::system::Signal::Terminate),
+        SETTLE,
+    )?;
+    if !said.trim().is_empty() {
+        print!("{said}");
+    }
+    println!("SceSysCore respawns it, so the screen comes back on its own");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Closes a title, freeing what it holds open.
+fn close(id: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let target = pick(name)?;
+    let listing = pros_link::shell::run(&target.link(), "ps", SETTLE)?;
+    let processes = pros_core::system::processes(&listing);
+    let mine = pros_core::system::of_title(&processes, id);
+    if mine.is_empty() {
+        println!("no running process found for {id}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    for process in mine {
+        println!(
+            "closing {id} (PID {}, state {})",
+            process.pid, process.state
+        );
+        for command in pros_core::system::end(process) {
+            let _ = pros_link::shell::run(&target.link(), &command, SETTLE)?;
+        }
+    }
+    // Ask again rather than assume: a title still listed did not close, and saying so is worth
+    // more than an exit code that implies it did.
+    let after = pros_link::shell::run(&target.link(), "ps", SETTLE)?;
+    if pros_core::system::of_title(&pros_core::system::processes(&after), id).is_empty() {
+        println!("{id} is gone");
+        Ok(ExitCode::SUCCESS)
+    } else {
+        println!("{id} is still listed - it did not close");
+        Ok(ExitCode::FAILURE)
     }
 }
 

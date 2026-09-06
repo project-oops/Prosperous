@@ -1,4 +1,28 @@
 
+## Process control moved in from obSCEne, first-class in both programs
+
+Restarting the user interface and closing a title were built inside `obscene-tool`, each
+hand-parsing `ps`/`procstat` and encoding the signal policy inline. The transport was never
+the duplication - both already ran over `pros_link::shell` - but the *capability* had leaked
+into a consumer: which process is the interface, that the system respawns it, that a stopped
+title needs a wake signal before a kill or it leaves locked vnodes behind. That is
+target-management knowledge, so it came here. (D027)
+
+It sits in `pros_core::system` the way `launch` does: pure builders and selectors - `shell_ui`,
+`of_title`, `kill`, `end`, a `Signal` enum - with the effect left to the shim. `end` is where
+the wake-then-kill order lives, as data rather than a branch at a call site, so it is tested
+against a `ps` fixture with no target in the room.
+
+First-class in the CLI as `pros restart-ui` and `pros close <id>`, and in the window as a
+*restart UI* button and a per-title *close*, both leaving the process list showing what is
+running now. obSCEne's two functions became thin calls into `pros-core`, so the recipe it used
+to carry is gone and the knowledge has one home.
+
+**The surprise worth keeping:** obSCEne found the interface with `procstat -a`; this uses `ps`,
+because `ps` is what `system::processes` already parses. `ps` lists every process so the UI is
+in it, but that its command column reads exactly `SceShellUI` under `ps` is an expectation, not
+a measured fact - flagged in D027 rather than asserted, and the one thing a hardware run should
+confirm.
 ## contents(), which was made testable and then not tested
 
 8 tests in `crates/pros-core/tests/walking.rs`. `transfer.rs` went from **71.60% to 80.17%**

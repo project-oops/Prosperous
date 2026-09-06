@@ -235,9 +235,10 @@ to change.
 
 **The target already encodes video in hardware, continuously, for its own recordings.**
 `libSceVencCore` and `libSceVideoRecording` drive that block; obSCEne's corpus names all 38 of
-their symbols and marks them callable. Whether an unsigned payload can reach them is the open
-question at the bottom of this document, and it is the question the whole of part three rests
-on.
+their symbols and marks them callable. Whether an unsigned payload can reach them was the
+question the whole of part three rested on - and hardware answered it (see "What has to be true",
+below): the encoder sysmodule loads, and its symbols are reached by walking the loaded module's
+exports.
 
 If it can, the client is almost nothing. **Encoded frames on a socket are something every
 media player already reads**, so this pipes them to one:
@@ -339,27 +340,35 @@ Four choices worth stating, because each has an obvious wrong alternative:
   code. A console without the payload is not watched by this project at all, which is a
   smaller claim than the one it replaced and an honest one.
 
-### What has to be true for any of it
+### What has to be true for any of it - answered, and it is a go
 
-One question, and it is on the target:
+One question, and it was on the target: **can an unsigned payload reach the encoder?**
 
-**Can an unsigned payload reach the encoder?** If `sceVencCoreCreateEncoder` and
-`sceVencCoreGetAuData` answer, part three is a few hundred lines at each end. If they refuse,
-the fallback is part two's raw grabs - 8.3 MB per 1080p frame, which at the file service's
-measured 13-23 MB/s is **two frames a second**. That is an instrument, not a stream, and the
-honest answer would be that live watching is not something this project offers.
+**Answered on hardware, 2026-09-01.** obSCEne's `106-encoder` section loaded the sysmodules by id,
+and the two Porthole needs came in clean: the video **encoder** (`VENC`, id `0xa0`) and **recording**
+(`VIDEOREC`, id `0x81`) both returned `0x0` - loaded - from an unsigned payload, while the decoders
+refused (`0x805a1000`). So the VCE block comes into the process.
 
-Everything above is designed so that answering that one question decides the rest, and so the
-answer costs one session on hardware rather than a redesign.
+The catch is the one every obSCEne payload meets, not one specific to the encoder: the `sceVencCore*`
+symbols do **not** auto-bind. The census read all of them `unresolved`, and opening the `.sprx` by
+path returns `0x80020002` (no entry). But the module *is* loaded - the run saw two modules and a live
+module handle - so its symbols are reached the way D277 already describes: **walk the loaded module's
+export table by base+vaddr and resolve them**, rather than relying on a bound import table.
+
+So `porthole_encoder_open` is three known steps: `sceSysmoduleLoadModule(0xa0)` (proven), self-resolve
+`sceVencCore*` from the loaded module (the next real piece), then `sceVencCoreCreateEncoder`. The
+part-two raw-grab fallback is not needed for reachability - the door opens. What is still unmeasured
+is the two questions below it: the display buffer, and whether grabbing perturbs the pipeline.
 
 ---
 
 ## Open questions, for target to answer
 
-- **Is a target encoder (`libSceVideoEnc`, the VCE block) reachable from an unsigned
-  payload?** This decides whether live streaming ever needs to be more than Chiaki, and it
-  is precisely obSCEne's kind of question: call it, record what came back, grade it by what
-  it ran on.
+- **Is a target encoder reachable from an unsigned payload? - Answered (2026-09-01): yes.**
+  obSCEne's `106-encoder` loaded the encoder and recording sysmodules (`VENC` `0xa0`, `VIDEOREC`
+  `0x81`) with `0x0` from an unsigned payload. The `sceVencCore*` symbols do not auto-bind, but the
+  module loads, so they are reached by the D277 export-table walk rather than a bound import table.
+  See "What has to be true for any of it" above.
 - **Is the display buffer reachable at all from an unsigned payload, and in what colour
   space?** If it is not, this design is worth nothing and the answer is worth having early.
 - **Does grabbing perturb what is being measured?** A grab that stalls the display pipeline

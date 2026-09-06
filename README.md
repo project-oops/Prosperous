@@ -29,7 +29,7 @@ So the transport is one crate, shared, and the tools on top of it hold no logic 
 
 | crate | what it is | who takes it |
 |---|---|---|
-| `pros-link` | the five target services, over `std::net` and **nothing else** | Prosperous, obSCEne, orbistoun |
+| `pros-link` | the target services, over `std::net` and **nothing else** | Prosperous, obSCEne, orbistoun |
 | `pros-core` | registry, payload manifest, checksum verification, the check workflow | Prosperous, orbistoun |
 | `pros-cli` | the `pros` command | - |
 | `pros-gui` | the `pros-gui` window. Holds no logic; the one thing it reaches that `pros` does not is `pros_core::install` | - |
@@ -92,7 +92,7 @@ crate later is a move rather than a port.
 
 Half built, and it is worth being exact about which half. **Porthole** - the stand-in: our own
 video and input over our own payload, instead of the vendor's remote-play protocol - exists on this side:
-the stream section connects, counts what arrives, pipes it to a player, and drives four pads
+the stream section connects, counts what arrives, pipes it to a player, and drives the pads
 from the keyboard. **Nothing serves it yet.** Pressing *watch* today produces *connection
 refused*, naming the port, because the payload at the other end is gated on one question for
 real hardware. See [docs/VIDEO.md](docs/VIDEO.md) part three.

@@ -274,11 +274,100 @@ impl Report {
     }
 }
 
+// --- Process control ---------------------------------------------------------------------
+//
+// Ending a process on the target, over the same shell the listing above is read from. Two
+// jobs a caller reaches for: restarting the user interface to clear a softlock, and closing a
+// title to free what it holds open. Both are the same primitive - find a process, signal it -
+// and both are expressed here as builders and selectors so the effect (running the command)
+// stays in the shim, exactly as `launch` does.
+
+/// The command name the current-generation user interface runs under.
+///
+/// Killing this process is how a UI softlock is cleared without a reboot: the system's own
+/// `SceSysCore` respawns it, so the screen comes back on its own. Measured on a target; the
+/// respawn is the platform's behaviour, not anything this arranges.
+pub const SHELL_UI: &str = "SceShellUI";
+
+/// A signal to send with the target's `kill`, by the number its builtin takes.
+///
+/// Only the three the work needs. `Terminate` is what a bare `kill` sends and is right for the
+/// user interface, which is meant to come back; `Kill` is for a title that must go now;
+/// `Continue` wakes a stopped process so its own teardown can finish before it is killed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signal {
+    /// SIGTERM. Ask a process to end - what a bare `kill` sends.
+    Terminate,
+    /// SIGCONT. Wake a stopped process so a pending exit can complete.
+    Continue,
+    /// SIGKILL. End a process that will not go on its own.
+    Kill,
+}
+
+impl Signal {
+    /// The number the target's `kill -s` expects.
+    #[must_use]
+    pub fn number(self) -> u8 {
+        match self {
+            Self::Terminate => 15,
+            Self::Continue => 19,
+            Self::Kill => 9,
+        }
+    }
+}
+
+/// The shell command that sends `signal` to `pid`.
+///
+/// Explicit `-s <n>` rather than a bare `kill`, so the signal is stated rather than defaulted -
+/// the same reason a magic number does not belong at a call site.
+#[must_use]
+pub fn kill(pid: &str, signal: Signal) -> String {
+    format!("kill -s {} {}", signal.number(), pid.trim())
+}
+
+/// The user-interface process in a listing, if it is running.
+#[must_use]
+pub fn shell_ui(processes: &[Process]) -> Option<&Process> {
+    processes.iter().find(|p| p.command == SHELL_UI)
+}
+
+/// Every process a listing attributes to a title.
+///
+/// Matched by the title column first; also by the command carrying the id, because a
+/// homebrew title launched as a bare payload has no title column of its own and is only
+/// findable by what it is running.
+#[must_use]
+pub fn of_title<'a>(processes: &'a [Process], id: &str) -> Vec<&'a Process> {
+    let id = id.trim();
+    processes
+        .iter()
+        .filter(|p| p.title == id || (!id.is_empty() && p.command.contains(id)))
+        .collect()
+}
+
+/// The kill commands that end one process, in the order they must be sent.
+///
+/// A process in `STOP` state is sent `Continue` first: a stopped title does not run its own
+/// exit teardown, and killing it while stopped left locked vnodes behind until it was woken.
+/// Anything else is a single `Kill`. Measured on a target.
+#[must_use]
+pub fn end(process: &Process) -> Vec<String> {
+    let mut commands = Vec::new();
+    if process.state == "STOP" {
+        commands.push(kill(&process.pid, Signal::Continue));
+    }
+    commands.push(kill(&process.pid, Signal::Kill));
+    commands
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{Report, number_in, processes, storage, value_in};
+    use super::{
+        Process, Report, Signal, end, kill, number_in, of_title, processes, shell_ui, storage,
+        value_in,
+    };
 
     /// Exactly what a target printed for `sysctl kern.version`.
     fn firmware_dump() -> &'static str {
@@ -339,7 +428,7 @@ mod tests {
         let found = processes(ps);
         assert_eq!(found.len(), 3);
 
-        let titles: Vec<&super::Process> = found.iter().filter(|one| one.is_a_title()).collect();
+        let titles: Vec<&Process> = found.iter().filter(|one| one.is_a_title()).collect();
         assert_eq!(titles.len(), 1, "one of these is a game");
         assert_eq!(titles[0].title, "PPSA02664");
         assert_eq!(titles[0].command, "eboot.bin");
@@ -394,5 +483,53 @@ mod tests {
         assert!(!found[0].is_a_sandbox_mount());
         assert!(found[1].is_a_sandbox_mount());
         assert!(found[2].is_a_sandbox_mount());
+    }
+
+    /// A short `ps` fixture: the user interface, a running title, and a stopped one.
+    fn listing() -> Vec<Process> {
+        processes(
+            "PID PPID PGID SID UID STATE APPID TITLEID MEM COMMAND\n\
+             100 1 100 100 0 S - - 1M SceShellUI\n\
+             200 1 200 200 1 S PPSA00001 PPSA00001 8M eboot.bin\n\
+             300 1 300 300 1 STOP PPSA99980 PPSA99980 4M eboot.bin\n",
+        )
+    }
+
+    /// The signal numbers are the ones the target's `kill` takes.
+    #[test]
+    fn signals_are_the_measured_numbers() {
+        assert_eq!(Signal::Terminate.number(), 15);
+        assert_eq!(Signal::Continue.number(), 19);
+        assert_eq!(Signal::Kill.number(), 9);
+        assert_eq!(kill("  200\n", Signal::Kill), "kill -s 9 200");
+    }
+
+    /// The user interface is found by its command name, not its position.
+    #[test]
+    fn the_shell_ui_is_found_by_name() {
+        let found = listing();
+        assert_eq!(shell_ui(&found).expect("it is running").pid, "100");
+        assert!(shell_ui(&processes("PID STATE COMMAND\n1 S launchd\n")).is_none());
+    }
+
+    /// A title's processes are found by the title column.
+    #[test]
+    fn a_titles_processes_are_found() {
+        let found = listing();
+        let mine = of_title(&found, "PPSA00001");
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].pid, "200");
+    }
+
+    /// A running process is killed outright; a stopped one is woken first so its own teardown
+    /// can complete before it is killed.
+    #[test]
+    fn a_stopped_process_is_woken_before_it_is_killed() {
+        let found = listing();
+        let running = of_title(&found, "PPSA00001");
+        assert_eq!(end(running[0]), ["kill -s 9 200"]);
+
+        let stopped = of_title(&found, "PPSA99980");
+        assert_eq!(end(stopped[0]), ["kill -s 19 300", "kill -s 9 300"]);
     }
 }

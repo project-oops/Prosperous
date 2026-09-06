@@ -353,6 +353,8 @@ fn copying(job: &Job, watch: &mut dyn FnMut(&Progress), stop: &dyn Fn() -> bool)
         }
         Job::ReadAutoload(_) | Job::WriteAutoload(..) => settings(job),
         Job::ReadSystem(target) => asking(&target.link()),
+        Job::RestartUi(target) => restart_ui(&target.link()),
+        Job::CloseTitle(target, id) => close_title(&target.link(), id),
         Job::Launch(target, id) => {
             match pros_link::shell::run(&target.link(), &pros_core::launch::command(id), SETTLE) {
                 Ok(said) => Done::Launched(pros_core::launch::read(&said)),
@@ -501,6 +503,58 @@ fn asking(link: &pros_link::Link) -> Done {
     }
     let report = pros_core::system::Report::from(&answers, &ask("df"), &ask("ps"));
     Done::System(Box::new(report))
+}
+
+/// Restarts the user interface, then reads the target again so the panel is current.
+///
+/// The kill knowledge - which process, that the system respawns it - is `pros-core`'s; this
+/// runs the command it builds and pairs the outcome with a fresh reading.
+fn restart_ui(link: &pros_link::Link) -> Done {
+    let listing = pros_link::shell::run(link, "ps", SETTLE).unwrap_or_default();
+    let note = match pros_core::system::shell_ui(&pros_core::system::processes(&listing)) {
+        None => "SceShellUI was not running - nothing to restart".to_owned(),
+        Some(ui) => {
+            let _ = pros_link::shell::run(
+                link,
+                &pros_core::system::kill(&ui.pid, pros_core::system::Signal::Terminate),
+                SETTLE,
+            );
+            format!(
+                "asked SceShellUI (PID {}) to restart - the system respawns it",
+                ui.pid
+            )
+        }
+    };
+    // `asking` only ever returns a `System`, so pairing the note with a report cannot fail.
+    let Done::System(report) = asking(link) else {
+        return Done::Failed("reading the target after the restart did not answer".into());
+    };
+    Done::Signalled { note, report }
+}
+
+/// Ends every process a title owns, then reads the target again to say whether it is gone.
+fn close_title(link: &pros_link::Link, id: &str) -> Done {
+    let listing = pros_link::shell::run(link, "ps", SETTLE).unwrap_or_default();
+    let running = pros_core::system::processes(&listing);
+    let mine = pros_core::system::of_title(&running, id);
+    let closed = mine.len();
+    for process in &mine {
+        for command in pros_core::system::end(process) {
+            let _ = pros_link::shell::run(link, &command, SETTLE);
+        }
+    }
+    let Done::System(report) = asking(link) else {
+        return Done::Failed("reading the target after the close did not answer".into());
+    };
+    // Ask again rather than assume: a title still listed did not close.
+    let note = if closed == 0 {
+        format!("no running process found for {id}")
+    } else if pros_core::system::of_title(&report.processes, id).is_empty() {
+        format!("{id} is gone")
+    } else {
+        format!("{id} is still listed - it did not close")
+    };
+    Done::Signalled { note, report }
 }
 
 /// Handing a package to the target to read and register.

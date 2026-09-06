@@ -1787,14 +1787,28 @@ impl App {
 
         let idle = self.state.is_idle();
         let connected = self.state.target().is_some();
-        if ui
-            .add_enabled(idle && connected, egui::Button::new("ask the target"))
-            .on_disabled_hover_text("no target selected")
-            .clicked()
-            && let Some(target) = self.state.target().cloned()
-        {
-            self.state.begin(Job::ReadSystem(target));
-        }
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(idle && connected, egui::Button::new("ask the target"))
+                .on_disabled_hover_text("no target selected")
+                .clicked()
+                && let Some(target) = self.state.target().cloned()
+            {
+                self.state.begin(Job::ReadSystem(target));
+            }
+            // Restart the interface to clear a softlock. Kept beside the reading rather than
+            // on a process row, because it is not one of the listed processes a person picks -
+            // it is the whole screen coming back.
+            if ui
+                .add_enabled(idle && connected, egui::Button::new("restart UI"))
+                .on_hover_text("kill SceShellUI to clear a softlock; the system respawns it")
+                .on_disabled_hover_text("no target selected")
+                .clicked()
+                && let Some(target) = self.state.target().cloned()
+            {
+                self.state.begin(Job::RestartUi(target));
+            }
+        });
         ui.add_space(8.0);
 
         let Some(report) = self.state.system.clone() else {
@@ -1820,7 +1834,11 @@ impl App {
         }
 
         Self::storage_table(ui, &report);
-        Self::process_list(ui, &report);
+        if let Some(id) = Self::process_list(ui, &report, idle)
+            && let Some(target) = self.state.target().cloned()
+        {
+            self.state.begin(Job::CloseTitle(target, id));
+        }
     }
 
     /// The target's own storage, with its sandbox mounts folded away.
@@ -1866,7 +1884,16 @@ impl App {
     }
 
     /// What is running, titles first.
-    fn process_list(ui: &mut egui::Ui, report: &pros_core::system::Report) {
+    /// Draws the running processes, and returns the title id whose `close` was pressed.
+    ///
+    /// A value comes back rather than the work being started here, because this is a static
+    /// view with no way to reach the state - the caller, which has both, does the dispatch.
+    fn process_list(
+        ui: &mut egui::Ui,
+        report: &pros_core::system::Report,
+        idle: bool,
+    ) -> Option<String> {
+        let mut close: Option<String> = None;
         let titles: Vec<&pros_core::system::Process> = report
             .processes
             .iter()
@@ -1883,6 +1910,14 @@ impl App {
             // system processes around it are context rather than the answer.
             for one in &titles {
                 ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(idle, egui::Button::new("close").small())
+                        .on_hover_text("end this title and free what it holds open")
+                        .on_disabled_hover_text("busy")
+                        .clicked()
+                    {
+                        close = Some(one.title.clone());
+                    }
                     ui.monospace(&one.title);
                     ui.label(&one.command);
                     ui.weak(&one.state);
@@ -1903,6 +1938,7 @@ impl App {
                     }
                 });
         }
+        close
     }
 
     /// What the target loads at startup, and the manager's settings.

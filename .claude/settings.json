@@ -1,15 +1,16 @@
 {
   "permissions": {
     "deny": [
-      "Read(**/escalation.*)",
-      "Edit(**/escalation.*)",
-      "Write(**/escalation.*)",
-      "Read(**/runtime/escalation.c)",
-      "Edit(**/runtime/escalation.c)",
-      "Write(**/runtime/escalation.c)",
-      "Read(**/runtime/include/escalation.h)",
-      "Edit(**/runtime/include/escalation.h)",
-      "Write(**/runtime/include/escalation.h)"
+      "Read(**/escalat*)",
+      "Edit(**/escalat*)",
+      "Write(**/escalat*)",
+      "Read(**/src/system/escalate.c)",
+      "Edit(**/src/system/escalate.c)",
+      "Write(**/src/system/escalate.c)",
+      "Read(**/include/oops/escalate.h)",
+      "Edit(**/include/oops/escalate.h)",
+      "Write(**/include/oops/escalate.h)"
     ]
   }
 }
+

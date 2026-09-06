@@ -110,3 +110,28 @@ empty content id. `pros_core::install` is the implementation and
 **The window drives it; this command line does not.** `pros-gui` calls `pros_core::install`
 and `pros` has no subcommand for it, so package installation is the one thing the two programs
 do not both do.
+
+## Recovering: restarting the interface, closing a title
+
+Two things the target sometimes needs that are neither a payload nor a file: the user
+interface wedges, or a title has to be ended to free what it holds open. Both go through the
+shell, and both live here rather than in a consumer that happened to need them first - see
+[D027](decisions/D027-process-control-is-prosperous-work.md).
+
+```bash
+pros restart-ui                    # kill SceShellUI; the system respawns it, no reboot
+pros close PPSA00001               # end every process the title owns
+```
+
+**`restart-ui`** finds `SceShellUI` by name - so no other process can be hit - and terminates
+it. `SceSysCore` brings it back on its own, which is why this clears a softlock without a
+reboot.
+
+**`close`** ends every process a title owns. A stopped process is sent a wake signal *before*
+it is killed, because a title killed while stopped never runs its own exit teardown and leaves
+locked files behind. Afterwards it reads the target again and says whether the title is gone or
+still listed - a measured answer rather than an assumed one.
+
+**The window does both too.** `pros-gui`'s system panel has a *restart UI* button beside *ask
+the target*, and a *close* button on each running title. Both leave the process list showing
+what is running now, because the action reads the target again when it finishes.

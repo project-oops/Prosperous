@@ -84,6 +84,13 @@ pub(crate) enum Job {
     ReadList(Target, pros_core::chain::Held),
     /// Ask the target what it is.
     ReadSystem(Target),
+    /// Restart the user interface to clear a softlock.
+    ///
+    /// Kills `SceShellUI`; the system respawns it. Reads the target again afterwards, so the
+    /// process list on screen is what is running now rather than what was.
+    RestartUi(Target),
+    /// Close a title, ending every process it owns, then read the target again.
+    CloseTitle(Target, String),
     /// Find every payload file the manager holds, looking inside its folders.
     FindPayloads(Target, String),
     /// Remove files from the target.
@@ -154,6 +161,8 @@ impl Job {
             Self::ReadAutoload(_) => "reading the manager's settings".to_owned(),
             Self::ReadList(_, held) => format!("reading {}", held.path),
             Self::ReadSystem(_) => "asking the target what it is".to_owned(),
+            Self::RestartUi(_) => "restarting the user interface".to_owned(),
+            Self::CloseTitle(_, id) => format!("closing {id}"),
             Self::FindPayloads(..) => "looking for payloads".to_owned(),
             Self::DeleteThere(_, what) => format!("deleting {} from the target", what.len()),
             Self::DeleteHere(what) => format!("deleting {} from this machine", what.len()),
@@ -172,7 +181,14 @@ impl Job {
             // the case that started this: a service that was not answering may be answering
             // now, and the screen that said so is wrong until it asks again. Starting a title
             // is the same consequence by a different route.
-            Self::Send(..) | Self::Launch(..) | Self::RunThere(..) => &[Disturbs::Report],
+            // Ending a process or restarting the interface changes what is running, the same
+            // consequence by a third route. Each reads the target again itself, but a check
+            // taken before is stale after.
+            Self::Send(..)
+            | Self::Launch(..)
+            | Self::RunThere(..)
+            | Self::RestartUi(..)
+            | Self::CloseTitle(..) => &[Disturbs::Report],
             // Something arrived here, or left it.
             Self::Fetch(..)
             | Self::Relist(..)
@@ -216,7 +232,8 @@ impl Job {
             // audits that list is waiting on it too.
             Self::Check(_) => &[Section::Check, Section::Autoload],
             Self::ReadAutoload(_) | Self::ReadList(..) => &[Section::Autoload],
-            Self::ReadSystem(_) => &[Section::System],
+            // All three leave the system panel showing a fresh reading.
+            Self::ReadSystem(_) | Self::RestartUi(_) | Self::CloseTitle(..) => &[Section::System],
             Self::FindPayloads(..) => &[Section::Payloads],
             Self::FindSaves(_) => &[Section::Saves],
             // One listing, five views over it - see the section dispatcher.
@@ -273,6 +290,8 @@ impl Job {
             | Self::Locate(..)
             | Self::ReadAutoload(..)
             | Self::ReadSystem(..)
+            | Self::RestartUi(..)
+            | Self::CloseTitle(..)
             | Self::Launch(..)
             | Self::RunThere(..)
             | Self::InstallPackage(..)
@@ -349,6 +368,15 @@ pub(crate) enum Done {
     ),
     /// What the target is.
     System(Box<pros_core::system::Report>),
+    /// A process was signalled - the interface restarted, or a title closed - and the target
+    /// read again afterwards. Carries what to say about it and the refreshed reading, so the
+    /// panel shows what is running now rather than what was.
+    Signalled {
+        /// What happened, in a line.
+        note: String,
+        /// The target as it is after.
+        report: Box<pros_core::system::Report>,
+    },
     /// An install ran, and this is what the target said about it.
     Installed(pros_core::install::Said),
     /// Titles said what they are called.
@@ -1268,6 +1296,8 @@ impl State {
             | Job::ReadList(target, _)
             | Job::ReadAutoload(target)
             | Job::ReadSystem(target)
+            | Job::RestartUi(target)
+            | Job::CloseTitle(target, _)
             | Job::InstallPackage(target, _)
             | Job::FindPayloads(target, _)
             | Job::DeleteThere(target, _)
@@ -1355,6 +1385,7 @@ impl State {
                 boot.steps.len()
             )),
             Done::System(report) => Ending::Done(format!("{} facts", report.facts.len())),
+            Done::Signalled { note, .. } => Ending::Done(note.clone()),
             Done::Said(_) | Done::FoundSaves(_) => Ending::Done(String::new()),
         }
     }
@@ -1453,7 +1484,9 @@ impl State {
                 self.boot = Some(*boot);
                 self.boot_at = None;
             }
-            Done::System(report) => self.system = Some(*report),
+            Done::System(report) | Done::Signalled { report, .. } => {
+                self.system = Some(*report);
+            }
             Done::Installed(said) => {
                 // A known failure is trouble; anything else is only what was said. Putting
                 // an unrecognised answer in the failure slot would claim knowledge this

@@ -42,6 +42,7 @@ on or after that day and nothing narrower is recoverable. Entries after them car
 | ⚪ | D024 | [Three ways to make something run on a target, and three buttons](decisions/D024-three-ways-to-make-something-run-on-a.md) | unrecorded | ~2026-08-26..08-30 |
 | 🟢 | D025 | [`pros-link` takes the logging facade, and the empty dependency table goes](decisions/D025-pros-link-takes-the-logging-facade-and.md) | decided | 2026-08-30 |
 | 🟢 | D026 | [The window ships its own manual](decisions/D026-the-window-ships-its-own-manual.md) | decided | 2026-08-30 |
+| 🟢 | D027 | [Process control is prosperous work, not obSCEne's](decisions/D027-process-control-is-prosperous-work.md) | decided | 2026-09-04 |
 
 | | meaning |
 |---|---|
