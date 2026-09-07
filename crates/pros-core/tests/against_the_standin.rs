@@ -418,3 +418,50 @@ fn a_stream_shorter_than_the_window_has_no_rate_rather_than_a_rate_of_zero() {
         "and it must not be accused of stalling for want of a measurement"
     );
 }
+
+/// **A connected, quiet socket is a pause and not an end, under a real timeout.**
+///
+/// The pump reads with a short timeout so that a stop is noticed and a stalled rate falls to
+/// zero. Unix reports that timeout as `WouldBlock`; Windows reports it as `TimedOut`, and a
+/// pump that knew only the first ended a working stream at its first half-second between
+/// frames. The unit test feeds both names; this one lets the platform choose, over a socket,
+/// which is the reading that failed here before.
+#[test]
+fn a_quiet_socket_is_waited_on_rather_than_given_up_on() {
+    let fake = Standin::start(Serves::Silence).expect("the loopback interface must exist");
+    let mut from = TcpStream::connect((fake.address(), fake.video_port()))
+        .expect("a fake that is listening must accept");
+    // Short, so several reads time out during the wait below and the claim is about the loop
+    // rather than about one read.
+    from.set_read_timeout(Some(Duration::from_millis(50)))
+        .expect("a socket must take a timeout");
+
+    let watching = pros_core::watch::Watching::idle();
+    let mut into: Vec<u8> = Vec::new();
+    // Stopped before anything is asserted, so a failing assertion cannot leave the pump
+    // running with nobody left to stop it.
+    let (still_watching, why) = std::thread::scope(|scope| {
+        let pump = scope.spawn(|| pros_core::watch::carry_into(&mut from, &mut into, &watching));
+        std::thread::sleep(Duration::from_millis(300));
+        let still_watching = watching.counts().status.is_watching();
+        watching.stop();
+        (
+            still_watching,
+            pump.join().expect("the pump must not panic"),
+        )
+    });
+
+    assert!(
+        still_watching,
+        "a quiet socket must still be watched after several timeouts, not ended"
+    );
+    assert_eq!(
+        why, "stopped",
+        "the only reason it ended is that it was asked to"
+    );
+    assert_eq!(
+        watching.counts().bytes,
+        0,
+        "nothing arrived, which is the premise"
+    );
+}

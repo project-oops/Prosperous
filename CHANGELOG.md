@@ -37,3 +37,11 @@ the CI that would produce one has never run.
 
 - The `build` verb passes extra arguments through to cargo, so CI can select a target without
   a second code path.
+
+### Fixed
+
+- **A quiet stream no longer ends the watch on Windows.** The pump treated only `WouldBlock`
+  as the pause between frames, which is the name Unix gives a timed-out read; Windows names
+  it `TimedOut`, so the first half-second with nothing arriving was reported as the stream
+  having ended, with a message blaming the target. Both names are now the pause, and a unit
+  test and a standin test pin each.

@@ -54,6 +54,10 @@ const WINDOW: Duration = Duration::from_secs(1);
 /// and treating it as an end would close a working stream. It is short because the loop is
 /// also where the rate window closes, and a stalled stream should say so in about a second
 /// rather than in five.
+///
+/// The read reports it under two names: `WouldBlock` on Unix and `TimedOut` on Windows. The
+/// pump takes both as this pause, because taking only the first ended every Windows watch at
+/// its first half-second between frames.
 const BREATH: Duration = Duration::from_millis(500);
 
 /// What the watcher is doing.
@@ -534,7 +538,16 @@ fn carry(
                 }
                 bytes = bytes.saturating_add(some as u64);
             }
-            Err(why) if why.kind() == std::io::ErrorKind::WouldBlock => {
+            // A read that timed out, under whichever name this platform gives it - Unix
+            // says `WouldBlock`, Windows says `TimedOut`. Matching only the first sent every
+            // Windows watch to `Ended` at its first quiet half-second, with a message about
+            // the connected party failing to respond that reads as the target's fault.
+            Err(why)
+                if matches!(
+                    why.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
                 // Nothing this window. Not an end - a payload between frames looks exactly
                 // like this, and treating it as a stop would close a working stream. It still
                 // falls through to the bookkeeping below, so a stalled stream's rate goes to
@@ -742,5 +755,58 @@ mod tests {
             example.contains("low-latency"),
             "a buffering player reads as a broken stream"
         );
+    }
+
+    /// **A read that timed out is a pause, under either name a platform gives it.**
+    ///
+    /// The pump reads with a timeout so that a stop is noticed and a stalled rate falls to
+    /// zero. Unix reports that timeout as `WouldBlock` and Windows as `TimedOut`, and a pump
+    /// that knew only the first ended every Windows watch at its first quiet half-second. So
+    /// both are fed here, with no socket, and each must be gone round rather than settled on.
+    #[test]
+    fn a_read_that_timed_out_is_a_pause_under_either_name() {
+        use std::io::ErrorKind;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// A source that is connected and quiet, and asks to stop after a few reads.
+        struct Quiet {
+            kind: ErrorKind,
+            reads: usize,
+            stopping: Arc<AtomicBool>,
+        }
+
+        impl std::io::Read for Quiet {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                self.reads += 1;
+                if self.reads == 3 {
+                    self.stopping.store(true, Ordering::Relaxed);
+                }
+                Err(std::io::Error::from(self.kind))
+            }
+        }
+
+        for kind in [ErrorKind::WouldBlock, ErrorKind::TimedOut] {
+            let watching = Watching::idle();
+            let mut quiet = Quiet {
+                kind,
+                reads: 0,
+                stopping: Arc::clone(&watching.stopping),
+            };
+            let mut into: Vec<u8> = Vec::new();
+            let why = super::carry_into(&mut quiet, &mut into, &watching);
+            assert_eq!(
+                why, "stopped",
+                "{kind:?} must be waited through, not reported"
+            );
+            assert_eq!(
+                quiet.reads, 3,
+                "{kind:?} must be gone round rather than settled on"
+            );
+            assert_eq!(
+                watching.counts().status,
+                Status::Ended("stopped".to_owned())
+            );
+        }
     }
 }

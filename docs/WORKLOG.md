@@ -1,4 +1,28 @@
 
+## A quiet socket ended the watch on Windows, and the pump now knows both names for a timeout
+
+Reviewing the Porthole wire contract against `pros-core::watch` found the pump reading with a
+half-second timeout and treating only `WouldBlock` as the pause between frames. That is the
+name Unix gives a timed-out read. Windows gives it `TimedOut`, so on Windows the first
+half-second with nothing arriving ended the stream - and said so with a line about the
+connected party failing to respond, which reads as a fault on the target's side. The
+transport's own log reader had already learned this (`wire::is_quiet` matches both names); the
+pump had not.
+
+Two tests pin it. The unit test feeds a source that answers every read with one name and then
+the other, with no socket, and requires the pump to go round rather than settle. The standin
+test opens a silent fake with a short timeout and lets the platform choose the name, which is
+the reading that failed here before.
+
+**The surprise worth keeping:** nothing in the suite had ever exercised the timeout arm. Every
+socket test read with a five-second timeout against a fake that answered within milliseconds,
+and the one test that did wait on silence read the socket directly and matched both names in
+its own assertion - the knowledge was in the test file and not in the code beside it.
+
+The same review found the target side of the same seam blocking on its input socket, so that
+the video stalled whenever a pad was at rest; that is fixed in Porthole, in oops-apps, and
+recorded there.
+
 ## Process control moved in from obSCEne, first-class in both programs
 
 Restarting the user interface and closing a title were built inside `obscene-tool`, each
