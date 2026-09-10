@@ -151,7 +151,7 @@ saw is that project's exact description, it already declares the `sceVideoOut` n
 its principles are the ones this needs: announce before attempting, and leave out anything
 whose signature is uncertain rather than guessing an arity.
 
-The **client** is `pros-video`, here.
+The **client** is here - not a `pros-video` crate (see [DESIGN.md](DESIGN.md)): the frame-grab client is `pros-link::frames`, and Porthole's counting-and-piping half is `pros-core::watch`.
 
 That split is why this document is in this repository and the code will not all be.
 
@@ -352,7 +352,7 @@ refused (`0x805a1000`). So the VCE block comes into the process.
 The catch is the one every obSCEne payload meets, not one specific to the encoder: the `sceVencCore*`
 symbols do **not** auto-bind. The census read all of them `unresolved`, and opening the `.sprx` by
 path returns `0x80020002` (no entry). But the module *is* loaded - the run saw two modules and a live
-module handle - so its symbols are reached the way D277 already describes: **walk the loaded module's
+module handle - so its symbols are reached the way obscene#D277 already describes: **walk the loaded module's
 export table by base+vaddr and resolve them**, rather than relying on a bound import table.
 
 So `porthole_encoder_open` is three known steps: `sceSysmoduleLoadModule(0xa0)` (proven), self-resolve
@@ -362,12 +362,12 @@ is the two questions below it: the display buffer, and whether grabbing perturbs
 
 ---
 
-## Open questions, for target to answer
+## Open questions, for the hardware to answer
 
-- **Is a target encoder reachable from an unsigned payload? - Answered (2026-09-01): yes.**
+- **Is the hardware's encoder reachable from an unsigned payload? - Answered (2026-09-01): yes.**
   obSCEne's `106-encoder` loaded the encoder and recording sysmodules (`VENC` `0xa0`, `VIDEOREC`
   `0x81`) with `0x0` from an unsigned payload. The `sceVencCore*` symbols do not auto-bind, but the
-  module loads, so they are reached by the D277 export-table walk rather than a bound import table.
+  module loads, so they are reached by the obscene#D277 export-table walk rather than a bound import table.
   See "What has to be true for any of it" above.
 - **Is the display buffer reachable at all from an unsigned payload, and in what colour
   space?** If it is not, this design is worth nothing and the answer is worth having early.
@@ -376,5 +376,5 @@ is the two questions below it: the display buffer, and whether grabbing perturbs
   interference.
 
 Each of these is a reason this is designed now and built later: **the design costs an
-afternoon and the answers cost target time**, and doing them in that order means the
-target time is spent on questions rather than on discovering which questions to ask.
+afternoon and the answers cost hardware time**, and doing them in that order means the
+the hardware's time is spent on questions rather than on discovering which questions to ask.

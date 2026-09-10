@@ -493,10 +493,10 @@ impl Known<'_> {
 
     /// Whether this program knows where to get a payload it has never seen.
     fn can_fetch(&self, service: &str) -> bool {
-        self.described
-            .payloads()
-            .iter()
-            .any(|one| named_as(&one.name, service) && one.url.is_some())
+        self.described.payloads().iter().any(|one| {
+            named_as(&one.name, service)
+                && (one.url.is_some() || crate::fetch::local_build(one).is_some())
+        })
     }
 }
 
@@ -759,9 +759,9 @@ pub fn provision(
     };
 
     for placed in preset.in_order(kind) {
-        // The loader is required in an autoloader's list and impossible in the manager's own.
-        // The audit knows this; taking the same decision twice in two places is how the two
-        // come to disagree.
+        // The manager is what a list of one kind requires and the other forbids, and the loader
+        // is kept out of an autoloader's list while belonging in the manager's. The audit knows
+        // which; taking the same decision twice in two places is how the two come to disagree.
         if !crate::recovery::can_work_in(&placed.name, kind, what.known, what.loader_is_up()) {
             continue;
         }
@@ -1647,17 +1647,9 @@ mod tests {
             panic!("the last step writes the file");
         };
         assert_eq!(into, "/mnt/usb0/ps5_autoloader/autoload.txt");
-        // The kernel patch goes first; pldmgr runs a list of its own and goes last.
-        assert_eq!(
-            entries.first().map(String::as_str),
-            Some("kstuff-lite.elf"),
-            "{entries:?}"
-        );
-        assert_eq!(
-            entries.last().map(String::as_str),
-            Some("pldmgr.elf"),
-            "{entries:?}"
-        );
+        // **The clean autoloader list is only the manager.** It starts pldmgr, which then loads
+        // the rest of the chain from its own list - so nothing else belongs here.
+        assert_eq!(entries, ["pldmgr.elf"], "{entries:?}");
         assert!(plan.rewrites_the_list());
     }
 
@@ -1736,13 +1728,15 @@ mod tests {
     fn what_cannot_be_got_is_named_rather_than_listed() {
         let manifest = Manifest::new(vec![described("ftpsrv", Some("https://example/ftpsrv"))]);
         let known = Catalogue::builtin();
+        // The manager's own list, because that is where the payloads live now - the autoloader's
+        // is only the manager itself.
         let what = Known {
             report: None,
             there: Some(&[]),
             staged: &[],
             described: &manifest,
             chain: None,
-            kind: Kind::Autoloader,
+            kind: Kind::Manager,
             list: None,
             preset: &crate::recovery::baseline::first(),
             known: &known,
@@ -1751,7 +1745,7 @@ mod tests {
         let (plan, left_out) = provision(
             &what,
             crate::chain::PATH,
-            Kind::Autoloader,
+            Kind::Manager,
             &crate::recovery::baseline::first(),
         );
         let Some(Step::Rebuild { entries, .. }) = plan.moves.last().map(|one| one.step.clone())
@@ -1765,7 +1759,7 @@ mod tests {
         );
         assert!(!left_out.is_empty(), "and the rest are named");
         assert!(
-            left_out.iter().any(|one| one.starts_with("pldmgr")),
+            left_out.iter().any(|one| one.starts_with("kstuff-lite")),
             "{left_out:?}"
         );
     }
@@ -2050,6 +2044,7 @@ shsrv_v0.20.elf
             listed,
             [
                 "kstuff-lite",
+                "pltauth-patch",
                 "nanoDNS",
                 "ShadowMountPlus",
                 "ps5upload",
@@ -2449,6 +2444,39 @@ shsrv_v0.20.elf
         assert!(named_as("klogsrv_v0.6.elf", "klogsrv"));
         assert!(named_as("klogsrv", "klogsrv"));
         assert!(!named_as("klogsrv", "ftpsrv"));
+    }
+
+    /// pltauth-patch missing from manager autoload.txt is demanded by doctor::examine.
+    #[test]
+    fn pltauth_patch_missing_from_startup_is_demanded_by_doctor() {
+        let known = Catalogue::builtin();
+        let chain = Chain::parse(
+            "!3000\nkstuff-lite_v1.09.elf\n!3000\nnanodns.elf\n!3000\nShadowMountPlus_1.6beta16.elf\n\
+             !3000\nps5upload-4.1.2.elf\n!3000\nftpsrv_v0.21.elf\n!3000\nklogsrv_v0.9.elf\n\
+             !3000\nshsrv_v0.20.elf\n!3000\nelfldr_v0.24.elf\n",
+        );
+        let manifest = Manifest::new(vec![]);
+        let preset =
+            crate::recovery::baseline::named("payload-manager").expect("payload-manager preset");
+        let what = Known {
+            report: None,
+            there: Some(&[]),
+            staged: &[],
+            described: &manifest,
+            chain: Some(&chain),
+            kind: Kind::Manager,
+            list: Some(crate::chain::PATH),
+            preset: &preset,
+            known: &known,
+        };
+
+        let findings = examine(&what);
+        let pltauth = findings
+            .iter()
+            .find(|f| f.id == "in-list:pltauth-patch")
+            .expect("doctor::examine must demand pltauth-patch");
+        assert_eq!(pltauth.label, "pltauth-patch comes back after a restart");
+        assert_eq!(pltauth.gravity, Gravity::Warning);
     }
 
     /// Fetching changes nothing on the target, and a plan that only fetches says so.

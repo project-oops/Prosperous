@@ -484,8 +484,7 @@ fn a_save_carries_the_account_that_wrote_it() {
         let bytes = session
             .retrieve(&format!("{meta}/{}/{}", title.name, parameters.name))
             .expect("the parameter file comes across");
-        let read = pros_core::sfo::read(&bytes).expect("it parses as parameters");
-        let account = pros_core::sfo::account_id(&read).expect("it names an account");
+        let account = pros_core::sfo::account_in(&bytes).expect("it names an account");
         // Not printed: it identifies somebody. Its length and consistency are the findings.
         assert_eq!(account.len(), 16, "an account identifier is eight bytes");
         accounts.push(account);

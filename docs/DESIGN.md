@@ -2,9 +2,9 @@
 
 **A target-management tool, and the library underneath it.**
 
-One instrument for talking to a prepared target target: register it, find out what it
+One instrument for talking to a prepared target: register it, find out what it
 can currently do, put a payload on it, read its log, move files, watch its output. Two
-things consume that library - an emulator that needs target to check itself against,
+things consume that library - an emulator that needs the hardware to check itself against,
 and a standalone product for people who want to drive the target directly.
 
 **Status lives in [ROADMAP.md](ROADMAP.md), not here**, and `Cargo.toml` is the list of what
@@ -32,7 +32,7 @@ The binary is `pros`. The repository carries the long name.
 
 | consumer | uses it for |
 |---|---|
-| **orbistoun** | probing and testing against real target while diagnosing: remote launch, pull files, read the kernel log |
+| **orbistoun** | probing and testing against real hardware while diagnosing: remote launch, pull files, read the kernel log |
 | **Prosperous** | the standalone product: remote streaming, control, file transfer, file browsing |
 
 This is new functionality. It is unrelated to orbistoun's existing remote-control
@@ -57,7 +57,7 @@ The projects form one cycle, and each has exactly one job in it.
 orbistoun writes every behaviour down with how it is known - published, measured,
 guest-observed, assumed - and `orbistoun-cli questions --json` ranks the unsettled ones by
 how often real guests call them. obSCEne carries those questions to hardware over its command
-protocol, and an answer turns `assumed` into `measured`. See `THE_LOOP.md` there and
+protocol, and an answer turns `assumed` into `measured`. See `orbistoun/docs/THE_LOOP.md` and
 `docs/HARDWARE-PROBE.md` in obSCEne.
 
 **Prosperous is the third side, and it is deliberately the dullest.** A probe that answers
@@ -135,7 +135,7 @@ alternative - publishing `pros-link` so obSCEne can depend on a version - trades
 checkout convention for a release process, and a release process is a worse thing to owe
 than a clone somebody forgot.
 
-## The target target
+## The target
 
 Measured on 2026-08-25 against a target. Payloads are loaded by `pldmgr` from
 `/data/pldmgr/autoload.txt`, in this order:
@@ -193,10 +193,10 @@ list. So capability is probed on every use and never stored.
 The registry file is line-oriented and parsed by hand: it is a small table, and splitting
 is simpler to test than a format crate is to justify.
 
-It does **not** live under `%APPDATA%` on Windows. A tool running inside a packaged
-container has its writes there redirected into a per-package cache, invisible to the same
-user running the same tool from an ordinary shell. A configuration file the user cannot
-find is worse than no configuration file.
+It lives in the collection's shared data directory - `%APPDATA%\OOPS\` on Windows,
+`~/.local/share/OOPS/` on Linux - resolved through `oops_paths` and shared with the sibling
+projects, so a target registered here is one they can reach too. Where it goes and why is
+argued once in [features/targets.md](features/targets.md) rather than restated here.
 
 ## What a check reports
 
@@ -280,12 +280,12 @@ the payload belongs in **obSCEne**, because homebrew that runs on the target and
 what it saw is obSCEne's exact description. `pros-link::frames` is the client half, and
 it is built.
 
-The protocol, the acceptance criteria and the open questions target has to answer are in
+The protocol, the acceptance criteria and the open questions the hardware has to answer are in
 [VIDEO.md](VIDEO.md). (D008)
 
 ### An open question obSCEne can answer
 
-**Is a target encoder (`libSceVideoEnc`, the VCE block) reachable from an unsigned
+**Is the hardware's encoder (`libSceVideoEnc`, the VCE block) reachable from an unsigned
 payload?**
 
 That single answer decides whether live watching exists at all - there is no second route
@@ -303,7 +303,6 @@ what it ran on.
 - kernel log streaming
 - payload deployment from the manifest
 - file browse and transfer
-- remote play via Chiaki
 
 **Multi-target throughout.** Every operation names its target and the registry resolves
 it. There is no ambient "current target" for an operation to inherit by accident.
@@ -352,7 +351,7 @@ testing:
 - the loader may or may not echo, so the client has to work when it does not.
 - a port that refuses instantly and one that refuses slowly must produce different reports.
 
-None of that needs target, and all of it is where the bugs are. What a fake cannot test
+None of that needs the hardware, and all of it is where the bugs are. What a fake cannot test
 is whether the target agrees - that is what a registered target and a manual run are for,
 and the difference between the two should stay visible in how results are reported.
 

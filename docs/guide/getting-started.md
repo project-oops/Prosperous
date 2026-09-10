@@ -1,6 +1,6 @@
 # Getting started
 
-Prosperous talks to anything that runs Orbis software - a console prepared to run homebrew,
+Prosperous talks to anything that runs Orbis software - a Prospero-generation machine prepared to run homebrew,
 or orbistoun. This page takes you from a download to a target that answers.
 
 You do not need to have read anything else first, and you do not need to know what any of

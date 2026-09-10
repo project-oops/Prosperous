@@ -97,8 +97,6 @@ integrated.
 
 ### Named in the design and absent
 
-- **`pros-video`** - the third crate in `DESIGN.md`. The frame-grab half is being built in
-  `crates/pros-link/src/frames.rs` by another session.
 - **Media transfer** - a sync section pointed at a media folder. Mostly a path and an entry.
 
 ### Reachable now that the shell has been read
@@ -208,8 +206,7 @@ includes things this program has never called.
 1. **Is save retargeting worth the `garlic-savemgr` integration?** The offline half is done.
    The other half is a payload with an HTTP API on port 8082 and a mount/unmount lifecycle - a
    meaningful piece of work for a feature whose per-game success rate nobody has measured.
-2. **Nothing is committed.** No commit on the branch; every file staged or untracked.
-3. **How far to go with unpairing from the scene?** [CAPABILITIES.md](CAPABILITIES.md) is the
+2. **How far to go with unpairing from the scene?** [CAPABILITIES.md](CAPABILITIES.md) is the
    design. The evidence it is real: the shipped payload list already carries three FTP servers
    and several autoloaders, and this program hardcodes one of each - four paths and three file
    formats belonging to `pldmgr` alone. Staged so the first two steps are worth having on
@@ -217,11 +214,10 @@ includes things this program has never called.
 
 ---
 
-## Numbers
+## Running the tests and the gate
 
-- 361 tests, 15 of which need a target or local samples and are `#[ignore]` by default
-- `PROS_TARGET=<address> cargo test -p pros-core --test against_a_target -- --ignored`
-- 23 decisions in `DECISIONS.md`
+- Some tests need a target or local samples and are `#[ignore]` by default:
+  `PROS_TARGET=<address> cargo test -p pros-core --test against_a_target -- --ignored`
 - Gate: `bin/prosperous check` - format, clippy at `-D warnings`, tests, `cargo doc` as errors
 
 [`Job::disturbs`]: ../pros-gui/src/state.rs

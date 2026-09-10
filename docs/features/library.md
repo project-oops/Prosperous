@@ -1,6 +1,6 @@
 # The target's storage
 
-What is actually on the console: titles, saves and packages, plus the file operations to get
+What is actually on the target: titles, saves and packages, plus the file operations to get
 things on and off it.
 
 ```bash

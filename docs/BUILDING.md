@@ -36,20 +36,13 @@ rather than turning into a mysterious connection error further down.
 
 ## The seven shared verbs
 
-So `oops test prosperous` and `./bin/prosperous test` are one command reached two ways.
+So `oops test prosperous` and `./bin/prosperous test` are one command reached two ways. The
+seven verbs are the same across the collection and are listed once, in the meta's
+[BUILDING.md](https://github.com/project-oops/OOPS/blob/main/docs/BUILDING.md#the-verbs) - which
+also records what each project adds (`prosperous | provenance, target`).
 
-| verb | what it does |
-|---|---|
-| `build` | `cargo build --release --workspace` |
-| `test` | `cargo test --workspace` |
-| `lint` | clippy at `-D warnings` |
-| `fmt` | format in place |
-| `check` | the full gate - see below |
-| `clean` | `cargo clean` |
-| `doc` | `cargo doc --no-deps --workspace` |
-
-`check` runs these and more. The individual verbs exist so the pieces can be asked for one at
-a time, and so the same word means the same thing in all four projects.
+`check` runs the lot and more; the individual verbs exist so the pieces can be asked for one at
+a time, and so the same word means the same thing across the collection.
 
 ## Prosperous's own two
 
@@ -138,7 +131,7 @@ rather than relying on a shallow one still answering it.
 
 ## From the collection
 
-[OOPS](https://github.com/project-oops/OOPS) holds all four side by side:
+[OOPS](https://github.com/project-oops/OOPS) holds the collection side by side:
 
 ```bash
 ./bin/oops check prosperous     # also: build, test, fmt, clean

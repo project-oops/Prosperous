@@ -66,6 +66,11 @@
           "type": "string",
           "description": "A second, more direct source url, as seen in the wild. Not used for fetching."
         },
+        "source_local": {
+          "$comment": "PROSPEROUS ADDITION - relative path to a local build in the workspace (primary source).",
+          "type": "string",
+          "description": "Where a local development build lives on this machine, relative to the repository root. When present and the file exists, it is used as the primary source before fetching over the network."
+        },
         "version": {
           "$comment": "observed: pldmgr repository_cache.json",
           "type": "string",

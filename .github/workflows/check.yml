@@ -18,16 +18,16 @@ jobs:
     name: build, lint and test
     runs-on: ubuntu-latest
     steps:
-      # The entry point, without submodules. This job needs Prosperous and what Prosperous
-      # depends on - not all five - so `bootstrap` below asks for exactly that rather than
-      # paying for five checkouts to build one.
+      # The entry point, without submodules. This job needs Prosperous and the siblings Prosperous
+      # depends on - not the whole collection - so `bootstrap` below asks for exactly those rather than
+      # paying for every checkout to build one.
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/OOPS
           path: OOPS
 
       # Checked out INTO the OOPS layout, because the layout is a build requirement rather
-      # than a convenience: Prosperous resolves oops-libs by relative path, as a sibling.
+      # than a convenience: Prosperous resolves oops-libs and selfish by relative path, as siblings.
       #
       # `fetch-depth: 0` is deliberate. The provenance step asks git what is *tracked*,
       # and a shallow checkout still answers that correctly - but the guard refuses to
@@ -41,7 +41,7 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
 
-      # Fetches oops-libs, which this workspace takes by path. Without it the build fails as
+      # Fetches oops-libs and selfish, which this workspace takes by path. Without them the build fails as
       # a missing directory rather than as a missing dependency, which is a much worse error
       # to read.
       - name: Siblings this build needs

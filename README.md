@@ -21,7 +21,7 @@ pros pull /data/report.txt
 ## Why it is a library first
 
 Two other projects need to talk to a target and neither is a target tool: an emulator that
-can only settle some questions by asking real target, and a conformance probe whose entire
+can only settle some questions by asking real hardware, and a conformance probe whose entire
 delivery problem is getting itself onto the machine. Both had started building the same
 transport.
 

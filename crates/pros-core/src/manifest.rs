@@ -52,6 +52,9 @@ pub struct Payload {
     /// Where it comes from, for a machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_direct: Option<String>,
+    /// Where a local development build lives on this machine, relative to the repository root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_local: Option<String>,
     /// Which build this describes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
@@ -158,6 +161,9 @@ impl Payload {
         }
         if other.source_direct.is_some() {
             self.source_direct.clone_from(&other.source_direct);
+        }
+        if other.source_local.is_some() {
+            self.source_local.clone_from(&other.source_local);
         }
         if other.version.is_some() {
             self.version.clone_from(&other.version);
@@ -364,7 +370,16 @@ impl Tracked {
     /// because somebody wrote it.
     pub fn read(self) -> Result<Manifest, NotAManifest> {
         match self.path().filter(|path| path.exists()) {
-            Some(path) => Manifest::from_file(&path),
+            Some(path) => {
+                let on_disk = Manifest::from_file(&path)?;
+                let merged = self.shipped().merged_with(&on_disk);
+                if merged != on_disk {
+                    if let Ok(text) = merged.to_json() {
+                        let _ = std::fs::write(&path, text);
+                    }
+                }
+                Ok(merged)
+            }
             None => Ok(self.shipped()),
         }
     }
@@ -1076,6 +1091,7 @@ mod tests {
             url: Some(String::new()),
             source: Some(String::new()),
             source_direct: Some(String::new()),
+            source_local: Some(String::new()),
             version: Some(String::new()),
             last_update: Some(String::new()),
             checksum: Some(String::new()),

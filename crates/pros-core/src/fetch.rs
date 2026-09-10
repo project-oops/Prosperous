@@ -118,19 +118,128 @@ pub fn fetch_into(payload: &Payload, dir: &Path) -> Result<PathBuf, NotFetched> 
     keep(payload, Some(dir))
 }
 
+/// Finds a local build for a payload on this machine, if one exists.
+///
+/// Looks first at `source_local` (relative to the repository root), then checks conventional
+/// build and dist directories under sibling projects (e.g. `oops-apps/<name>/build/<filename>`).
+#[must_use]
+pub fn local_build(payload: &Payload) -> Option<PathBuf> {
+    let filename = payload.filename.as_deref().unwrap_or(payload.name.as_str());
+
+    for root in candidate_roots() {
+        // 1. If explicit relative source_local is specified, check against root.
+        if let Some(explicit) = payload.source_local.as_deref() {
+            let candidate = root.join(explicit);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+
+        // 2. Conventional relative paths under oops-apps or project root.
+        let candidates = [
+            root.join("oops-apps")
+                .join(&payload.name)
+                .join("build")
+                .join(filename),
+            root.join("oops-apps")
+                .join(&payload.name)
+                .join("dist")
+                .join(filename),
+            root.join("oops-apps").join(&payload.name).join(filename),
+            root.join("oops-apps").join("build").join(filename),
+            root.join("oops-apps").join("dist").join(filename),
+            root.join(&payload.name).join("build").join(filename),
+            root.join(&payload.name).join("dist").join(filename),
+            root.join("build").join(filename),
+            root.join("dist").join(filename),
+        ];
+
+        for candidate in candidates {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+/// Candidate workspace / repository roots for discovering local builds.
+fn candidate_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    if let Ok(var) = std::env::var("OOPS_ROOT") {
+        let p = PathBuf::from(var);
+        if p.is_dir() {
+            roots.push(p);
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut cur = cwd.as_path();
+        roots.push(cur.to_path_buf());
+        for _ in 0..6 {
+            if let Some(parent) = cur.parent() {
+                roots.push(parent.to_path_buf());
+                cur = parent;
+            } else {
+                break;
+            }
+        }
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        let mut cur = exe.as_path();
+        for _ in 0..6 {
+            if let Some(parent) = cur.parent() {
+                roots.push(parent.to_path_buf());
+                cur = parent;
+            } else {
+                break;
+            }
+        }
+    }
+
+    // Deduplicate and prioritize roots that contain an `oops-apps` directory or `.git`
+    let mut prioritized = Vec::new();
+    let mut others = Vec::new();
+    for r in roots {
+        if prioritized.contains(&r) || others.contains(&r) {
+            continue;
+        }
+        if r.join("oops-apps").is_dir() || r.join(".git").exists() {
+            prioritized.push(r);
+        } else {
+            others.push(r);
+        }
+    }
+    prioritized.extend(others);
+    prioritized
+}
+
+/// Whether this payload has anywhere to get it from (local build or remote URL).
+#[must_use]
+pub fn has_source(payload: &Payload) -> bool {
+    !wheres(payload).is_empty()
+}
+
 /// Downloads, checks, and keeps - in the staging directory, or where the caller said.
 fn keep(payload: &Payload, dir: Option<&Path>) -> Result<PathBuf, NotFetched> {
-    // Refused before anything is downloaded. There is no point spending somebody's
-    // bandwidth on a file that could not be checked when it arrived.
-    let _ = payload.checksum().map_err(|why| {
-        tracing::warn!(payload = %payload.name, %why, "refusing to download: nothing to check it against");
-        NotFetched::Unverifiable {
-            why: why.to_string(),
-        }
-    })?;
     let sources = wheres(payload);
     if sources.is_empty() {
         return Err(NotFetched::NoUrl);
+    }
+
+    // Refused before anything is downloaded if remote-only. A local build on localhost
+    // can be staged even without an established remote checksum.
+    let has_local = sources.iter().any(|(w, _)| matches!(w, Where::Local(_)));
+    if !has_local {
+        let _ = payload.checksum().map_err(|why| {
+            tracing::warn!(payload = %payload.name, %why, "refusing to download: nothing to check it against");
+            NotFetched::Unverifiable {
+                why: why.to_string(),
+            }
+        })?;
     }
 
     let into = temporary(payload)?;
@@ -140,47 +249,41 @@ fn keep(payload: &Payload, dir: Option<&Path>) -> Result<PathBuf, NotFetched> {
         })?;
     }
 
-    // **Each address in turn, and the digest decides.** A mirror is somebody else's copy of a
-    // release and it goes stale on its own schedule - measured, on 2026-08-30: the mirror this
-    // list names for `elfldr` answers 404 while the project's own release serves a file whose
-    // digest is exactly the one the list already states. Refusing to look at the second address
-    // spends that outage on somebody who has both written down.
-    //
-    // This is only safe because the check below is not optional: a download is refused outright
-    // unless the list states a digest, so a second address cannot smuggle in different bytes.
-    // It could only ever produce the described file or an error.
+    // Each address in turn, trying local build first (primary source), then remote addresses.
     let mut refused: Vec<String> = Vec::new();
     let mut got = None;
-    for (which, url) in &sources {
-        // `info`, because bandwidth is spent and a file appears on disk - an action in the
-        // user's own terms rather than a decision behind one.
-        tracing::info!(payload = %payload.name, %url, %which, "fetching");
-        match pull(url, &into) {
+    for (which, target) in &sources {
+        tracing::info!(payload = %payload.name, %target, %which, "fetching");
+        let result = match which {
+            Where::Local(source_path) => std::fs::copy(source_path, &into)
+                .map(|_| ())
+                .map_err(|why| format!("could not copy {}: {why}", source_path.display())),
+            Where::Listed | Where::Upstream => pull(target, &into),
+        };
+        match result {
             Ok(()) => {
-                got = Some((*which, url.clone()));
+                got = Some((which.clone(), target.clone()));
                 break;
             }
-            Err(why) => refused.push(format!("{which} ({url}): {why}")),
+            Err(why) => refused.push(format!("{which} ({target}): {why}")),
         }
     }
     let Some((which, url)) = got else {
         let _ = std::fs::remove_file(&into);
-        // **Every address that was tried, and what each said.** A bare `404` names neither the
-        // thing that answered it nor the alternative that was not reached, which leaves nothing
-        // to act on but a guess about whose list is wrong.
         return Err(NotFetched::Failed {
             why: refused.join("; "),
         });
     };
-    if which != Where::Listed {
+    if which != Where::Listed && !matches!(which, Where::Local(_)) {
         tracing::warn!(payload = %payload.name, %url, "the listed address failed; used another");
     }
 
-    // **The download is checked before it is kept**, and the temporary copy goes either way:
-    // a file that failed its digest must not be lying around looking like a payload.
-    let kept = match dir {
-        Some(dir) => staging::accept_into(payload, &into, dir),
-        None => staging::accept(payload, &into),
+    let kept = match &which {
+        Where::Local(_) => staging::accept_local_into(payload, &into, dir),
+        Where::Listed | Where::Upstream => match dir {
+            Some(dir) => staging::accept_into(payload, &into, dir),
+            None => staging::accept(payload, &into),
+        },
     };
     let _ = std::fs::remove_file(&into);
     kept.map_err(NotFetched::NotStaged)
@@ -202,13 +305,11 @@ fn temporary(payload: &Payload) -> Result<PathBuf, NotFetched> {
     Ok(path)
 }
 
-/// Which of a description's addresses a file came from.
-///
-/// **Named rather than counted**, because *the mirror served it* and *the mirror was down and
-/// the project's own release served it* are different facts about somebody's payload list, and
-/// only the second one is worth doing something about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Where {
+/// Which source a payload came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Where {
+    /// A local build on this machine (primary source).
+    Local(PathBuf),
     /// The `url` field: what the list says to use.
     Listed,
     /// The `source_direct` field: the file at its own project, named by the same list.
@@ -218,6 +319,7 @@ enum Where {
 impl std::fmt::Display for Where {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Local(path) => write!(f, "local build ({})", path.display()),
             Self::Listed => write!(f, "the listed address"),
             Self::Upstream => write!(f, "the project's own release"),
         }
@@ -226,11 +328,13 @@ impl std::fmt::Display for Where {
 
 /// Everywhere a description says this file can be got, in the order to try them.
 ///
-/// The listed address first, always: it is what somebody chose. The upstream one is included
-/// only when it is a different address, because trying the same URL twice is a slower way of
-/// getting the same answer.
-fn wheres(payload: &Payload) -> Vec<(Where, String)> {
+/// A local build first (primary source): what has been compiled on this machine beats
+/// reaching across the network. The listed address second, and upstream direct third.
+pub fn wheres(payload: &Payload) -> Vec<(Where, String)> {
     let mut found: Vec<(Where, String)> = Vec::new();
+    if let Some(local) = local_build(payload) {
+        found.push((Where::Local(local.clone()), local.display().to_string()));
+    }
     if let Some(url) = payload.url.as_ref() {
         found.push((Where::Listed, url.clone()));
     }
@@ -361,7 +465,7 @@ mod tests {
         assert!(super::wheres(&payload).is_empty());
     }
 
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use super::{DEFAULT, NotFetched, example, fetch, parts};
     use crate::manifest::Payload;
@@ -420,5 +524,61 @@ mod tests {
     fn the_example_explains_the_default() {
         assert!(example().contains(DEFAULT));
         assert!(example().contains("checked against the manifest's digest"));
+    }
+
+    /// **A local build on localhost is the primary source when it exists.**
+    #[test]
+    fn a_local_build_is_tried_first_as_primary_source() {
+        let test_dir = PathBuf::from("target").join("test-local-src");
+        let _ = std::fs::remove_dir_all(&test_dir);
+        std::fs::create_dir_all(&test_dir).expect("creates dir");
+        let dummy_elf = test_dir.join("dummy.elf");
+        std::fs::write(&dummy_elf, b"local-elf-bytes").expect("writes file");
+
+        let payload = Payload {
+            name: "dummy".to_owned(),
+            filename: Some("dummy.elf".to_owned()),
+            source_local: Some(dummy_elf.display().to_string()),
+            url: Some("https://example.invalid/dummy.elf".to_owned()),
+            source_direct: Some("https://github.com/example/dummy/releases/dummy.elf".to_owned()),
+            ..Payload::default()
+        };
+
+        let found = super::wheres(&payload);
+        assert!(!found.is_empty(), "must find sources");
+        assert!(
+            matches!(&found[0].0, super::Where::Local(p) if p.is_file()),
+            "first source must be local build"
+        );
+        assert_eq!(found[1].0, super::Where::Listed);
+        assert_eq!(found[2].0, super::Where::Upstream);
+
+        let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    /// **A local build is fetched and staged directly without touching the network.**
+    #[test]
+    fn a_local_build_is_fetched_and_staged_directly() {
+        let test_dir = PathBuf::from("target").join("test-local-fetch");
+        let _ = std::fs::remove_dir_all(&test_dir);
+        let src_dir = test_dir.join("src");
+        let dst_dir = test_dir.join("dst");
+        std::fs::create_dir_all(&src_dir).expect("creates src");
+        let dummy_elf = src_dir.join("test-payload.elf");
+        std::fs::write(&dummy_elf, b"elf-payload-content").expect("writes file");
+
+        let payload = Payload {
+            name: "test-payload".to_owned(),
+            filename: Some("test-payload.elf".to_owned()),
+            source_local: Some(dummy_elf.display().to_string()),
+            url: Some("https://example.invalid/test-payload.elf".to_owned()),
+            ..Payload::default()
+        };
+
+        let into = super::fetch_into(&payload, &dst_dir).expect("fetches from local source");
+        assert_eq!(into, dst_dir.join("test-payload.elf"));
+        assert_eq!(std::fs::read(&into).expect("reads"), b"elf-payload-content");
+
+        let _ = std::fs::remove_dir_all(&test_dir);
     }
 }

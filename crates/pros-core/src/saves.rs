@@ -118,8 +118,7 @@ fn account_using(session: &mut Session) -> Option<String> {
                     continue;
                 }
                 if let Ok(bytes) = session.retrieve(&format!("{meta}/{}/{}", title.name, file.name))
-                    && let Ok(parameters) = crate::sfo::read(&bytes)
-                    && let Some(account) = crate::sfo::account_id(&parameters)
+                    && let Some(account) = crate::sfo::account_in(&bytes)
                 {
                     return Some(account);
                 }

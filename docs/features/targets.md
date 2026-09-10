@@ -1,6 +1,6 @@
 # Targets
 
-A target is a console Prosperous knows how to reach: a name, an address, and any ports that
+A target is a Prospero-generation machine Prosperous knows how to reach: a name, an address, and any ports that
 differ from the defaults. Everything else in the tool takes one as its subject.
 
 ## Registering one

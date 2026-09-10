@@ -159,6 +159,68 @@ pub fn accept(payload: &Payload, from: &Path) -> Result<PathBuf, NotStaged> {
     Ok(into)
 }
 
+/// Copies a local build into staging or a named directory.
+///
+/// If the manifest specifies a checksum and it matches, the file is verified.
+/// If it differs or the manifest states no checksum, it is accepted as a local
+/// development build with a warning, rather than refusing to stage a build the developer
+/// just compiled on this machine.
+pub fn accept_local_into(
+    payload: &Payload,
+    from: &Path,
+    dir: Option<&Path>,
+) -> Result<PathBuf, NotStaged> {
+    let bytes = std::fs::read(from).map_err(|why| NotStaged::Unreadable {
+        why: why.to_string(),
+    })?;
+    if let Ok(expected) = payload.checksum() {
+        if let Err(mismatch) = expected.verify(&bytes) {
+            tracing::warn!(
+                payload = %payload.name,
+                %mismatch,
+                "local build checksum differs from manifest; accepting as local development build"
+            );
+        } else {
+            tracing::info!(payload = %payload.name, "local build verified against manifest digest");
+        }
+    } else {
+        tracing::info!(
+            payload = %payload.name,
+            "staging local build without manifest checksum"
+        );
+    }
+    let name = payload
+        .filename
+        .clone()
+        .unwrap_or_else(|| payload.name.clone());
+    let into = match dir {
+        Some(dir) => {
+            std::fs::create_dir_all(dir).map_err(|why| NotStaged::Unreadable {
+                why: why.to_string(),
+            })?;
+            dir.join(name)
+        }
+        None => {
+            let p = path_for(payload).ok_or(NotStaged::Nowhere)?;
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).map_err(|why| NotStaged::Unreadable {
+                    why: why.to_string(),
+                })?;
+            }
+            p
+        }
+    };
+    std::fs::write(&into, &bytes).map_err(|why| NotStaged::Unreadable {
+        why: why.to_string(),
+    })?;
+    Ok(into)
+}
+
+/// The same, into the default staging directory.
+pub fn accept_local(payload: &Payload, from: &Path) -> Result<PathBuf, NotStaged> {
+    accept_local_into(payload, from, None)
+}
+
 /// Why a file was not staged.
 #[derive(Debug)]
 pub enum NotStaged {

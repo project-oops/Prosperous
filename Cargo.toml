@@ -41,6 +41,12 @@ oops-docs = { path = "../oops-libs/crates/oops-docs" }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 oops-paths = { path = "../oops-libs/crates/oops-paths" }
 
+# The title formats, and specifically the `param.sfo` reader. A save's parameter file is a
+# platform format, so principle 6 says this crate does not parse it - SELFish does, and
+# Prosperous reads through it rather than keeping a second copy of the layout. Path while
+# nothing is published, like the `oops-*` crates above. (D028)
+selfish-title = { path = "../selfish/crates/selfish-title" }
+
 # GUI. Immediate-mode, which suits a panel that is redrawn wholesale every time a check
 # comes back rather than edited field by field.
 #

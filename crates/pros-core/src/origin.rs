@@ -156,8 +156,7 @@ pub fn account_of(folder: &Path) -> Option<String> {
                 .extension()
                 .is_some_and(|end| end.eq_ignore_ascii_case("sfo"))
                 && let Ok(bytes) = std::fs::read(&path)
-                && let Ok(parameters) = crate::sfo::read(&bytes)
-                && let Some(account) = crate::sfo::account_id(&parameters)
+                && let Some(account) = crate::sfo::account_in(&bytes)
             {
                 return Some(account);
             }

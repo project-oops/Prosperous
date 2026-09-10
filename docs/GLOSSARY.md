@@ -5,7 +5,7 @@ the words that mean different things in different repositories - see
 [the collection's glossary](https://github.com/project-oops/OOPS/blob/main/docs/GLOSSARY.md).
 For the file formats, see [SELFish's](https://github.com/project-oops/SELFish/blob/main/docs/GLOSSARY.md).
 
-**target** is defined for all five repositories in
+**target** is defined for the whole collection in
 [CONVENTIONS.md §2](https://github.com/project-oops/OOPS/blob/main/docs/CONVENTIONS.md#the-words-for-our-own-layers):
 one machine Prosperous has registered, by name and address. It is the word this project uses
 most, and it is not repeated here.

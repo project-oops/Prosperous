@@ -41,6 +41,11 @@ oops-paths = { workspace = true }
 # would be the least defensible saving available.
 sha2 = "0.10"
 
+# The `param.sfo` reader. This crate used to carry its own `\0PSF` parser; principle 6 says a
+# platform format belongs in SELFish, so the reader lives there and `sfo` here is only the
+# in-place writer and the account rendering built over it. (D028)
+selfish-title = { workspace = true }
+
 [build-dependencies]
 # The other half of the same crate: `emit` runs at build time, `stamp!` at run time.
 oops-build = { workspace = true }

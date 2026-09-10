@@ -65,12 +65,11 @@ not restated here.
 
 ## Adding to a log
 
-The long-running documents are **directories with a generated index**. Add a file under
-`decisions/`, `backlog/` or `worklog/`, then regenerate the table:
+The decisions log is a **directory with a generated index**. Add a file under `decisions/`,
+then regenerate the table:
 
 ```bash
 tools/split-decisions.sh --index prosperous
-tools/split-doc.sh --index prosperous BACKLOG 2 backlog
 ```
 
 Do not edit the index by hand - it is overwritten. The split exists because two sessions

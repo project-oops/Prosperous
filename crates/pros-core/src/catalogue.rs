@@ -132,6 +132,13 @@ impl Catalogue {
     /// is **corrected rather than duplicated**, so one name never appears twice.
     pub fn take_declared(&mut self, manifest: &crate::manifest::Manifest) {
         for payload in manifest.payloads() {
+            if let Some(desc) = payload.unlocks.as_ref().or(payload.description.as_ref())
+                && !desc.trim().is_empty()
+            {
+                self.notes
+                    .entry(payload.name.clone())
+                    .or_insert_with(|| desc.clone());
+            }
             let Some(declared) = payload.as_service() else {
                 continue;
             };

@@ -697,14 +697,10 @@ impl App {
         // if there is not. **Falling back rather than showing nothing**: somebody who has
         // just installed this wants to know what a target ought to be running, and an
         // empty window tells them to already know the answer.
-        let manifest = pros_core::manifest::default_path()
-            .and_then(|path| Manifest::from_file(&path).ok())
+        let manifest = pros_core::manifest::Tracked::Payloads
+            .read()
+            .ok()
             .or_else(|| {
-                // **Written out on first run, then read from disk like anything else.**
-                // A list compiled into the binary cannot be corrected without a rebuild, and
-                // this one is a description somebody should be able to edit. This is also why
-                // there is no *write the recommended list* anywhere: the file already exists
-                // by the time anybody could press it.
                 let seed = pros_core::manifest::recommended();
                 let _ = seed.save();
                 Some(seed)
@@ -1248,12 +1244,31 @@ impl App {
                         continue;
                     };
                     let from = local.join(&here.name);
-                    let to = format!("{remote}/{}", here.name);
-                    Some(if here.folder {
-                        Job::Restore(target.clone(), from, to, false)
+                    if here.folder {
+                        // A folder - a save, a title's data - is copied across as it is.
+                        let to = format!("{remote}/{}", here.name);
+                        Some(Job::Restore(target.clone(), from, to, false))
+                    } else if let Some(described) = entry.described.clone() {
+                        // **A payload goes into its own folder, not loose at the top.** The
+                        // manager resolves `<dir>/<name>/<file>` (measured, `payloads::on_target_at`),
+                        // so a payload dropped straight into `<dir>/<name>.elf` sits on the disk
+                        // invisible to the thing that loads it - the same shape of bug the check
+                        // screen's plan once had. `Job::Install` lays out the folder, the ELF and
+                        // the `.json` sidecar the manager expects, so `send` uses it rather than a
+                        // flat copy. `remote` is where the browser is pointed, `install` adds the
+                        // `<name>/<file>` under it.
+                        Some(Job::Install(
+                            target.clone(),
+                            Box::new(described),
+                            from,
+                            remote.clone(),
+                        ))
                     } else {
-                        Job::Push(target.clone(), from, to)
-                    })
+                        // Not a described payload - nothing to name a folder by - so a bare file
+                        // is copied where the browser is pointed, as before.
+                        let to = format!("{remote}/{}", here.name);
+                        Some(Job::Push(target.clone(), from, to))
+                    }
                 }
                 Offer::Fetch => {
                     let Some(there) = entry.there.as_ref() else {
@@ -2140,11 +2155,20 @@ impl App {
             ui.text_edit_singleline(&mut export.name);
         });
         let name = export.name.trim().to_owned();
+        let is_shipped = pros_core::recovery::baseline::is_shipped_name(&name);
         // **One word, because the registry line is whitespace-delimited.** A name with a space
         // in it would be written as `chain=<half>` and the rest read as an address.
-        let usable = !name.is_empty() && !name.contains(char::is_whitespace);
+        let usable = !name.is_empty() && !name.contains(char::is_whitespace) && !is_shipped;
         if name.is_empty() {
             ui.colored_label(egui::Color32::from_rgb(230, 160, 90), "it needs a name");
+        } else if is_shipped {
+            ui.colored_label(
+                egui::Color32::from_rgb(230, 90, 90),
+                format!(
+                    "'{name}' is a built-in chain provided by Prosperous and cannot be overwritten. \
+                     Choose a custom name for your chain."
+                ),
+            );
         } else if !usable {
             ui.colored_label(
                 egui::Color32::from_rgb(230, 90, 90),
@@ -2154,10 +2178,7 @@ impl App {
         } else if export.taken.contains(&name) {
             ui.colored_label(
                 egui::Color32::from_rgb(230, 160, 90),
-                format!(
-                    "there is already a preset called {name}, and this replaces it. A preset \
-                     that ships with this program is not changed on disk, but yours wins."
-                ),
+                format!("there is already a custom preset called {name}, and this replaces it."),
             );
         }
 
@@ -3713,7 +3734,21 @@ impl App {
                         // navigated instead of selecting, which made folders unselectable.
                         let known = self.state.names.get(&entry.name);
                         match listing_row(ui, entry, &self.state.listing.chosen, true, known) {
-                            Some(Hit::Open) => entered = Some(entry.name.clone()),
+                            // **Open the directory the target actually has, not the row's
+                            // name.** The row is named after the description
+                            // (`elfldr_v0.25.elf`); the target keeps the payload in a directory
+                            // it spells differently (`elfldr`). Navigating by the row name asks
+                            // for a directory that is not there and shows an empty folder - the
+                            // hazard `listing::Side` documents. The target side knows what the
+                            // target calls it, so navigation uses that; the tick still keys off
+                            // the row, which is what a selection is by.
+                            Some(Hit::Open) => {
+                                entered =
+                                    Some(entry.there.as_ref().map_or_else(
+                                        || entry.name.clone(),
+                                        |side| side.name.clone(),
+                                    ));
+                            }
                             Some(Hit::Tick) => toggled = Some(entry.name.clone()),
                             None => {}
                         }

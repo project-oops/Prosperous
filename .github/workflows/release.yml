@@ -14,7 +14,7 @@ name: Release
 # Archives use stable, version-less filenames so a link can survive release to release.
 #
 # Every job begins the standard OOPS preamble: check out the collection, check this repository
-# out *into* it, then `oops bootstrap`. Prosperous resolves `oops-libs` by relative path, so a
+# out *into* it, then `oops bootstrap`. Prosperous resolves `oops-libs` and `selfish` by relative path, so a
 # flat checkout fails as a missing directory rather than as a missing dependency.
 
 on:

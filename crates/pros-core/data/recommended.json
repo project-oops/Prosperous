@@ -113,6 +113,21 @@
       "checksum": "b1dfe57f367a35374f605127915eda38c76a6ed5d1c729e427955798bd78c66a"
     },
     {
+      "name": "pltauth-patch",
+      "filename": "pltauth-patch.elf",
+      "version": "latest",
+      "category": "System & Jailbreak",
+      "description": "SceShellCore entitlement bypass enabling native Prospero (category 0) homebrew",
+      "source_local": "oops-apps/pltauth-patch/dist/pltauth-patch-prospero.elf",
+      "url": "https://github.com/project-oops/oops-apps/releases/download/latest-main/pltauth-patch-prospero.elf",
+      "source": "https://github.com/project-oops/oops-apps",
+      "source_direct": "https://github.com/project-oops/oops-apps/releases/download/latest-main/pltauth-patch-prospero.elf",
+      "last_update": "2026-09-10",
+      "checksum": "78582dc5718b72108fff878b341120d0ff9c6d4d0faa1f5a524b39361a0bf759",
+      "unlocks": "run native Prospero homebrew",
+      "required": true
+    },
+    {
       "name": "BFpilot",
       "filename": "BFpilot_v0.4.4.elf",
       "version": "v0.4.4",

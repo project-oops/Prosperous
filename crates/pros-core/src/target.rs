@@ -23,16 +23,13 @@
 //!
 //! Empty is the normal case and the built-in ports apply.
 //!
-//! # Not under the per-user application data directory on Windows
+//! # Where the registry lives
 //!
-//! A tool running inside a packaged container has its writes there redirected into a
-//! per-package cache, invisible to the same user running the same tool from an ordinary
-//! shell. **A configuration file the user cannot find is worse than no configuration file**,
-//! so this uses a plain dotted directory under the home directory on every platform.
-//!
-//! That argument now lives in `oops_paths`, where it settled the default for the whole
-//! collection - this was the project that had met the problem, so this is where the reasoning
-//! came from. Using the shared crate also brings portable mode: a `.portable` directory beside
+//! In the collection's shared data directory - `%APPDATA%\OOPS\` on Windows,
+//! `~/.local/share/OOPS/` on Linux - resolved through `oops_paths`, so a target registered here
+//! is one the sibling projects can reach. Why it is the platform-native directory rather than a
+//! dotted directory under the home (a brief experiment, reverted) is argued once in `oops_paths`,
+//! not restated here. The shared crate also brings portable mode: a `.portable` directory beside
 //! the binary, or `PROSPEROUS_DATA_DIR`, moves everything below.
 //!
 //! # Parsed by hand, deliberately

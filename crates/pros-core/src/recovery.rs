@@ -113,7 +113,10 @@ pub fn can_work_in(name: &str, kind: Kind, known: &Catalogue, loader_up: Option<
 }
 
 /// How much trouble a finding is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum Gravity {
     /// Worth knowing, costs visibility rather than access.
     Warning,
@@ -413,45 +416,80 @@ pub fn audit(
         }
     }
 
-    for service in known.services() {
+    let is_satisfied = |name: &str, alternatives: &[String]| -> bool {
+        chain.position(name).is_some()
+            || alternatives.iter().any(|alt| chain.position(alt).is_some())
+    };
+
+    // 1. Audit baseline requirements for Prosperous from chain.json.
+    for req in baseline::required_for_prosperous() {
+        if !req.autoloader && kind == Kind::Autoloader {
+            continue;
+        }
+        if !can_work_in(&req.name, kind, known, loader_up) {
+            continue;
+        }
+        if is_satisfied(&req.name, &req.alternatives) {
+            continue;
+        }
+        let gravity = if kind == Kind::Manager {
+            Gravity::Warning
+        } else {
+            req.gravity
+        };
+        found.push(Hazard::Missing {
+            service: req.name,
+            unlocks: req.unlocks,
+            gravity,
+        });
+    }
+
+    // 2. Audit preset-specific entries.
+    for placed in preset.in_order(kind) {
+        if found
+            .iter()
+            .any(|h| matches!(h, Hazard::Missing { service, .. } if service == &placed.name))
+        {
+            continue;
+        }
         // **Nothing is reported missing that could not work if it were there.** The loader is
         // also already reported above where it matters, and saying it twice makes the louder
         // finding easier to miss.
-        if !can_work_in(service.name.as_ref(), kind, known, loader_up) {
+        if !can_work_in(&placed.name, kind, known, loader_up) {
             continue;
         }
-        // **Nothing is reported missing that this target was never meant to run separately.**
-        //
-        // The catalogue is everything this program knows how to probe. A chain is what somebody
-        // decided their console should bring up, and the two differ on purpose: a target set up
-        // with etaHEN has the loader, FTP and the kernel log running because etaHEN starts
-        // them, and reporting those as missing calls a correct configuration broken - then
-        // offers to put a second copy of each beside the first.
-        // **`in_order`, not `entries`.** The preset says which entries belong in a list of
-        // *this kind*, and one of them belongs in only one of the two: the loader is excluded
-        // from an autoloader's list outright, because the autoloader already loads it - "Do
-        // NOT include the kernel exploit or the elf_loader in autoload.txt; they are loaded
-        // automatically", from the autoloader's own README.
-        //
-        // Reading the flat entry list ignored that, so auditing an autoloader's list reported
-        // the loader as missing and offered to add it - a CRITICAL finding, with a fix button,
-        // for doing the one thing the chain file's own text says never to do.
-        if !preset.in_order(kind).iter().any(|placed| {
-            Chain::parse(service.name.as_ref())
-                .position(&placed.name)
-                .is_some()
-        }) {
+        if is_satisfied(&placed.name, &placed.alternatives) {
             continue;
         }
-        if named(service).is_some() {
-            continue;
-        }
+
+        let (unlocks, required) = match known.get(&placed.name) {
+            Some(service) => (
+                placed
+                    .unlocks
+                    .as_deref()
+                    .unwrap_or(service.unlocks.as_ref())
+                    .to_string(),
+                placed.required.unwrap_or(service.required),
+            ),
+            None => {
+                let note = known.note(&placed.name);
+                let unlocks = placed
+                    .unlocks
+                    .as_deref()
+                    .or(note)
+                    .unwrap_or_else(|| placed.why.as_str())
+                    .to_string();
+                let required = placed.required.unwrap_or(false);
+                (unlocks, required)
+            }
+        };
+
         found.push(Hazard::Missing {
-            service: service.name.to_string(),
-            unlocks: service.unlocks.to_string(),
+            service: placed.name.clone(),
+            unlocks,
             // In an autoloader's list nothing else will provide it. In the manager's, whatever
             // launched the manager may already have.
-            gravity: if service.required && kind == Kind::Autoloader {
+            gravity: if required && kind == Kind::Autoloader {
                 Gravity::Critical
             } else {
                 Gravity::Warning
@@ -556,8 +594,8 @@ mod tests {
         assert_eq!(loader, "elfldr", "named from the catalogue, not hardcoded");
         assert_eq!(at, 2, "third entry");
         assert_eq!(after, 3, "three entries depend on it surviving");
-        // The shell and the log are absent too, and are said as warnings rather than buried.
-        for wanted in ["shsrv", "klogsrv"] {
+        // The shell, the log and pltauth-patch are absent too, and are said as warnings rather than buried.
+        for wanted in ["shsrv", "klogsrv", "pltauth-patch"] {
             assert!(
                 hazards.iter().any(|one| matches!(
                     one,
@@ -566,6 +604,62 @@ mod tests {
                 "{wanted} is missing and unreported: {hazards:?}"
             );
         }
+    }
+
+    /// **pltauth-patch is demanded when missing from the startup list.**
+    ///
+    /// Native Prospero homebrew (category 0) requires /dev/pltauth patched to pass PFAuthClient
+    /// verification (0x80de0051). Missing it from the startup chain leaves category 0 apps unable
+    /// to run after restart, and the check must report it and offer to add it.
+    #[test]
+    fn pltauth_patch_is_demanded_when_missing_from_startup_list() {
+        let without = Chain::parse(
+            "!3000\nkstuff-lite_v1.09.elf\n!3000\nnanodns.elf\n!3000\nShadowMountPlus_1.6beta16.elf\n\
+             !3000\nps5upload-4.1.2.elf\n!3000\nftpsrv_v0.21.elf\n!3000\nklogsrv_v0.9.elf\n\
+             !3000\nshsrv_v0.20.elf\n!3000\nelfldr_v0.24.elf\n",
+        );
+        let hazards = audit(
+            &without,
+            &Catalogue::builtin(),
+            &[],
+            Kind::Manager,
+            &super::baseline::first(),
+            Some(true),
+        );
+        let missing = hazards
+            .iter()
+            .find(
+                |one| matches!(one, Hazard::Missing { service, .. } if service == "pltauth-patch"),
+            )
+            .expect("pltauth-patch is missing and must be reported");
+        assert_eq!(missing.gravity(), Gravity::Warning);
+        assert!(missing.describe().contains("pltauth-patch"));
+        assert!(missing.describe().contains("native Prospero homebrew"));
+        assert_eq!(
+            missing.fix(),
+            Some(super::Fix::Add("pltauth-patch".to_owned()))
+        );
+
+        // When present, it is no longer reported missing.
+        let with = Chain::parse(
+            "!3000\nkstuff-lite_v1.09.elf\n!3000\npltauth-patch.elf\n!3000\nnanodns.elf\n\
+             !3000\nShadowMountPlus_1.6beta16.elf\n!3000\nps5upload-4.1.2.elf\n!3000\nftpsrv_v0.21.elf\n\
+             !3000\nklogsrv_v0.9.elf\n!3000\nshsrv_v0.20.elf\n!3000\nelfldr_v0.24.elf\n",
+        );
+        let hazards = audit(
+            &with,
+            &Catalogue::builtin(),
+            &[],
+            Kind::Manager,
+            &super::baseline::first(),
+            Some(true),
+        );
+        assert!(
+            !hazards.iter().any(
+                |one| matches!(one, Hazard::Missing { service, .. } if service == "pltauth-patch")
+            ),
+            "pltauth-patch is present and should not be reported missing: {hazards:?}"
+        );
     }
 
     /// **The failure that was confirmed on a real target**: an autoloader list with no
@@ -1005,6 +1099,15 @@ pub mod baseline {
         /// wrong citation in a file of measured facts is worse than none.
         #[serde(default = "yes")]
         pub autoloader: bool,
+        /// Whether it belongs in **the manager's own list** at all.
+        ///
+        /// The mirror of [`Self::autoloader`], and it is `false` for exactly one entry: the
+        /// manager itself. The manager's own list **is** the thing it reads, so an entry telling
+        /// it to load itself is a second copy fighting the first for its port - the same shape of
+        /// mistake `autoloader: false` keeps the loader out of the autoloader's list for. Every
+        /// other payload belongs in both lists, so this defaults to `true`.
+        #[serde(default = "yes")]
+        pub manager: bool,
         /// Where it belongs in **the manager's own list**, when that differs.
         ///
         /// # Why one entry needs two positions
@@ -1019,6 +1122,47 @@ pub mod baseline {
         pub manager_order: Option<u32>,
         /// What breaks if it runs later - or that nothing does.
         pub why: String,
+        /// What becomes possible once this is loaded or answering.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub unlocks: Option<String>,
+        /// Whether there is no workflow at all without this.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub required: Option<bool>,
+        /// Known alternative payloads that satisfy this entry if present in the chain.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub alternatives: Vec<String>,
+    }
+
+    /// A capability or payload declared as required for Prosperous on any target.
+    #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+    pub struct Requirement {
+        /// The payload's name.
+        pub name: String,
+        /// Known alternative payloads that satisfy this requirement.
+        #[serde(default)]
+        pub alternatives: Vec<String>,
+        /// Recommended order/rank.
+        pub order: u32,
+        /// Where it belongs in manager's own list, when that differs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub manager_order: Option<u32>,
+        /// Whether it belongs in an autoloader list.
+        #[serde(default = "yes")]
+        pub autoloader: bool,
+        /// Why it is needed.
+        pub why: String,
+        /// What capability it unlocks.
+        pub unlocks: String,
+        /// Severity if missing: "critical" or "warning".
+        #[serde(default = "default_gravity")]
+        pub gravity: super::Gravity,
+        /// Whether it is strictly required.
+        #[serde(default = "yes")]
+        pub required: bool,
+    }
+
+    const fn default_gravity() -> super::Gravity {
+        super::Gravity::Critical
     }
 
     /// One way of bringing a target up, named.
@@ -1122,13 +1266,16 @@ pub mod baseline {
         /// depending on which list it is going into - see [`Placed::manager_order`].
         #[must_use]
         pub fn in_order(&self, kind: super::Kind) -> Vec<Placed> {
-            // **An entry can be excluded from one kind outright.** Only the loader is, and only
-            // from an autoloader's list, because that autoloader already loads it - see
-            // [`Placed::autoloader`].
+            // **An entry can be excluded from one kind outright**, and two are: the loader from
+            // an autoloader's list (the autoloader already loads it), and the manager from its
+            // own list (the list it reads cannot start itself). Each is one flag, and each keeps
+            // a payload out of exactly the one list it would collide in - see
+            // [`Placed::autoloader`] and [`Placed::manager`].
             let mut all: Vec<Placed> = self
                 .entries
                 .iter()
                 .filter(|one| one.autoloader || kind != super::Kind::Autoloader)
+                .filter(|one| one.manager || kind != super::Kind::Manager)
                 .cloned()
                 .collect();
             all.sort_by(|left, right| {
@@ -1148,8 +1295,15 @@ pub mod baseline {
 
     /// The document, which carries its own explanation for whoever opens it.
     #[derive(Debug, Clone, Deserialize)]
-    struct Document {
-        presets: Vec<Preset>,
+    pub struct Document {
+        /// Format version of the chains configuration.
+        #[serde(default)]
+        pub version: Option<u32>,
+        /// Baseline payloads required for Prosperous on any target.
+        #[serde(default)]
+        pub required_for_prosperous: Vec<Requirement>,
+        /// Preset startup chains.
+        pub presets: Vec<Preset>,
     }
 
     /// Where somebody's own presets go.
@@ -1163,6 +1317,13 @@ pub mod baseline {
         Some(path)
     }
 
+    /// The parsed document shipped with this binary.
+    #[must_use]
+    pub fn document() -> Document {
+        let text = include_str!("../data/chain.json");
+        serde_json::from_str(text).expect("data/chain.json is part of this crate")
+    }
+
     /// The presets compiled in.
     ///
     /// # Panics
@@ -1172,22 +1333,28 @@ pub mod baseline {
     /// caller could do anything about.
     #[must_use]
     pub fn shipped() -> Vec<Preset> {
-        let text = include_str!("../data/chain.json");
-        let document: Document =
-            serde_json::from_str(text).expect("data/chain.json is part of this crate");
-        document.presets
+        document().presets
     }
 
-    /// Every preset: the ones shipped here, with somebody's own file laid over the top.
+    /// Payloads declared as required for Prosperous across all targets.
+    #[must_use]
+    pub fn required_for_prosperous() -> Vec<Requirement> {
+        document().required_for_prosperous
+    }
+
+    /// Whether a preset name belongs to a shipped preset that cannot be customized by user files.
+    #[must_use]
+    pub fn is_shipped_name(name: &str) -> bool {
+        shipped()
+            .iter()
+            .any(|one| one.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Every preset: the ones shipped here, with somebody's own custom presets added.
     ///
-    /// **Replaced by name, never merged entry by entry.** A preset is an ordering that has to
-    /// hold as a whole, and half of somebody's chain interleaved with half of this one is a
-    /// chain nobody designed. Naming a shipped preset replaces it outright; any other name is
-    /// a preset of their own, and both sit in the same list afterwards.
-    ///
-    /// A file that cannot be read is no file. This is a set of recommendations, and refusing to
-    /// start over one would be absurd - but it is **said**, because a preset somebody wrote and
-    /// this quietly ignored is worse than one it refused out loud.
+    /// **Shipped presets cannot be customized or replaced by user configuration files.**
+    /// Any user preset matching a shipped preset's name is ignored. Custom names are kept
+    /// and sit alongside the shipped presets.
     #[must_use]
     pub fn all() -> (Vec<Preset>, Option<String>) {
         let mut presets = shipped();
@@ -1200,6 +1367,9 @@ pub mod baseline {
         match serde_json::from_str::<Document>(&text) {
             Ok(document) => {
                 for one in document.presets {
+                    if is_shipped_name(&one.name) {
+                        continue;
+                    }
                     if let Some(existing) = presets.iter_mut().find(|kept| kept.name == one.name) {
                         *existing = one;
                     } else {
@@ -1294,28 +1464,38 @@ pub mod baseline {
 
             // **The observed rank goes in whichever field the kind of list actually governs.**
             // For every ordinary entry those are the same field; only an entry a preset marks
-            // as belonging in two places has to have them told apart, and only then is there a
-            // rank here that was not measured.
+            // as belonging in two places, at a **different** rank in each, has to have them told
+            // apart - and only that is a rank here that was not measured. A `manager_order` says
+            // so outright; an entry merely kept out of one list (`autoloader: false`, the eight
+            // ordinary payloads) belongs in exactly one place and needs none of this.
             let two_places = known
                 .as_ref()
-                .is_some_and(|one| one.manager_order.is_some() || !one.autoloader);
-            let (order, manager_order, autoloader) = match (kind, known.as_ref()) {
+                .is_some_and(|one| one.manager_order.is_some());
+            let (order, manager_order, autoloader, manager) = match (kind, known.as_ref()) {
                 (super::Kind::Manager, Some(one)) if two_places => {
                     notes.push(format!(
                         "{entry}: this was a manager's list, so where it goes in an \
                          autoloader's list is kept from an existing preset rather than measured",
                     ));
-                    (one.order, Some(seen), one.autoloader)
+                    (one.order, Some(seen), one.autoloader, one.manager)
                 }
-                (_, Some(one)) => (seen, one.manager_order, one.autoloader),
-                (_, None) => (seen, None, true),
+                (_, Some(one)) => (seen, one.manager_order, one.autoloader, one.manager),
+                (_, None) => (seen, None, true, true),
             };
+            let (unlocks, required, alternatives) = known
+                .as_ref()
+                .map(|one| (one.unlocks.clone(), one.required, one.alternatives.clone()))
+                .unwrap_or((None, None, Vec::new()));
             placed.push(Placed {
                 name: entry.clone(),
                 order,
                 autoloader,
+                manager,
                 manager_order,
                 why,
+                unlocks,
+                required,
+                alternatives,
             });
         }
 
@@ -1360,6 +1540,12 @@ pub mod baseline {
     /// rather than replaced, because overwriting a file somebody typed by hand is not a repair;
     /// or when the write fails.
     pub fn keep(preset: &Preset) -> Result<std::path::PathBuf, String> {
+        if is_shipped_name(&preset.name) {
+            return Err(format!(
+                "'{}' is a built-in chain provided by Prosperous and cannot be overwritten. Choose a custom name for your chain.",
+                preset.name
+            ));
+        }
         let Some(path) = path() else {
             return Err("there is nowhere to keep presets on this machine".to_owned());
         };
@@ -1384,21 +1570,27 @@ pub mod baseline {
             .entry("presets")
             .or_insert_with(|| serde_json::Value::Array(Vec::new()))
             .as_array_mut()
-            .ok_or_else(|| format!("`presets` in {} is not a list", path.display()))?;
-        let written = serde_json::to_value(preset).map_err(|why| why.to_string())?;
-        let same_name = presets.iter().position(|one| {
-            one.get("name").and_then(serde_json::Value::as_str) == Some(preset.name.as_str())
-        });
-        match same_name {
-            Some(at) => presets[at] = written,
-            None => presets.push(written),
+            .ok_or_else(|| format!("{} has `presets`, but it is not an array", path.display()))?;
+
+        // Replaced if already there, added if not.
+        let serialised = serde_json::to_value(preset)
+            .map_err(|why| format!("could not write {} as JSON: {why}", preset.name))?;
+        if let Some(existing) = presets.iter_mut().find(|one| {
+            one.get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| name == preset.name)
+        }) {
+            *existing = serialised;
+        } else {
+            presets.push(serialised);
         }
 
-        let text = serde_json::to_string_pretty(&document).map_err(|why| why.to_string())?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|why| format!("{} could not be made: {why}", parent.display()))?;
         }
+        let text = serde_json::to_string_pretty(&document)
+            .map_err(|why| format!("could not format JSON: {why}"))?;
         std::fs::write(&path, text + "\n")
             .map_err(|why| format!("{} was not written: {why}", path.display()))?;
         Ok(path)
@@ -1407,7 +1599,7 @@ pub mod baseline {
     /// What a file this program creates says about itself, for whoever opens it next.
     const FRESH: [&str; 5] = [
         "YOUR OWN STARTUP CHAINS. Read at startup, so a preset added here needs no rebuild.",
-        "A preset named the same as one this program ships replaces it; any other name is a preset of your own.",
+        "Shipped presets cannot be customized or replaced; any name here is a custom preset of your own.",
         "A PRESET NAME IS ONE WORD. It goes on a target's line in the registry as `chain=<name>`, and that file is whitespace-delimited.",
         "`order` is a rank, not an index. Lower runs earlier, and the gaps are so something can be slotted between two entries without renumbering.",
         "`why` should say what breaks if an entry runs later, or say plainly that nothing does. An entry written here by `export chain` says so when nobody has written one.",
@@ -1420,12 +1612,37 @@ pub mod baseline {
     /// it may not have been built from any of them.
     #[must_use]
     pub fn about(entry: &str) -> Option<Placed> {
-        all().0.into_iter().find_map(|preset| {
+        let in_presets = all().0.into_iter().find_map(|preset| {
             preset.entries.into_iter().find(|placed| {
                 crate::chain::Chain::parse(entry)
                     .position(&placed.name)
                     .is_some()
             })
+        });
+        if in_presets.is_some() {
+            return in_presets;
+        }
+        required_for_prosperous().into_iter().find_map(|req| {
+            if crate::chain::Chain::parse(entry)
+                .position(&req.name)
+                .is_some()
+            {
+                Some(Placed {
+                    name: req.name,
+                    order: req.order,
+                    autoloader: req.autoloader,
+                    // A required payload is never the manager itself, so it always belongs in
+                    // the manager's own list.
+                    manager: true,
+                    manager_order: req.manager_order,
+                    why: req.why,
+                    unlocks: Some(req.unlocks),
+                    required: Some(req.required),
+                    alternatives: req.alternatives,
+                })
+            } else {
+                None
+            }
         })
     }
 }
@@ -1610,5 +1827,68 @@ mod baseline_tests {
         assert!(baseline::about("shsrv_v0.20.elf").is_some());
         assert!(baseline::about("nanodns.elf").is_some());
         assert!(baseline::about("something-nobody-tracked.elf").is_none());
+    }
+
+    /// Shipped presets are protected and cannot be overwritten by keep().
+    #[test]
+    fn shipped_presets_cannot_be_overwritten_by_keep() {
+        let preset = baseline::shipped()[0].clone();
+        assert!(baseline::is_shipped_name(&preset.name));
+        let err = baseline::keep(&preset).expect_err("shipped presets cannot be overwritten");
+        assert!(err.contains("cannot be overwritten"), "{err}");
+    }
+
+    /// Required for Prosperous is declared in data/chain.json with a format version.
+    #[test]
+    fn required_for_prosperous_is_declared_with_version() {
+        let doc = baseline::document();
+        assert!(
+            doc.version.is_some(),
+            "data/chain.json must carry a format version"
+        );
+        let reqs = baseline::required_for_prosperous();
+        assert!(
+            !reqs.is_empty(),
+            "must declare required payloads for prosperous"
+        );
+        assert!(
+            reqs.iter().any(|r| r.name == "pltauth-patch"),
+            "must include pltauth-patch"
+        );
+        assert!(
+            reqs.iter().any(|r| r.name == "kstuff-lite"),
+            "must include kstuff-lite"
+        );
+    }
+
+    /// Even a custom empty preset audits the baseline required_for_prosperous payloads.
+    #[test]
+    fn custom_preset_still_audits_required_for_prosperous() {
+        let custom = baseline::Preset {
+            name: "my-empty-preset".to_owned(),
+            about: "User custom preset with no entries".to_owned(),
+            result: "Custom".to_owned(),
+            entries: Vec::new(),
+            lists: Vec::new(),
+        };
+        let chain = crate::chain::Chain::parse("!3000\nnanodns.elf\n");
+        let hazards = super::audit(
+            &chain,
+            &crate::catalogue::Catalogue::builtin(),
+            &[],
+            super::Kind::Manager,
+            &custom,
+            Some(true),
+        );
+        assert!(
+            hazards.iter().any(|h| matches!(h, super::Hazard::Missing { service, .. } if service == "pltauth-patch")),
+            "custom preset without pltauth-patch must still demand pltauth-patch: {hazards:?}"
+        );
+        assert!(
+            hazards.iter().any(
+                |h| matches!(h, super::Hazard::Missing { service, .. } if service == "kstuff-lite")
+            ),
+            "custom preset without kstuff must still demand kstuff: {hazards:?}"
+        );
     }
 }

@@ -1,5 +1,12 @@
 //! `pros` - one instrument for talking to a prepared target.
 //!
+//! Throughout `pros`, *target* means a **registered target** - a machine registered by name and
+//! address (`pros register`) - never a *build target* (the machine an artifact is built for,
+//! `selfish --target`) or an *install target* (a download manifest's destination). Prosperous
+//! owns this sense and keeps the bare word; the qualifier is stated once, here, so a reader
+//! crossing from the other repositories does not import the collision. (OOPS conventions section
+//! 2, "The four axes of a build and a run".)
+//!
 //! # This program holds no logic, on purpose
 //!
 //! Registering, probing, reading a manifest, verifying a digest, refusing the wrong kind of
@@ -786,7 +793,7 @@ fn registry(what: &Registry) -> Result<ExitCode, Box<dyn std::error::Error>> {
 
 /// The manifest beside the registry, or the built-in list when there is none.
 fn read_or_recommend() -> Result<Manifest, Box<dyn std::error::Error>> {
-    let path = pros_core::manifest::default_path();
+    let path = pros_core::manifest::Tracked::Payloads.path();
     if let Some(path) = path.filter(|path| path.exists()) {
         return Ok(Manifest::from_file(&path)?);
     }
@@ -794,7 +801,7 @@ fn read_or_recommend() -> Result<Manifest, Box<dyn std::error::Error>> {
     println!("no manifest of your own, so this is the built-in list");
     println!("read off a target's own repository - `pros payloads --write` to edit it");
     println!();
-    Ok(pros_core::manifest::recommended())
+    Ok(pros_core::manifest::Tracked::Payloads.shipped())
 }
 
 /// Watches a probe's port and re-sends it when it stops answering.

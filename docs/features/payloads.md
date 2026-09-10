@@ -1,6 +1,6 @@
 # Payloads
 
-A payload is a program you send to a jailbroken console for it to run. Prosperous describes
+A payload is a program you send to a jailbroken Prospero-generation machine for it to run. Prosperous describes
 them, verifies them, and delivers them - it does not ship any.
 
 ## Why none are bundled

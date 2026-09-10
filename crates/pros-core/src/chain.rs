@@ -376,8 +376,10 @@ pub const USB: &str = "{usb}";
 /// then the internal drive - and that list is the one that decides whether the manager runs at
 /// all.
 ///
-/// They are audited by different rules. The loader is **required** in an autoloader's list and
-/// **impossible** in the manager's, so which list is being looked at is not a detail.
+/// They are audited by different rules. The loader is **kept out** of an autoloader's list (the
+/// autoloader loads it itself) and belongs **last** in the manager's own; the manager is the
+/// mirror - required in the autoloader's list, which starts it, and **impossible** in its own.
+/// So which list is being looked at is not a detail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Held {
     /// What to call it.

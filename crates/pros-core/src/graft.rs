@@ -41,7 +41,6 @@
 //! the way; a game checking its own build or region internally still might. That is a fact
 //! about each game and nothing here can answer it in advance.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::sfo;
@@ -60,8 +59,8 @@ pub const KEYSTONE: &str = "sce_sys/keystone";
 pub struct Open {
     /// Where it is.
     pub root: PathBuf,
-    /// What its parameter file says, when it has one.
-    pub params: BTreeMap<String, sfo::Value>,
+    /// What its parameter file says, when it has one. Empty when it has none.
+    pub params: selfish_title::sfo::Sfo,
     /// Everything that is not under `sce_sys` - the game's own data.
     pub contents: Vec<PathBuf>,
     /// Whether a keystone is present.
@@ -86,7 +85,7 @@ impl Open {
 
         let params = std::fs::read(root.join(PARAMS))
             .ok()
-            .and_then(|bytes| sfo::read(&bytes).ok())
+            .and_then(|bytes| selfish_title::sfo::Sfo::parse(&bytes).ok())
             .unwrap_or_default();
 
         Ok(Self {
@@ -100,7 +99,7 @@ impl Open {
     /// The title this save belongs to.
     #[must_use]
     pub fn title(&self) -> Option<&str> {
-        self.params.get("TITLE_ID")?.text()
+        self.params.text("TITLE_ID")
     }
 
     /// The account it belongs to, as hex.

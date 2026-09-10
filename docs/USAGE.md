@@ -6,6 +6,11 @@ working with titles, saves and packages on the target's storage.
 This was the middle of the README. It is reference for somebody already running the tool, which
 is not what a person arriving at the repository needs first.
 
+Throughout, *target* means a **registered target** - a machine registered here by name and
+address - not a *build target* (`selfish --target`) or an *install target* (a download manifest's
+destination). Prosperous only ever means the first, so it keeps the bare word (OOPS conventions
+section 2).
+
 ## What a check reports
 
 Not up or down. **What each service unlocks**, and whether its absence blocks anything:
