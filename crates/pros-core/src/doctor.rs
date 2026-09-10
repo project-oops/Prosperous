@@ -2446,7 +2446,7 @@ shsrv_v0.20.elf
         assert!(!named_as("klogsrv", "ftpsrv"));
     }
 
-    /// pltauth-patch missing from manager autoload.txt is demanded by doctor::examine.
+    /// pltauth-patch missing from manager autoload.txt is demanded by `doctor::examine`.
     #[test]
     fn pltauth_patch_missing_from_startup_is_demanded_by_doctor() {
         let known = Catalogue::builtin();

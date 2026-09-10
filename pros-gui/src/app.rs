@@ -2135,6 +2135,38 @@ impl App {
     ///
     /// # Why this asks at all, when it writes to this machine and not to the console
     ///
+    /// The warning under the name field: what is wrong with the typed name, or what it replaces.
+    fn export_name_notice(
+        ui: &mut egui::Ui,
+        name: &str,
+        is_shipped: bool,
+        usable: bool,
+        already_taken: bool,
+    ) {
+        if name.is_empty() {
+            ui.colored_label(egui::Color32::from_rgb(230, 160, 90), "it needs a name");
+        } else if is_shipped {
+            ui.colored_label(
+                egui::Color32::from_rgb(230, 90, 90),
+                format!(
+                    "'{name}' is a built-in chain provided by Prosperous and cannot be overwritten. \
+                     Choose a custom name for your chain."
+                ),
+            );
+        } else if !usable {
+            ui.colored_label(
+                egui::Color32::from_rgb(230, 90, 90),
+                "a preset name is one word - a target's registry line is whitespace-delimited, \
+                 so half of this would be read as an address",
+            );
+        } else if already_taken {
+            ui.colored_label(
+                egui::Color32::from_rgb(230, 160, 90),
+                format!("there is already a custom preset called {name}, and this replaces it."),
+            );
+        }
+    }
+
     /// Because it replaces by name, and the name somebody types is the whole of what decides
     /// whether this is a new preset or their existing one gone. Everything else on this screen
     /// that overwrites something says what it would overwrite first, and a local file is not a
@@ -2159,28 +2191,7 @@ impl App {
         // **One word, because the registry line is whitespace-delimited.** A name with a space
         // in it would be written as `chain=<half>` and the rest read as an address.
         let usable = !name.is_empty() && !name.contains(char::is_whitespace) && !is_shipped;
-        if name.is_empty() {
-            ui.colored_label(egui::Color32::from_rgb(230, 160, 90), "it needs a name");
-        } else if is_shipped {
-            ui.colored_label(
-                egui::Color32::from_rgb(230, 90, 90),
-                format!(
-                    "'{name}' is a built-in chain provided by Prosperous and cannot be overwritten. \
-                     Choose a custom name for your chain."
-                ),
-            );
-        } else if !usable {
-            ui.colored_label(
-                egui::Color32::from_rgb(230, 90, 90),
-                "a preset name is one word - a target's registry line is whitespace-delimited, \
-                 so half of this would be read as an address",
-            );
-        } else if export.taken.contains(&name) {
-            ui.colored_label(
-                egui::Color32::from_rgb(230, 160, 90),
-                format!("there is already a custom preset called {name}, and this replaces it."),
-            );
-        }
+        Self::export_name_notice(ui, &name, is_shipped, usable, export.taken.contains(&name));
 
         ui.weak(format!("into {}", export.into));
         ui.add_space(4.0);

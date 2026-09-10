@@ -330,6 +330,7 @@ impl std::fmt::Display for Where {
 ///
 /// A local build first (primary source): what has been compiled on this machine beats
 /// reaching across the network. The listed address second, and upstream direct third.
+#[must_use]
 pub fn wheres(payload: &Payload) -> Vec<(Where, String)> {
     let mut found: Vec<(Where, String)> = Vec::new();
     if let Some(local) = local_build(payload) {

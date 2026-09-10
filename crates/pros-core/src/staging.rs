@@ -165,6 +165,11 @@ pub fn accept(payload: &Payload, from: &Path) -> Result<PathBuf, NotStaged> {
 /// If it differs or the manifest states no checksum, it is accepted as a local
 /// development build with a warning, rather than refusing to stage a build the developer
 /// just compiled on this machine.
+///
+/// # Errors
+///
+/// Returns [`NotStaged`] if the source cannot be read, the destination directory cannot be
+/// created, or the file cannot be written.
 pub fn accept_local_into(
     payload: &Payload,
     from: &Path,
@@ -193,22 +198,19 @@ pub fn accept_local_into(
         .filename
         .clone()
         .unwrap_or_else(|| payload.name.clone());
-    let into = match dir {
-        Some(dir) => {
-            std::fs::create_dir_all(dir).map_err(|why| NotStaged::Unreadable {
+    let into = if let Some(dir) = dir {
+        std::fs::create_dir_all(dir).map_err(|why| NotStaged::Unreadable {
+            why: why.to_string(),
+        })?;
+        dir.join(name)
+    } else {
+        let p = path_for(payload).ok_or(NotStaged::Nowhere)?;
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).map_err(|why| NotStaged::Unreadable {
                 why: why.to_string(),
             })?;
-            dir.join(name)
         }
-        None => {
-            let p = path_for(payload).ok_or(NotStaged::Nowhere)?;
-            if let Some(parent) = p.parent() {
-                std::fs::create_dir_all(parent).map_err(|why| NotStaged::Unreadable {
-                    why: why.to_string(),
-                })?;
-            }
-            p
-        }
+        p
     };
     std::fs::write(&into, &bytes).map_err(|why| NotStaged::Unreadable {
         why: why.to_string(),
@@ -217,6 +219,10 @@ pub fn accept_local_into(
 }
 
 /// The same, into the default staging directory.
+///
+/// # Errors
+///
+/// Returns [`NotStaged`] for the same reasons as [`accept_local_into`].
 pub fn accept_local(payload: &Payload, from: &Path) -> Result<PathBuf, NotStaged> {
     accept_local_into(payload, from, None)
 }

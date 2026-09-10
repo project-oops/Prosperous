@@ -373,10 +373,10 @@ impl Tracked {
             Some(path) => {
                 let on_disk = Manifest::from_file(&path)?;
                 let merged = self.shipped().merged_with(&on_disk);
-                if merged != on_disk {
-                    if let Ok(text) = merged.to_json() {
-                        let _ = std::fs::write(&path, text);
-                    }
+                if merged != on_disk
+                    && let Ok(text) = merged.to_json()
+                {
+                    let _ = std::fs::write(&path, text);
                 }
                 Ok(merged)
             }

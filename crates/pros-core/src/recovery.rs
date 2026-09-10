@@ -416,11 +416,6 @@ pub fn audit(
         }
     }
 
-    let is_satisfied = |name: &str, alternatives: &[String]| -> bool {
-        chain.position(name).is_some()
-            || alternatives.iter().any(|alt| chain.position(alt).is_some())
-    };
-
     // 1. Audit baseline requirements for Prosperous from chain.json.
     for req in baseline::required_for_prosperous() {
         if !req.autoloader && kind == Kind::Autoloader {
@@ -429,7 +424,7 @@ pub fn audit(
         if !can_work_in(&req.name, kind, known, loader_up) {
             continue;
         }
-        if is_satisfied(&req.name, &req.alternatives) {
+        if is_satisfied(chain, &req.name, &req.alternatives) {
             continue;
         }
         let gravity = if kind == Kind::Manager {
@@ -445,6 +440,26 @@ pub fn audit(
     }
 
     // 2. Audit preset-specific entries.
+    preset_hazards(chain, known, kind, preset, loader_up, &mut found);
+
+    found.sort_by_key(|hazard| std::cmp::Reverse(hazard.gravity()));
+    found
+}
+
+/// Whether a service, or one of its alternatives, is already in the chain.
+fn is_satisfied(chain: &Chain, name: &str, alternatives: &[String]) -> bool {
+    chain.position(name).is_some() || alternatives.iter().any(|alt| chain.position(alt).is_some())
+}
+
+/// Audits the preset-specific entries against the chain, pushing any hazards into `found`.
+fn preset_hazards(
+    chain: &Chain,
+    known: &Catalogue,
+    kind: Kind,
+    preset: &baseline::Preset,
+    loader_up: Option<bool>,
+    found: &mut Vec<Hazard>,
+) {
     for placed in preset.in_order(kind) {
         if found
             .iter()
@@ -458,30 +473,29 @@ pub fn audit(
         if !can_work_in(&placed.name, kind, known, loader_up) {
             continue;
         }
-        if is_satisfied(&placed.name, &placed.alternatives) {
+        if is_satisfied(chain, &placed.name, &placed.alternatives) {
             continue;
         }
 
-        let (unlocks, required) = match known.get(&placed.name) {
-            Some(service) => (
+        let (unlocks, required) = if let Some(service) = known.get(&placed.name) {
+            (
                 placed
                     .unlocks
                     .as_deref()
                     .unwrap_or(service.unlocks.as_ref())
                     .to_string(),
                 placed.required.unwrap_or(service.required),
-            ),
-            None => {
-                let note = known.note(&placed.name);
-                let unlocks = placed
-                    .unlocks
-                    .as_deref()
-                    .or(note)
-                    .unwrap_or_else(|| placed.why.as_str())
-                    .to_string();
-                let required = placed.required.unwrap_or(false);
-                (unlocks, required)
-            }
+            )
+        } else {
+            let note = known.note(&placed.name);
+            let unlocks = placed
+                .unlocks
+                .as_deref()
+                .or(note)
+                .unwrap_or(placed.why.as_str())
+                .to_string();
+            let required = placed.required.unwrap_or(false);
+            (unlocks, required)
         };
 
         found.push(Hazard::Missing {
@@ -496,9 +510,6 @@ pub fn audit(
             },
         });
     }
-
-    found.sort_by_key(|hazard| std::cmp::Reverse(hazard.gravity()));
-    found
 }
 
 /// Whether anything found would leave the target unreachable.
@@ -608,7 +619,7 @@ mod tests {
 
     /// **pltauth-patch is demanded when missing from the startup list.**
     ///
-    /// Native Prospero homebrew (category 0) requires /dev/pltauth patched to pass PFAuthClient
+    /// Native Prospero homebrew (category 0) requires /dev/pltauth patched to pass `PFAuthClient`
     /// verification (0x80de0051). Missing it from the startup chain leaves category 0 apps unable
     /// to run after restart, and the check must report it and offer to add it.
     #[test]
@@ -1318,6 +1329,11 @@ pub mod baseline {
     }
 
     /// The parsed document shipped with this binary.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the compiled-in `data/chain.json` is not valid JSON - which cannot happen for
+    /// a build of this crate, since it is parsed from the same file at build time.
     #[must_use]
     pub fn document() -> Document {
         let text = include_str!("../data/chain.json");
@@ -1482,10 +1498,10 @@ pub mod baseline {
                 (_, Some(one)) => (seen, one.manager_order, one.autoloader, one.manager),
                 (_, None) => (seen, None, true, true),
             };
-            let (unlocks, required, alternatives) = known
-                .as_ref()
-                .map(|one| (one.unlocks.clone(), one.required, one.alternatives.clone()))
-                .unwrap_or((None, None, Vec::new()));
+            let (unlocks, required, alternatives) =
+                known.as_ref().map_or((None, None, Vec::new()), |one| {
+                    (one.unlocks.clone(), one.required, one.alternatives.clone())
+                });
             placed.push(Placed {
                 name: entry.clone(),
                 order,
@@ -1829,7 +1845,7 @@ mod baseline_tests {
         assert!(baseline::about("something-nobody-tracked.elf").is_none());
     }
 
-    /// Shipped presets are protected and cannot be overwritten by keep().
+    /// Shipped presets are protected and cannot be overwritten by `keep()`.
     #[test]
     fn shipped_presets_cannot_be_overwritten_by_keep() {
         let preset = baseline::shipped()[0].clone();
@@ -1861,7 +1877,7 @@ mod baseline_tests {
         );
     }
 
-    /// Even a custom empty preset audits the baseline required_for_prosperous payloads.
+    /// Even a custom empty preset audits the baseline `required_for_prosperous` payloads.
     #[test]
     fn custom_preset_still_audits_required_for_prosperous() {
         let custom = baseline::Preset {
