@@ -1,4 +1,33 @@
 
+## The Moonlight bridge, built up to pairing, in a crate of its own
+
+Prosperous can now be a Moonlight host. The whole thing lives in a new crate, `pros-moonlight`,
+reached by two `pros` verbs - `fake-target` and `moonlight` - and it stays out of `pros-core` and
+`pros-link` on purpose: it needs a TLS stack, a self-signed X509 certificate, AES/RSA/SHA, an mDNS
+responder and (for the streaming half still to come) Reed-Solomon FEC and an ENet port, none of
+which orbistoun or obSCEne should inherit by taking those two crates. So the heavy list stops in
+the new crate, and the crate map is `moonshine`'s (BSD-2, credited): `rustls` with the `ring`
+provider because it builds here with no cmake or nasm, `rcgen`/`x509-cert`, `rsa`/`sha2`/`aes`,
+`mdns-sd`.
+
+What is built and tested: the **fake target** (serves an Annex-B clip on 9805, prints the `PPAD`
+records that arrive on 9806 - the "fake input" the design's item 5 calls for); the **pairing
+crypto**, mirroring Sunshine's `nvhttp.cpp` byte for byte - a PIN-salted SHA-256 AES key, ECB
+challenges, RSA-signed commit-and-reveal on both sides; and the **server** - mDNS `_nvstream._tcp`,
+`serverinfo` and the four pairing phases over HTTP (47989), the final leg over HTTPS (47984)
+presenting the very certificate the client pinned. Twenty-four tests, pedantic clippy clean.
+
+The surprise worth keeping: **the hard part was the crypto exactness, not the plumbing.** Every
+phase concatenates specific fields in a specific order and hashes them, and a byte out of place
+fails silently as "wrong PIN" with nothing to point at. Getting it right meant reading the server's
+own source (Sunshine) rather than a client's description of it, because the client and server are
+mirror images and only one of them is the thing being written. Once the four-phase handshake passed
+against a test client that plays Moonlight's exact steps, standing it up over real sockets - HTTP
+parsing, TLS with the pinned cert - was ordinary. The verification that a real client will pair is
+that test: it *is* the Moonlight algorithm, driven against the bridge's own routing over real TCP,
+plus the running binary answering `serverinfo` on both ports. What is left is the session: RTSP,
+RTP video with FEC on 47998, and the ENet input channel on 47999 mapped to `PPAD`.
+
 ## A quiet socket ended the watch on Windows, and the pump now knows both names for a timeout
 
 Reviewing the Porthole wire contract against `pros-core::watch` found the pump reading with a

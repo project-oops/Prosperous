@@ -307,6 +307,30 @@ enum Command {
         #[arg(long)]
         manifest: PathBuf,
     },
+    /// Stand in for a console's Porthole payload, so the Moonlight bridge can be tested with no
+    /// hardware. Serves an Annex-B clip on 9805 and prints the controller records that arrive on
+    /// 9806. Runs until stopped.
+    FakeTarget {
+        /// The Annex-B H.264 clip to loop on the video port
+        #[arg(long)]
+        clip: PathBuf,
+        /// The video port a client reads from. Porthole's is 9805
+        #[arg(long, default_value_t = pros_moonlight::fake::VIDEO_PORT)]
+        video_port: u16,
+        /// The input port a client writes records to. Porthole's is 9806
+        #[arg(long, default_value_t = pros_link::feed::PORT)]
+        input_port: u16,
+    },
+    /// Run the Moonlight host bridge in front of Porthole, so any Moonlight client can find, pair
+    /// with and stream a registered target. Offers one app per target. Runs until stopped.
+    Moonlight {
+        /// The name shown in the client's host list
+        #[arg(long, default_value = "prosperous")]
+        hostname: String,
+        /// The LAN address to advertise. Auto-detected if omitted
+        #[arg(long)]
+        ip: Option<std::net::Ipv4Addr>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -346,7 +370,10 @@ impl Command {
             | Self::Check { .. }
             | Self::Fetch { .. }
             | Self::Stage { .. }
-            | Self::Verify { .. } => None,
+            | Self::Verify { .. }
+            // Local: stand-in and bridge are servers this machine runs, not calls to a target.
+            | Self::FakeTarget { .. }
+            | Self::Moonlight { .. } => None,
             Self::Logs { .. } => Some("klogsrv"),
             // A line typed at the shell, a title started, and process control - all shell
             // work, and none of it wants the loader.
@@ -435,18 +462,7 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
         Command::List => registry(&Registry::Show),
         Command::Forget { name } => registry(&Registry::Remove(name)),
         Command::Check { fix, which } => check(fix, which.name.as_deref()),
-        Command::Logs { seconds, which } => {
-            let target = pick(which.name.as_deref())?;
-            println!("listening to {} for {seconds}s", target.address);
-            let text = pros_link::log::read(&target.link(), Duration::from_secs(seconds))?;
-            if text.trim().is_empty() {
-                // A quiet log is a fact about the target, not a failure of this program.
-                println!("the log was quiet - which is a result, not a failure");
-            } else {
-                print!("{text}");
-            }
-            Ok(ExitCode::SUCCESS)
-        }
+        Command::Logs { seconds, which } => logs(seconds, which.name.as_deref()),
         Command::Sh { command, which } => {
             let target = pick(which.name.as_deref())?;
             let out = pros_link::shell::run(&target.link(), &command, SETTLE)?;
@@ -525,7 +541,133 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
             restarts,
             which,
         } => supervise(&path, port, patience, restarts, which.name.as_deref()),
+        Command::FakeTarget {
+            clip,
+            video_port,
+            input_port,
+        } => fake_target(&clip, video_port, input_port),
+        Command::Moonlight { hostname, ip } => moonlight(hostname, ip),
     }
+}
+
+/// Listens to the target's system log for a while and prints it.
+///
+/// A quiet log is reported as a result rather than an error, the same distinction the exit codes
+/// draw: a target that had nothing to say is not a program that failed.
+fn logs(seconds: u64, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let target = pick(name)?;
+    println!("listening to {} for {seconds}s", target.address);
+    let text = pros_link::log::read(&target.link(), Duration::from_secs(seconds))?;
+    if text.trim().is_empty() {
+        println!("the log was quiet - which is a result, not a failure");
+    } else {
+        print!("{text}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Runs the Moonlight host bridge in front of Porthole.
+///
+/// The behaviour is `pros_moonlight`'s (principle 3); this finds the LAN address and the apps to
+/// offer, starts a PIN prompt on standard input, and hands over. It blocks until stopped.
+fn moonlight(
+    hostname: String,
+    ip: Option<std::net::Ipv4Addr>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let local_ip = ip
+        .or_else(detect_lan_ip)
+        .ok_or("could not work out this machine's LAN address; pass it with --ip")?;
+    // One app per registered target; a default if none is registered yet.
+    let targets = target::load().unwrap_or_default();
+    let apps = if targets.is_empty() {
+        println!(
+            "no targets registered - offering one placeholder app. Register with `pros register`."
+        );
+        pros_moonlight::Apps::from_titles(["Prosperous target"])
+    } else {
+        pros_moonlight::Apps::from_titles(targets.iter().map(|one| one.name.clone()))
+    };
+    let data_dir = target::directory()
+        .ok_or("no data directory for the certificate")?
+        .join("moonlight");
+
+    println!(
+        "Moonlight bridge: host '{hostname}' on {local_ip}, {} target(s) offered.",
+        targets.len().max(1)
+    );
+    println!("On your Moonlight client, add {local_ip} (or find '{hostname}'), then pair.");
+    println!("When it shows a PIN, type it here and press enter.");
+    spawn_pin_prompt();
+    pros_moonlight::run(hostname, local_ip, apps, &data_dir)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Read PINs from standard input and hand each to the bridge over its local control path, so a
+/// person just types the number the client shows.
+fn spawn_pin_prompt() {
+    std::thread::spawn(|| {
+        use std::io::BufRead as _;
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines().map_while(Result::ok) {
+            let pin = line.trim();
+            if pin.is_empty() {
+                continue;
+            }
+            match submit_pin(pin) {
+                Ok(()) => println!("PIN {pin} submitted; finishing pairing."),
+                Err(error) => eprintln!("could not submit PIN: {error}"),
+            }
+        }
+    });
+}
+
+/// Hand a PIN to the running bridge by calling its local `/pin` control path.
+fn submit_pin(pin: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", pros_moonlight::host::HTTP_PORT))?;
+    write!(
+        stream,
+        "GET /pin?pin={pin} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )?;
+    stream.flush()
+}
+
+/// Work out the LAN address the target and clients would reach this machine on, by asking the OS
+/// which local address it would use to reach the network - no packet is sent.
+fn detect_lan_ip() -> Option<std::net::Ipv4Addr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    match socket.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(v4) => Some(v4),
+        std::net::IpAddr::V6(_) => None,
+    }
+}
+
+/// Runs a stand-in target for testing the Moonlight bridge without a console.
+///
+/// The behaviour is entirely `pros_moonlight::fake`'s (principle 3); this reads the clip, says
+/// what it is doing, and hands over. It blocks until the process is stopped.
+fn fake_target(
+    clip: &Path,
+    video_port: u16,
+    input_port: u16,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(clip)?;
+    let ports = pros_moonlight::fake::Ports {
+        video: video_port,
+        input: input_port,
+    };
+    let (video, input) = pros_moonlight::fake::bind(&ports)?;
+    println!(
+        "fake target: serving {} ({} bytes) on :{video_port}, sinking input on :{input_port}",
+        clip.display(),
+        bytes.len(),
+    );
+    println!(
+        "connect the bridge to these, or point Porthole's own watch/feed at them. Ctrl-C to stop."
+    );
+    pros_moonlight::fake::run(&video, &input, &bytes)?;
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Sends a payload.

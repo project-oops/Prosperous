@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/pros-core", "crates/pros-link", "pros-cli", "pros-gui"]
+members = ["crates/pros-core", "crates/pros-link", "crates/pros-moonlight", "pros-cli", "pros-gui"]
 
 [workspace.package]
 edition = "2024"
@@ -21,6 +21,7 @@ publish = false
 winresource = "0.1"
 pros-link = { path = "crates/pros-link" }
 pros-core = { path = "crates/pros-core" }
+pros-moonlight = { path = "crates/pros-moonlight" }
 
 # Shared with the rest of the collection. Paths while nothing is published; these gain a
 # `version` when they are, so a clone of this repository alone still builds.

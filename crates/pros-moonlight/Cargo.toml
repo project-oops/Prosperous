@@ -1,0 +1,47 @@
+[package]
+name = "pros-moonlight"
+version = "0.1.0"
+description = "A Moonlight/GameStream host bridge in front of Porthole's two ports"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# **Why this is a crate and not a module of `pros-core`.**
+#
+# The bridge needs a TLS stack, a self-signed X509 certificate, AES/RSA/SHA, Reed-Solomon FEC,
+# an ENet port and an mDNS responder - the exact dependency weight `pros-link` (principle 4) and
+# `pros-core` both keep off themselves, because orbistoun takes `pros-core` and obSCEne takes
+# `pros-link` and neither wants a game-streaming protocol in its tree. So the bridge lives in its
+# own crate that **only the shims depend on**, and the heavy list stops here. It takes `pros-link`
+# for the pad record and the stream reader, and `pros-core` for the registry that names the apps.
+#
+# The crate choices mirror `moonshine` (hgaiser, BSD-2-Clause), the pure-Rust GameStream host that
+# proved each of these does its job without a C toolchain - see `ACKNOWLEDGEMENTS.md`.
+[dependencies]
+pros-link = { workspace = true }
+tracing = { workspace = true }
+
+# The GameStream pairing crypto. Versions are pinned as a compatible RustCrypto set - `rsa` 0.9
+# carries `digest` 0.10 and `rand_core` 0.6, so `sha2` is 0.10 (not 0.11) and `rand` is 0.8 (not
+# 0.10), or the `Digest`/`CryptoRng` trait bounds do not line up. `moonshine` uses newer points of
+# the same crates; this holds one version of each rather than two.
+rsa = { version = "0.9", features = ["pem", "sha2"] }
+sha2 = "0.10"
+aes = "0.8"
+rand = "0.8"
+hex = "0.4"
+# The self-signed server certificate the client pins, and parsing the client's. `builder` signs a
+# cert with the `rsa` key above; `pem` reads the client cert off the wire.
+x509-cert = { version = "0.2", features = ["builder", "pem"] }
+
+# Advertising `_nvstream._tcp`, so a Moonlight client finds the bridge without being told its
+# address.
+mdns-sd = "0.21"
+# The HTTPS half of the protocol (port 47984): serverinfo once paired, the final pair challenge,
+# and the app list. `ring` rather than the default `aws-lc-rs` provider - it builds here with the
+# toolchain already present, needing no cmake or nasm - and `tls12` because that is the version
+# GameStream speaks.
+rustls = { version = "0.23.44", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+
+[lints]
+workspace = true

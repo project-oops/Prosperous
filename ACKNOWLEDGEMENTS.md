@@ -32,6 +32,35 @@ involves pairing, a bespoke UDP transport, per-session authenticated encryption,
 forward error correction, two video codecs and an audio codec - which is why Chiaki is
 large, and why writing a second one would be a project rather than a feature.
 
+## Moonlight, Sunshine and Wolf, for the GameStream protocol
+
+**Their documented behaviour, not their code.** [Part four of `docs/VIDEO.md`](docs/VIDEO.md)
+builds a bridge that speaks the NVIDIA GameStream protocol to any Moonlight client. That protocol
+has no published specification; it is defined by three projects, and Prosperous implements the
+behaviour they describe:
+
+| project | what it defines |
+|---|---|
+| **moonlight-common-c** (Moonlight) | the client core — the reverse-engineered protocol every Moonlight client speaks |
+| **Sunshine** (LizardByte) | the reference open host, and the concrete answer to "what a host must send" |
+| **Wolf** (games-on-whales) | an independent second host, the cross-check for what the *protocol* requires versus what one host happens to do |
+
+**The three above are GPLv3, and none of their code is copied or linked into this workspace.** This
+workspace is MIT or Apache-2.0; implementing a documented behaviour is not taking the code that
+documents it, exactly as the Ghostpad and Chiaki entries below and above draw the same line. No
+GPL source is vendored and no GPL library is linked - the bridge is written from the protocol's
+observable behaviour, which is the one kind of protocol work this project does (principle 1). If
+that ever changes - a GPL library linked, any source taken - it is credited again and the licence
+consequence is faced then, not blurred now.
+
+**Moonshine** (hgaiser) is a fourth reference and a different kind: a pure-Rust GameStream host,
+**BSD-2-Clause**, so permissively licensed that its code *could* be used with attribution. It was
+not copied; what it settled was that each leg of this protocol has a pure-Rust crate that does the
+job without a C toolchain, and `crates/pros-moonlight/Cargo.toml` reaches for the same set it does
+- `rustls` (with the `ring` provider), `rcgen`/`x509-cert`, `rsa`/`sha2`/`aes`, `mdns-sd`, and for
+the streaming half `rtsp-types`, `fec-rs` and an ENet port. Following a working project's crate
+choices is cheaper than rediscovering them, and it is credited here rather than absorbed silently.
+
 ## Ghostpad, for the controller layout
 
 **Its published measurements, not its code.** `crates/pros-link/src/pad.rs` uses the button

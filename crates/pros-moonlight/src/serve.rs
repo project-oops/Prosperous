@@ -1,0 +1,343 @@
+//! Running the bridge: advertise over mDNS, then serve HTTP and HTTPS with the same routes.
+//!
+//! This is the part that ties the pieces together and blocks. Discovery, the plain port and the
+//! TLS port each run under one scope; a request on either is handled the same way, because the
+//! routing does not care which socket carried it - only the pairing state decides what a client is
+//! allowed, and that is the same on both.
+
+use std::net::{Ipv4Addr, TcpListener};
+use std::path::Path;
+use std::sync::Arc;
+use std::thread;
+
+use crate::apps::Apps;
+use crate::cert::ServerCert;
+use crate::discovery;
+use crate::error::Result;
+use crate::host::{HTTP_PORT, HTTPS_PORT, Host};
+use crate::http::{Bridge, serve_one};
+use crate::pairing::Pairing;
+use crate::tls;
+
+/// Run the bridge: load or make the certificate under `data_dir`, then serve until stopped.
+///
+/// This is the whole public entry point. It hides the certificate type - a caller gives a name, an
+/// address, the apps to offer and where to keep state, and the bridge does the rest.
+///
+/// # Errors
+///
+/// If the certificate cannot be prepared, a port cannot be bound, or TLS cannot be configured.
+pub fn run(hostname: String, local_ip: Ipv4Addr, apps: Apps, data_dir: &Path) -> Result<()> {
+    let cert = ServerCert::load_or_generate(data_dir)?;
+    serve(Host::new(hostname, local_ip), apps, cert)
+}
+
+/// Serve the bridge until the process is stopped.
+///
+/// Binds the plain HTTP port and the TLS HTTPS port, advertises over mDNS, and handles requests on
+/// both, each connection on its own thread. Blocks.
+fn serve(host: Host, apps: Apps, cert: ServerCert) -> Result<()> {
+    let tls_config = tls::server_config(&cert)?;
+    let bridge = Bridge {
+        host,
+        pairing: Pairing::new(cert),
+        apps,
+    };
+
+    let http = TcpListener::bind(("0.0.0.0", HTTP_PORT))?;
+    let https = TcpListener::bind(("0.0.0.0", HTTPS_PORT))?;
+    let advertisement = discovery::advertise(&bridge.host);
+    if let Err(error) = &advertisement {
+        tracing::warn!(%error, "mDNS advertising failed; the client can still be given the address");
+    }
+    tracing::info!(http = HTTP_PORT, https = HTTPS_PORT, "bridge serving");
+
+    thread::scope(|scope| {
+        let bridge = &bridge;
+        // Plain HTTP acceptor.
+        scope.spawn(move || {
+            for stream in http.incoming() {
+                match stream {
+                    Ok(mut stream) => {
+                        scope.spawn(move || {
+                            if let Err(error) = serve_one(&mut stream, bridge) {
+                                tracing::debug!(%error, "http connection ended");
+                            }
+                        });
+                    }
+                    Err(error) => tracing::debug!(%error, "http accept failed"),
+                }
+            }
+        });
+        // TLS acceptor, on this thread.
+        for stream in https.incoming() {
+            match stream {
+                Ok(mut stream) => {
+                    let config = Arc::clone(&tls_config);
+                    scope.spawn(move || match rustls::ServerConnection::new(config) {
+                        Ok(mut connection) => {
+                            let mut secured = rustls::Stream::new(&mut connection, &mut stream);
+                            if let Err(error) = serve_one(&mut secured, bridge) {
+                                tracing::debug!(%error, "https connection ended");
+                            }
+                        }
+                        Err(error) => tracing::debug!(%error, "tls setup failed"),
+                    });
+                }
+                Err(error) => tracing::debug!(%error, "https accept failed"),
+            }
+        }
+    });
+    drop(advertisement);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::apps::Apps;
+    use crate::cert::{ClientCert, ServerCert};
+    use crate::crypto::{self, BLOCK};
+    use crate::host::Host;
+    use crate::http::{Bridge, serve_one};
+    use crate::pairing::Pairing;
+    use std::io::{Read, Write};
+    use std::net::{Ipv4Addr, TcpListener, TcpStream};
+    use std::sync::Arc;
+    use std::thread;
+
+    /// One HTTP GET against `addr`, returning the response body (everything after the blank line).
+    fn get(addr: std::net::SocketAddr, target: &str) -> String {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        write!(
+            stream,
+            "GET {target} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        response
+            .split_once("\r\n\r\n")
+            .map_or(response.clone(), |(_head, body)| body.to_owned())
+    }
+
+    /// Pull the hex text out of `<tag>...</tag>`.
+    fn field<'a>(xml: &'a str, tag: &str) -> &'a str {
+        let start = xml.find(&format!("<{tag}>")).unwrap() + tag.len() + 2;
+        let end = xml[start..].find(&format!("</{tag}>")).unwrap() + start;
+        &xml[start..end]
+    }
+
+    /// A real Moonlight client, over real sockets, pairs through the actual HTTP server.
+    ///
+    /// This drives the exact GameStream requests a client sends against the bridge's own routing
+    /// and parsing - not the pairing logic in isolation - so it proves the serving layer, not just
+    /// the handshake.
+    #[test]
+    fn a_client_discovers_and_pairs_over_http() {
+        // The bridge, behind an ephemeral TCP listener that serves each connection like the real
+        // HTTP acceptor does.
+        let bridge = Arc::new(Bridge {
+            host: Host::new("prosperous-itest".into(), Ipv4Addr::LOCALHOST),
+            pairing: Pairing::new(ServerCert::generate().unwrap()),
+            apps: Apps::from_titles(["ps5 on the bench"]),
+        });
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let serving = Arc::clone(&bridge);
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let bridge = Arc::clone(&serving);
+                thread::spawn(move || {
+                    let _ = serve_one(&mut stream, &bridge);
+                });
+            }
+        });
+
+        // Discovery: serverinfo says unpaired, and names the host.
+        let info = get(addr, "/serverinfo?uniqueid=itest");
+        assert!(info.contains("<PairStatus>0</PairStatus>"), "{info}");
+        assert!(info.contains("<hostname>prosperous-itest</hostname>"));
+
+        // The client identity and the PIN the user reads off it.
+        let client = ServerCert::generate().unwrap();
+        let salt = rand::random::<[u8; BLOCK]>();
+        let key = crypto::pairing_key(&salt, "4321");
+
+        // The PIN is submitted (as the person types it) before phase one, which blocks on it.
+        get(addr, "/pin?pin=4321");
+
+        // Phase 1: getservercert.
+        let p1 = get(
+            addr,
+            &format!(
+                "/pair?uniqueid=itest&devicename=test&phrase=getservercert&salt={}&clientcert={}",
+                hex::encode(salt),
+                hex::encode(client.pem.as_bytes()),
+            ),
+        );
+        let server_pinned = ClientCert::from_hex_pem(field(&p1, "plaincert")).unwrap();
+
+        // Phase 2: clientchallenge.
+        let client_challenge = rand::random::<[u8; BLOCK]>();
+        let p2 = get(
+            addr,
+            &format!(
+                "/pair?uniqueid=itest&clientchallenge={}",
+                hex::encode(crypto::aes_ecb_encrypt(&key, &client_challenge).unwrap()),
+            ),
+        );
+        let decrypted =
+            crypto::aes_ecb_decrypt(&key, &hex::decode(field(&p2, "challengeresponse")).unwrap())
+                .unwrap();
+        let (_server_hash, server_challenge) = decrypted.split_at(32);
+
+        // Phase 3: serverchallengeresp.
+        let client_secret = rand::random::<[u8; BLOCK]>();
+        let mut commit = server_challenge.to_vec();
+        commit.extend_from_slice(&client.signature);
+        commit.extend_from_slice(&client_secret);
+        let p3 = get(
+            addr,
+            &format!(
+                "/pair?uniqueid=itest&serverchallengeresp={}",
+                hex::encode(crypto::aes_ecb_encrypt(&key, &crypto::sha256(&commit)).unwrap()),
+            ),
+        );
+        let pairing_secret = hex::decode(field(&p3, "pairingsecret")).unwrap();
+        let (server_secret, server_sign) = pairing_secret.split_at(BLOCK);
+        // The client checks the server it pinned, exactly as Moonlight does.
+        assert!(crypto::verify(&server_pinned.public, server_secret, server_sign));
+
+        // Phase 4: clientpairingsecret.
+        let client_sign = crypto::sign(&client.private, &client_secret);
+        let mut reveal = client_secret.to_vec();
+        reveal.extend_from_slice(&client_sign);
+        let p4 = get(
+            addr,
+            &format!(
+                "/pair?uniqueid=itest&clientpairingsecret={}",
+                hex::encode(crypto::aes_ecb_encrypt(&key, &reveal).unwrap()),
+            ),
+        );
+        assert!(p4.contains("<paired>1</paired>"), "{p4}");
+
+        // Now serverinfo reports this client paired, and the app list carries the target.
+        assert!(get(addr, "/serverinfo?uniqueid=itest").contains("<PairStatus>1</PairStatus>"));
+        assert!(get(addr, "/applist").contains("<AppTitle>ps5 on the bench</AppTitle>"));
+    }
+
+    /// A client-cert verifier that accepts any cert but records the one the server presented, so
+    /// the test can assert the TLS listener served the certificate the client would have pinned.
+    #[derive(Debug)]
+    struct RecordPresented {
+        seen: std::sync::Mutex<Option<Vec<u8>>>,
+    }
+
+    impl rustls::client::danger::ServerCertVerifier for RecordPresented {
+        fn verify_server_cert(
+            &self,
+            end_entity: &rustls::pki_types::CertificateDer<'_>,
+            _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+            _server_name: &rustls::pki_types::ServerName<'_>,
+            _ocsp: &[u8],
+            _now: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            *self.seen.lock().unwrap() = Some(end_entity.to_vec());
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &rustls::pki_types::CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &rustls::pki_types::CertificateDer<'_>,
+            _dss: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    /// The HTTPS listener presents the pinned certificate and serves `serverinfo` over TLS.
+    ///
+    /// This is the leg the final pair challenge runs on: a Moonlight client verifies the server
+    /// against the cert it pinned during pairing, so what matters is that the TLS port serves the
+    /// same certificate and answers the same routes.
+    #[test]
+    fn the_https_listener_presents_the_pinned_cert() {
+        let cert = ServerCert::generate().unwrap();
+        let expected_der = cert.der.clone();
+        let tls_config = crate::tls::server_config(&cert).unwrap();
+        let bridge = Arc::new(Bridge {
+            host: Host::new("prosperous-tls".into(), Ipv4Addr::LOCALHOST),
+            pairing: Pairing::new(cert),
+            apps: Apps::default(),
+        });
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let serving = Arc::clone(&bridge);
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let config = Arc::clone(&tls_config);
+                let bridge = Arc::clone(&serving);
+                thread::spawn(move || {
+                    if let Ok(mut connection) = rustls::ServerConnection::new(config) {
+                        let mut tls = rustls::Stream::new(&mut connection, &mut stream);
+                        let _ = serve_one(&mut tls, &bridge);
+                    }
+                });
+            }
+        });
+
+        let verifier = Arc::new(RecordPresented {
+            seen: std::sync::Mutex::new(None),
+        });
+        let as_verifier: Arc<dyn rustls::client::danger::ServerCertVerifier> = verifier.clone();
+        let client_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(as_verifier)
+        .with_no_client_auth();
+
+        let server_name = rustls::pki_types::ServerName::try_from("prosperous").unwrap();
+        let mut connection =
+            rustls::ClientConnection::new(Arc::new(client_config), server_name).unwrap();
+        let mut tcp = TcpStream::connect(addr).unwrap();
+        let mut tls = rustls::Stream::new(&mut connection, &mut tcp);
+        write!(
+            tls,
+            "GET /serverinfo?uniqueid=tls HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut response = String::new();
+        // The server closes the TCP connection after replying without a TLS close_notify, which
+        // rustls surfaces as an EOF error once the whole reply is already read - so the bytes are
+        // in hand and the error is expected, not a failure.
+        let _ = tls.read_to_string(&mut response);
+
+        assert!(response.contains("<hostname>prosperous-tls</hostname>"), "{response}");
+        // The certificate the client saw is exactly the one the bridge would have handed out as
+        // `plaincert` during pairing.
+        let seen = verifier.seen.lock().unwrap().clone().expect("a cert was presented");
+        assert_eq!(seen, expected_der, "the TLS listener served the pinned certificate");
+    }
+}

@@ -118,7 +118,7 @@
       "version": "latest",
       "category": "System & Jailbreak",
       "description": "SceShellCore entitlement bypass enabling native Prospero (category 0) homebrew",
-      "source_local": "oops-apps/pltauth-patch/dist/pltauth-patch-prospero.elf",
+      "source_local": "oops-apps/src/pltauth-patch/dist/pltauth-patch-prospero.elf",
       "url": "https://github.com/project-oops/oops-apps/releases/download/latest-main/pltauth-patch-prospero.elf",
       "source": "https://github.com/project-oops/oops-apps",
       "source_direct": "https://github.com/project-oops/oops-apps/releases/download/latest-main/pltauth-patch-prospero.elf",

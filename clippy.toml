@@ -4,4 +4,8 @@
 # rather than backticked. `..` keeps clippy's own defaults (GitHub, OpenGL and the rest).
 # obSCEne, Orbistoun and Prosperous do not need listing: the first reads as lower-case-initial
 # prose and the other two carry only a leading capital, so none trips the lint.
-doc-valid-idents = ["SELFish", ".."]
+#
+# `GameStream` is NVIDIA's name for the protocol the Moonlight bridge speaks (docs/VIDEO.md part
+# four); `GfeVersion` is one of the XML fields that protocol defines. Both are names written as
+# prose, not symbols in this tree, so they join the list rather than being backticked at every use.
+doc-valid-idents = ["SELFish", "GameStream", "GfeVersion", "ENet", ".."]

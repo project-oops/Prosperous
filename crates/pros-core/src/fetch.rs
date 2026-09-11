@@ -121,7 +121,7 @@ pub fn fetch_into(payload: &Payload, dir: &Path) -> Result<PathBuf, NotFetched> 
 /// Finds a local build for a payload on this machine, if one exists.
 ///
 /// Looks first at `source_local` (relative to the repository root), then checks conventional
-/// build and dist directories under sibling projects (e.g. `oops-apps/<name>/build/<filename>`).
+/// build and dist directories under sibling projects (e.g. `oops-apps/src/<name>/dist/<filename>`).
 #[must_use]
 pub fn local_build(payload: &Payload) -> Option<PathBuf> {
     let filename = payload.filename.as_deref().unwrap_or(payload.name.as_str());
@@ -135,8 +135,22 @@ pub fn local_build(payload: &Payload) -> Option<PathBuf> {
             }
         }
 
-        // 2. Conventional relative paths under oops-apps or project root.
+        // 2. Conventional relative paths under oops-apps (src/ or root) or project root.
         let candidates = [
+            root.join("oops-apps")
+                .join("src")
+                .join(&payload.name)
+                .join("build")
+                .join(filename),
+            root.join("oops-apps")
+                .join("src")
+                .join(&payload.name)
+                .join("dist")
+                .join(filename),
+            root.join("oops-apps")
+                .join("src")
+                .join(&payload.name)
+                .join(filename),
             root.join("oops-apps")
                 .join(&payload.name)
                 .join("build")

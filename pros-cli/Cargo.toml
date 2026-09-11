@@ -18,6 +18,10 @@ path = "src/main.rs"
 [dependencies]
 pros-core = { workspace = true }
 pros-link = { workspace = true }
+# The Moonlight host bridge and its fake target, reached by the `moonlight` and `fake-target`
+# verbs. The heavy protocol dependencies live in that crate, not here (principle 3): this shim
+# still only parses arguments and calls it.
+pros-moonlight = { workspace = true }
 
 # Logging, so `pros` and the window can be turned up the same way.
 oops-log = { workspace = true }

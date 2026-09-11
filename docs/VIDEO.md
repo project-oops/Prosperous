@@ -327,13 +327,17 @@ Four choices worth stating, because each has an obvious wrong alternative:
 
 ### What this deliberately is not
 
-- **Not secure.** No pairing, no encryption, no authentication - two open ports on a LAN. That
-  is the same posture as every other service this project talks to, and it is stated rather
-  than implied. Do not put a target on an untrusted network and do not leave it running.
-- **Not lossy-network tolerant.** TCP, so a lost packet stalls the stream rather than degrading
-  it. Remote play uses UDP with forward error correction precisely because that matters over
-  wifi. **On a wired LAN this is fine and over wifi it will stutter**, and the fix is not a
-  small one - it is most of why the vendor's protocol is the size it is.
+- **Not secure - on the target leg.** No pairing, no encryption, no authentication - two open
+  ports on a LAN. That is the same posture as every other service this project talks to, and it
+  is stated rather than implied. Do not put a target on an untrusted network and do not leave it
+  running. [Part four](#part-four-the-moonlight-bridge) adds a *client-facing* leg that **is**
+  paired and encrypted, because Moonlight requires it; the target leg described here is unchanged.
+- **Not lossy-network tolerant - on the target leg.** TCP, so a lost packet stalls the stream
+  rather than degrading it. Remote play uses UDP with forward error correction precisely because
+  that matters over wifi. **On a wired LAN this is fine and over wifi it will stutter**, and the
+  fix is not a small one - it is most of why the vendor's protocol is the size it is. That fix is
+  exactly what [part four](#part-four-the-moonlight-bridge) buys on the client-facing leg (RTP/UDP
+  with Reed-Solomon FEC); this target leg stays plaintext TCP, by the argument above.
 - **Not audio, yet.** Video and input first. Audio is a third socket and the same argument,
   and adding it before either of the others works would be building on nothing.
 - **Not for an unmodified target.** This exists *because* the target is ours and runs our
@@ -359,6 +363,126 @@ So `porthole_encoder_open` is three known steps: `sceSysmoduleLoadModule(0xa0)` 
 `sceVencCore*` from the loaded module (the next real piece), then `sceVencCoreCreateEncoder`. The
 part-two raw-grab fallback is not needed for reachability - the door opens. What is still unmeasured
 is the two questions below it: the display buffer, and whether grabbing perturbs the pipeline.
+
+---
+
+## Part four: the Moonlight bridge
+
+**Part three makes one client — ours, on a PC. This makes every client, on every device**, for
+the cost of a bridge on the machine that already runs Porthole's host half. It changes nothing on
+the target and nothing in the payload: it is a *second consumer* of 9805 and 9806, sitting beside
+the `mpv` pipe rather than replacing it.
+
+The decision that shapes it is the operator's, dated 2026-09-10: **the Moonlight protocol is not
+implemented on the console.** Putting TLS, RTSP, ENet, AES-GCM and Reed-Solomon into a freestanding
+C payload — whose whole job is to push hardware-encoded frames out of a socket — is the opposite of
+what part three exists to argue. Prosperous already owns the host side, already has a registry of
+targets, and runs where a Rust TLS stack is free. So the protocol lives here, one LAN hop from the
+target, and every existing Moonlight client works the day the payload lands.
+
+### The shape
+
+```
+target                     this machine (Prosperous bridge)              any Moonlight client
+------                     --------------------------------              --------------------
+9805 --H.264 Annex-B-->     split NALs, packetise, RS-FEC     --RTP/UDP 47998-->  phone / Deck / TV
+9806 <--PPAD 60/s------     map controller packets to PPAD    <--ENet 47999-----  its gamepad
+                            pair (HTTPS 47984 / HTTP 47989), RTSP 48010, mDNS _nvstream._tcp
+```
+
+The target leg is exactly part three's two sockets, unchanged. The client leg is the NVIDIA
+GameStream protocol as Moonlight reverse-engineered it and Sunshine re-implemented it: discovery
+over mDNS, an HTTP/HTTPS pairing and session handshake, RTSP to negotiate the stream, then RTP
+video out and an ENet control-and-input channel back.
+
+### Two legs, two security postures, and both are honest
+
+Part three's "[what this deliberately is not](#what-this-deliberately-is-not)" describes the
+*target* leg, and every word of it still holds — that leg is unchanged. The **client** leg is a
+different posture because Moonlight requires it to be:
+
+| | target ↔ bridge (9805/9806) | bridge ↔ client (47998/47999/…) |
+|---|---|---|
+| transport | plaintext TCP | UDP for video, ENet for control |
+| loss tolerance | none — TCP stalls | Reed-Solomon FEC, wifi-tolerant |
+| authentication | none — trusted LAN | 4-digit-PIN pairing, per-client cert |
+| encryption | none | AES-GCM after RTSP negotiation |
+
+The target leg is plaintext on a trusted LAN **by the same argument as before**: the target is
+ours, on a wire we control, and pairing it would be securing the half of the path that does not
+need it. The client leg is encrypted and FEC-protected **because the protocol says so** — a
+Moonlight client will not pair with a host that answers otherwise, and the whole reason to speak
+this protocol is that clients already do. So the bridge is the seam where a trusted plaintext LAN
+segment meets a paired, encrypted, loss-tolerant one, and that is stated rather than smoothed over.
+
+### The bridge does not decode video, ever
+
+**"[Reading is not decoding](#video-the-payload-encodes-and-nothing-here-decodes)" holds here too.**
+The bridge reads Annex-B off 9805, finds NAL boundaries and keyframes, and packetises — it never
+decodes a frame. `pros-link::stream`, already the NAL splitter and keyframe finder part three uses
+for its counts, is the same code the packetiser reuses: one reader that knows where a NAL starts
+and whether it carries an IDR, feeding both the byte/unit/keyframe counts (still the oracle for "is
+there a picture" that a client cannot give) and the RTP packetiser. No re-encode, no transcode, no
+buffering beyond one frame. **H.264 only** for now — that is what the target's VENC path is
+expected to emit; the RTSP `DESCRIBE` advertises it and nothing else until a second codec is measured.
+
+### What the client dictates, and what the target does not yet expose
+
+A Moonlight client owns the encoder's controls: it asks for a keyframe on loss and it sets
+resolution, fps, bitrate and codec at launch. Porthole's 9806 carries only `PPAD` input today, so
+the bridge has nowhere to send either. **The target-side shape is filed, not built** —
+oops-apps `REQ-20260910T2326Z-8c12` proposes a 24-byte `PCTL` control record on 9806 (op 1 =
+request-keyframe, op 2 = set-mode), dispatched beside `PPAD` by magic. Until it is answered the
+bridge maps the client's *request IDR* and *invalidate reference frames* messages to op 1 and its
+`launch` mode to op 2, **sends them, and logs the ones it could not honour** — honest failure, not
+a silent freeze.
+
+### Provenance and licence, up front
+
+The GameStream wire protocol has no published spec; it is defined by three GPLv3 codebases:
+**moonlight-common-c** (the Moonlight client core), **Sunshine** (LizardByte, the reference host),
+and **Wolf** (games-on-whales, an independent second host — the useful cross-check for what the
+*protocol* requires versus what Sunshine happens to do). Prosperous implements the **behaviour**
+those describe and cites them in `ACKNOWLEDGEMENTS.md`; it copies no code and links no GPL library,
+for the same reason part three gives for not embedding the AGPL remote-play client. Implementing
+somebody else's documented behaviour is the one kind of protocol work this project does (principle
+1); relicensing it by linking is not.
+
+### Built in the order it can be tested without a console
+
+The whole client leg is verifiable on this machine alone, against a stock `moonlight-qt` on the
+same LAN, with **no target involved** — which is how the mesh wants it, since obSCEne alone touches
+hardware. It lives in its own crate, `pros-moonlight`, reached by two `pros` verbs: `fake-target`
+and `moonlight`. The **fake target** serves an Annex-B H.264 file on 9805 in a loop and sinks 9806,
+printing the `PPAD` records it receives. Then, in order:
+
+1. **Discovery + pairing + app list — built and verified.** The bridge advertises
+   `_nvstream._tcp`, serves `serverinfo` over HTTP (47989) and HTTPS (47984), runs the full
+   four-phase PIN pairing (SHA-256 salted key, AES-128-ECB challenges, RSA-signed commitments)
+   exactly as Sunshine does, and offers **one app per registered target**. The self-signed RSA
+   cert is generated once and persisted so a client's pinning survives a restart; the HTTPS port
+   presents that same cert for the final pair challenge. Proven by tests that play a real client
+   through every phase over real sockets (`crates/pros-moonlight/src/serve.rs`), and by the running
+   `pros moonlight` answering `serverinfo` on both ports.
+2. **Session + video — next.** Answer `launch`/`resume` and the RTSP handshake; read Annex-B from
+   the fake 9805, packetise into RTP with the Moonlight video header, add RS-FEC parity, send on
+   47998; a picture appears in `moonlight-qt`.
+3. **Control + input — next.** Bring up ENet on 47999, decode controller packets, map them through
+   the existing pad state into `PPAD` on 9806; the fake sink prints them when the client's gamepad
+   moves.
+
+Wiring to the real payload is a later request, once oops-apps ships the `PCTL` end and the encoder
+path emits frames. Audio is deferred exactly as it is in part three — Moonlight requires **Opus** at
+48 kHz, there is no pure-Rust Opus encoder, and that is the one piece likely to need an FFI
+dependency; the workspace's unsafe gate decides it *then*, not now.
+
+### House rules that bind this
+
+Behind a `bin/prosperous` / `pros` verb, not a script (principle 3). Pure-Rust dependencies where
+they exist — rustls, aes-gcm, reed-solomon-erasure, an mDNS crate, a pure-Rust ENet port — each
+justified in the manifest the way `pros-link` justifies its own (principle 4), and the workspace's
+unsafe gate decides the rest: if the gate makes a piece impossible, that piece is refused *by name*
+rather than the gate weakened.
 
 ---
 
