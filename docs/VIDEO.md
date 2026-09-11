@@ -464,17 +464,30 @@ printing the `PPAD` records it receives. Then, in order:
    presents that same cert for the final pair challenge. Proven by tests that play a real client
    through every phase over real sockets (`crates/pros-moonlight/src/serve.rs`), and by the running
    `pros moonlight` answering `serverinfo` on both ports.
-2. **Session + video — next.** Answer `launch`/`resume` and the RTSP handshake; read Annex-B from
-   the fake 9805, packetise into RTP with the Moonlight video header, add RS-FEC parity, send on
-   47998; a picture appears in `moonlight-qt`.
-3. **Control + input — next.** Bring up ENet on 47999, decode controller packets, map them through
-   the existing pad state into `PPAD` on 9806; the fake sink prints them when the client's gamepad
-   moves.
+2. **Session + video — built.** `launch`/`resume` record the mode and keys and hand back the RTSP
+   URL; the RTSP handshake (OPTIONS/DESCRIBE/SETUP/ANNOUNCE/PLAY) negotiates an H.264 stream; on
+   PLAY the bridge reads Annex-B from 9805, groups it into frames, packetises each into RTP with
+   the NV video header and Reed-Solomon parity, and sends it to the client's video port (47998).
+   Proven by a test that runs a fake Annex-B source through the real pipeline to a UDP sink.
+3. **Control + input — built.** An ENet channel on 47999 receives the client's AES-128-GCM control
+   messages, decrypts them, and turns a controller update into a `PPAD` record forwarded to the
+   target's 9806 - so the fake target prints the pad when the client's gamepad moves. The button
+   and stick translation (Moonlight's XInput-style bitmap to the target's own) is tested, as is the
+   encrypted-control round-trip.
 
-Wiring to the real payload is a later request, once oops-apps ships the `PCTL` end and the encoder
-path emits frames. Audio is deferred exactly as it is in part three — Moonlight requires **Opus** at
+The pieces are wired end to end - launch → RTSP → PLAY starts both the video pump and the control
+channel - and each layer is unit-tested; what a headless test cannot do is confirm the final
+picture in a real client, which is the one step that needs a Moonlight app on the LAN. Wiring to
+the real payload is still a later request, once oops-apps ships the `PCTL` end and the encoder path
+emits frames. Audio is deferred exactly as it is in part three — Moonlight requires **Opus** at
 48 kHz, there is no pure-Rust Opus encoder, and that is the one piece likely to need an FFI
 dependency; the workspace's unsafe gate decides it *then*, not now.
+
+**All of part four is adapted from Moonshine** (Hans Gaiser, BSD-2-Clause): the pairing crate map
+and, for this streaming half, the RTSP flow, the RTP/NV packet layout, the FEC scheme and the
+AES-GCM control channel. Its copyright notice is retained in
+[`THIRD-PARTY-LICENSES.md`](../THIRD-PARTY-LICENSES.md), and each source file that closely follows
+a Moonshine one says so.
 
 ### House rules that bind this
 

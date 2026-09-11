@@ -517,7 +517,7 @@ mod tests {
                 },
             })
             .collect();
-        Report::new("ps5", "127.0.0.1", findings)
+        Report::new("prospero", "127.0.0.1", findings)
     }
 
     /// A service that answered is loaded; one that did not is not.

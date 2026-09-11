@@ -8,4 +8,4 @@
 # `GameStream` is NVIDIA's name for the protocol the Moonlight bridge speaks (docs/VIDEO.md part
 # four); `GfeVersion` is one of the XML fields that protocol defines. Both are names written as
 # prose, not symbols in this tree, so they join the list rather than being backticked at every use.
-doc-valid-idents = ["SELFish", "GameStream", "GfeVersion", "ENet", ".."]
+doc-valid-idents = ["SELFish", "GameStream", "GfeVersion", "ENet", "XInput", ".."]

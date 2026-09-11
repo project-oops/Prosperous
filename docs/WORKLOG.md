@@ -1,4 +1,30 @@
 
+## The Moonlight bridge streams: video and input, on Moonshine's shoulders
+
+The bridge now does the whole of part four. Video: the target's Annex-B off 9805 is grouped into
+frames (`nal`), each packetised into RTP with the NV video-packet header and Reed-Solomon parity
+(`video`, `fec-rs`), and sent to the client's 47998 (`session::pump_video`) - proven by a test that
+runs a fake source through the real pipeline to a UDP sink. Input: the client's controller packets
+arrive over an AES-128-GCM ENet channel on 47999 (`control`, `rusty_enet`), and each becomes a
+`PPAD` record forwarded to the target's 9806 (`input`) - which is exactly what the fake target
+prints. The RTSP handshake (`rtsp`) ties launch to play, and PLAY starts both.
+
+This half is **adapted from Moonshine** (Hans Gaiser, BSD-2-Clause), not merely informed by it, so
+the attribution grew to match: its copyright notice is retained verbatim in
+`THIRD-PARTY-LICENSES.md`, `ACKNOWLEDGEMENTS.md` names it the base, and each streaming source file
+says which Moonshine file it follows. BSD-2 permits the derivation and asks only that the notice
+travel with it, which it now does.
+
+Two surprises worth keeping. First, **the protocol's own source is the only reliable spec** - the
+RTP `fec_info` word packs shard index, data-shard count and FEC percentage at bit offsets 12, 22
+and 4, and the control nonce is the sequence followed by zeros and the bytes `HC`; none of that is
+guessable, and reading Moonshine (which had already read Sunshine and moonlight-common-c) is what
+made it exact. Second, **the two halves need different transports for a reason**: video is
+fire-and-forget RTP/UDP with FEC to survive loss, input is an ENet channel because a dropped button
+is wrong forever - the same split part three drew between a state you resend and a delta you cannot.
+What a headless test still cannot do is show the final picture in a real client; that is the one
+step left, and it needs a Moonlight app on the LAN rather than more code.
+
 ## The Moonlight bridge, built up to pairing, in a crate of its own
 
 Prosperous can now be a Moonlight host. The whole thing lives in a new crate, `pros-moonlight`,

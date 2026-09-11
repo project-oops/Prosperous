@@ -43,5 +43,15 @@ mdns-sd = "0.21"
 # GameStream speaks.
 rustls = { version = "0.23.44", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 
+# The streaming half (docs/VIDEO.md part four, "next"), adapted from Moonshine (BSD-2, see
+# THIRD-PARTY-LICENSES.md): `rtsp-types` for the session handshake, `fec-rs` for the Reed-Solomon
+# forward error correction Moonlight expects on the video, and `aes-gcm` for the encrypted control
+# channel that carries input. `aes-gcm` is pinned to 0.10 so it shares one `aes`/`cipher` version
+# with the pairing code above rather than pulling a second copy.
+rtsp-types = "0.1.3"
+fec-rs = "0.1.0"
+aes-gcm = "0.10"
+rusty_enet = "0.4.0"
+
 [lints]
 workspace = true

@@ -10,16 +10,18 @@
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::IpAddr;
 
 use crate::apps::Apps;
-use crate::host::Host;
+use crate::host::{Host, RTSP_PORT};
 use crate::pairing::Pairing;
+use crate::session::{Sessions, StreamConfig};
 
 /// The largest request head accepted, so a peer cannot make the bridge buffer without bound. The
 /// client certificate in a pairing request is the biggest thing sent and is a few kilobytes.
 const MAX_HEAD: usize = 64 * 1024;
 
-/// Everything the routes need: who we are, the pairing state, and the apps to list.
+/// Everything the routes need: who we are, the pairing state, the apps, and the stream sessions.
 pub(crate) struct Bridge {
     /// The host identity and `serverinfo` values.
     pub(crate) host: Host,
@@ -27,6 +29,8 @@ pub(crate) struct Bridge {
     pub(crate) pairing: Pairing,
     /// The apps offered, one per registered target.
     pub(crate) apps: Apps,
+    /// The streaming sessions the RTSP handshake drives.
+    pub(crate) sessions: Sessions,
 }
 
 /// A parsed request: the path and its query parameters.
@@ -50,12 +54,16 @@ impl Request {
 }
 
 impl Bridge {
-    /// Route one parsed request to its response body (always XML).
-    fn route(&self, request: &Request) -> String {
+    /// Route one parsed request to its response body (always XML). `peer` is the client's address,
+    /// which a launch needs so the stream can be sent back to it.
+    fn route(&self, request: &Request, peer: IpAddr) -> String {
         match request.path.as_str() {
             "/serverinfo" => self.host.serverinfo(self.pairing.is_paired(request.id())),
             "/pair" => self.pair(request),
             "/applist" => self.apps.applist(),
+            // launch and resume both begin a stream; resume differs only in that the client is
+            // returning to one, which for this bridge is the same setup.
+            "/launch" | "/resume" => self.launch(request, peer),
             // A control path of ours, not the protocol's: how the PIN read off the client gets in.
             "/pin" => {
                 self.pairing.submit_pin(request.get("pin"));
@@ -64,6 +72,19 @@ impl Bridge {
             }
             _ => "<?xml version=\"1.0\"?><root status_code=\"404\"></root>".to_owned(),
         }
+    }
+
+    /// Handle a launch/resume: record the stream the client asked for, and hand back the RTSP URL
+    /// it should connect to next.
+    fn launch(&self, request: &Request, peer: IpAddr) -> String {
+        let config = StreamConfig::from_query(&request.query);
+        tracing::info!(client = %peer, width = config.width, height = config.height, fps = config.fps, "launch");
+        self.sessions.launched(peer, config);
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<root status_code=\"200\">\
+             <sessionUrl0>rtsp://{}:{RTSP_PORT}</sessionUrl0><gamesession>1</gamesession></root>",
+            self.host.local_ip,
+        )
     }
 
     /// Dispatch a `/pair` request to the phase its parameters name.
@@ -93,16 +114,20 @@ impl Bridge {
     }
 }
 
-/// Read one request off `stream`, route it, and write the reply. Returns whether the connection
-/// should be kept for another request.
+/// Read one request off `stream`, route it, and write the reply. `peer` is the client's address,
+/// needed so a launch can send the stream back to it.
 ///
 /// # Errors
 ///
 /// On a read or write error, or a request head larger than [`MAX_HEAD`].
-pub(crate) fn serve_one<S: Read + Write>(stream: &mut S, bridge: &Bridge) -> io::Result<()> {
+pub(crate) fn serve_one<S: Read + Write>(
+    stream: &mut S,
+    bridge: &Bridge,
+    peer: IpAddr,
+) -> io::Result<()> {
     let request = read_request(stream)?;
     tracing::debug!(path = %request.path, "request");
-    let body = bridge.route(&request);
+    let body = bridge.route(&request, peer);
     write_response(stream, &body)
 }
 

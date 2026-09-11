@@ -349,7 +349,7 @@ fn render(targets: &[Target]) -> String {
          # The trailing pairs are only for a target that does NOT use the usual ports -\n\
          # a different FTP server, say, on 2122 rather than 2121:\n\
          #\n\
-         #   ps5 192.168.1.211 ftpsrv=2122\n\
+         #   prospero 192.168.1.211 ftpsrv=2122\n\
          #\n\
          # They are used everywhere, not only by the check, so an override changes where\n\
          # files actually go. A wrong one talks to whatever else is listening there.\n\n",
@@ -390,7 +390,7 @@ mod tests {
     /// whose value is not a number - which is exactly what the port reader is written to skip.
     #[test]
     fn a_chain_is_written_and_read_back_beside_the_ports() {
-        let mut one = target("ps5", "192.168.1.211");
+        let mut one = target("prospero", "192.168.1.211");
         one.ports.insert("ftpsrv".to_owned(), 2122);
         one.chain = Some("etaHEN".to_owned());
 
@@ -404,8 +404,7 @@ mod tests {
     #[test]
     fn no_chain_is_absent_rather_than_a_default() {
         let again = parse(
-            "ps5 192.168.1.211
-",
+            "prospero 192.168.1.211\n",
         );
         assert_eq!(again[0].chain, None);
     }
@@ -414,8 +413,7 @@ mod tests {
     #[test]
     fn an_empty_chain_is_not_a_chain() {
         let again = parse(
-            "ps5 192.168.1.211 chain=
-",
+            "prospero 192.168.1.211 chain=\n",
         );
         assert_eq!(again[0].chain, None);
     }
@@ -438,7 +436,7 @@ mod tests {
     /// What is written can be read, including the header.
     #[test]
     fn rendering_is_parseable_again() {
-        let targets = vec![target("ps5", "192.168.1.206")];
+        let targets = vec![target("prospero", "192.168.1.206")];
         assert_eq!(parse(&render(&targets)), targets);
     }
 

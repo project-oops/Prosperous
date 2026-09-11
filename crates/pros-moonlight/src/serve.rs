@@ -14,43 +14,53 @@ use crate::apps::Apps;
 use crate::cert::ServerCert;
 use crate::discovery;
 use crate::error::Result;
-use crate::host::{HTTP_PORT, HTTPS_PORT, Host};
+use crate::host::{HTTP_PORT, HTTPS_PORT, Host, RTSP_PORT};
 use crate::http::{Bridge, serve_one};
 use crate::pairing::Pairing;
+use crate::session::Sessions;
 use crate::tls;
 
 /// Run the bridge: load or make the certificate under `data_dir`, then serve until stopped.
 ///
 /// This is the whole public entry point. It hides the certificate type - a caller gives a name, an
-/// address, the apps to offer and where to keep state, and the bridge does the rest.
+/// address, the apps to offer, the `target` that serves Porthole's 9805/9806 (a console, or the
+/// fake target), and where to keep state; the bridge does the rest.
 ///
 /// # Errors
 ///
 /// If the certificate cannot be prepared, a port cannot be bound, or TLS cannot be configured.
-pub fn run(hostname: String, local_ip: Ipv4Addr, apps: Apps, data_dir: &Path) -> Result<()> {
+pub fn run(
+    hostname: String,
+    local_ip: Ipv4Addr,
+    apps: Apps,
+    target: String,
+    data_dir: &Path,
+) -> Result<()> {
     let cert = ServerCert::load_or_generate(data_dir)?;
-    serve(Host::new(hostname, local_ip), apps, cert)
+    serve(Host::new(hostname, local_ip), apps, cert, target)
 }
 
 /// Serve the bridge until the process is stopped.
 ///
-/// Binds the plain HTTP port and the TLS HTTPS port, advertises over mDNS, and handles requests on
-/// both, each connection on its own thread. Blocks.
-fn serve(host: Host, apps: Apps, cert: ServerCert) -> Result<()> {
+/// Binds the HTTP, HTTPS and RTSP ports, advertises over mDNS, and handles connections on each,
+/// one per thread. Blocks.
+fn serve(host: Host, apps: Apps, cert: ServerCert, target: String) -> Result<()> {
     let tls_config = tls::server_config(&cert)?;
     let bridge = Bridge {
         host,
         pairing: Pairing::new(cert),
         apps,
+        sessions: Sessions::new(target),
     };
 
     let http = TcpListener::bind(("0.0.0.0", HTTP_PORT))?;
     let https = TcpListener::bind(("0.0.0.0", HTTPS_PORT))?;
+    let rtsp = TcpListener::bind(("0.0.0.0", RTSP_PORT))?;
     let advertisement = discovery::advertise(&bridge.host);
     if let Err(error) = &advertisement {
         tracing::warn!(%error, "mDNS advertising failed; the client can still be given the address");
     }
-    tracing::info!(http = HTTP_PORT, https = HTTPS_PORT, "bridge serving");
+    tracing::info!(http = HTTP_PORT, https = HTTPS_PORT, rtsp = RTSP_PORT, "bridge serving");
 
     thread::scope(|scope| {
         let bridge = &bridge;
@@ -59,8 +69,9 @@ fn serve(host: Host, apps: Apps, cert: ServerCert) -> Result<()> {
             for stream in http.incoming() {
                 match stream {
                     Ok(mut stream) => {
+                        let peer = peer_ip(&stream);
                         scope.spawn(move || {
-                            if let Err(error) = serve_one(&mut stream, bridge) {
+                            if let Err(error) = serve_one(&mut stream, bridge, peer) {
                                 tracing::debug!(%error, "http connection ended");
                             }
                         });
@@ -69,15 +80,27 @@ fn serve(host: Host, apps: Apps, cert: ServerCert) -> Result<()> {
                 }
             }
         });
+        // RTSP acceptor.
+        scope.spawn(move || {
+            for stream in rtsp.incoming() {
+                match stream {
+                    Ok(mut stream) => {
+                        scope.spawn(move || bridge.sessions.serve_rtsp(&mut stream));
+                    }
+                    Err(error) => tracing::debug!(%error, "rtsp accept failed"),
+                }
+            }
+        });
         // TLS acceptor, on this thread.
         for stream in https.incoming() {
             match stream {
                 Ok(mut stream) => {
+                    let peer = peer_ip(&stream);
                     let config = Arc::clone(&tls_config);
                     scope.spawn(move || match rustls::ServerConnection::new(config) {
                         Ok(mut connection) => {
                             let mut secured = rustls::Stream::new(&mut connection, &mut stream);
-                            if let Err(error) = serve_one(&mut secured, bridge) {
+                            if let Err(error) = serve_one(&mut secured, bridge, peer) {
                                 tracing::debug!(%error, "https connection ended");
                             }
                         }
@@ -90,6 +113,14 @@ fn serve(host: Host, apps: Apps, cert: ServerCert) -> Result<()> {
     });
     drop(advertisement);
     Ok(())
+}
+
+/// The peer's IP, or an unspecified address if the socket cannot report it (which only a launch
+/// would then get wrong, and a launch always has a real peer).
+fn peer_ip(stream: &std::net::TcpStream) -> std::net::IpAddr {
+    stream
+        .peer_addr()
+        .map_or(std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED), |addr| addr.ip())
 }
 
 #[cfg(test)]
@@ -140,6 +171,7 @@ mod tests {
             host: Host::new("prosperous-itest".into(), Ipv4Addr::LOCALHOST),
             pairing: Pairing::new(ServerCert::generate().unwrap()),
             apps: Apps::from_titles(["ps5 on the bench"]),
+            sessions: crate::session::Sessions::new("127.0.0.1".to_owned()),
         });
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let addr = listener.local_addr().unwrap();
@@ -149,7 +181,7 @@ mod tests {
                 let Ok(mut stream) = stream else { continue };
                 let bridge = Arc::clone(&serving);
                 thread::spawn(move || {
-                    let _ = serve_one(&mut stream, &bridge);
+                    let _ = serve_one(&mut stream, &bridge, Ipv4Addr::LOCALHOST.into());
                 });
             }
         });
@@ -286,6 +318,7 @@ mod tests {
             host: Host::new("prosperous-tls".into(), Ipv4Addr::LOCALHOST),
             pairing: Pairing::new(cert),
             apps: Apps::default(),
+            sessions: crate::session::Sessions::new("127.0.0.1".to_owned()),
         });
 
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -299,7 +332,7 @@ mod tests {
                 thread::spawn(move || {
                     if let Ok(mut connection) = rustls::ServerConnection::new(config) {
                         let mut tls = rustls::Stream::new(&mut connection, &mut stream);
-                        let _ = serve_one(&mut tls, &bridge);
+                        let _ = serve_one(&mut tls, &bridge, Ipv4Addr::LOCALHOST.into());
                     }
                 });
             }

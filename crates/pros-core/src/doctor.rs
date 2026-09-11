@@ -1138,7 +1138,7 @@ mod tests {
                 },
             })
             .collect();
-        crate::check::Report::new("ps5", "127.0.0.1", findings)
+        crate::check::Report::new("prospero", "127.0.0.1", findings)
     }
 
     fn described(name: &str, url: Option<&str>) -> Payload {

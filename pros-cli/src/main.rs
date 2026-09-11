@@ -77,7 +77,7 @@ enum Command {
         /// Host or address
         address: String,
         /// What to call it
-        #[arg(long, default_value = "ps5")]
+        #[arg(long, default_value = "prospero")]
         name: String,
     },
     /// Show what is registered
@@ -590,15 +590,22 @@ fn moonlight(
     let data_dir = target::directory()
         .ok_or("no data directory for the certificate")?
         .join("moonlight");
+    // Where Porthole's 9805/9806 are served: the first registered target, or the local fake target.
+    let porthole = targets
+        .first()
+        .map_or_else(|| "127.0.0.1".to_owned(), |one| one.address.clone());
 
     println!(
         "Moonlight bridge: host '{hostname}' on {local_ip}, {} target(s) offered.",
         targets.len().max(1)
     );
+    println!(
+        "Porthole video/input expected at {porthole} (9805/9806) - run `pros fake-target` there to test."
+    );
     println!("On your Moonlight client, add {local_ip} (or find '{hostname}'), then pair.");
     println!("When it shows a PIN, type it here and press enter.");
     spawn_pin_prompt();
-    pros_moonlight::run(hostname, local_ip, apps, &data_dir)?;
+    pros_moonlight::run(hostname, local_ip, apps, porthole, &data_dir)?;
     Ok(ExitCode::SUCCESS)
 }
 

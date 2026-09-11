@@ -51,6 +51,24 @@ mod cert;
 /// The four-phase pairing handshake.
 mod pairing;
 
+/// Grouping an Annex-B stream into frames for the packetiser.
+mod nal;
+
+/// Turning encoded frames into the RTP packets a Moonlight client expects.
+mod video;
+
+/// Turning a Moonlight controller packet into a target pad.
+mod input;
+
+/// A streaming session: the requested mode and the video pipeline.
+mod session;
+
+/// The RTSP handshake that sets a stream up.
+mod rtsp;
+
+/// The ENet control channel that carries input.
+mod control;
+
 /// The little HTTP server the GameStream endpoints are served over.
 mod http;
 

@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn everything_answering_is_ready() {
-        let report = Report::new("ps5", "10.0.0.1", all(true));
+        let report = Report::new("prospero", "10.0.0.1", all(true));
         assert_eq!(report.verdict(), Verdict::Ready);
         assert!(report.missing().is_empty());
     }
@@ -340,7 +340,7 @@ mod tests {
     /// put it back, and every other remedy on the list assumes it is there.
     #[test]
     fn a_missing_loader_says_rerun_the_jailbreak_rather_than_reload_a_payload() {
-        let report = Report::new("ps5", "10.0.0.1", without(LOADER.name.as_ref()));
+        let report = Report::new("prospero", "10.0.0.1", without(LOADER.name.as_ref()));
         assert_eq!(
             report.verdict(),
             Verdict::Blocked {
@@ -352,7 +352,7 @@ mod tests {
     /// Even when several things are down, the loader is the one that decides the remedy.
     #[test]
     fn the_loader_decides_the_remedy_when_several_are_down() {
-        let report = Report::new("ps5", "10.0.0.1", all(false));
+        let report = Report::new("prospero", "10.0.0.1", all(false));
         assert_eq!(
             report.verdict(),
             Verdict::Blocked {
@@ -368,7 +368,7 @@ mod tests {
             .iter()
             .find(|service| service.required && service.name != LOADER.name)
             .expect("something required beside the loader");
-        let report = Report::new("ps5", "10.0.0.1", without(file_service.name.as_ref()));
+        let report = Report::new("prospero", "10.0.0.1", without(file_service.name.as_ref()));
         assert_eq!(
             report.verdict(),
             Verdict::Blocked {
@@ -387,7 +387,7 @@ mod tests {
             .iter()
             .find(|service| !service.required)
             .expect("something optional");
-        let report = Report::new("ps5", "10.0.0.1", without(optional.name.as_ref()));
+        let report = Report::new("prospero", "10.0.0.1", without(optional.name.as_ref()));
         assert_eq!(
             report.verdict(),
             Verdict::Dimmed {
@@ -403,7 +403,7 @@ mod tests {
         if let Some(first) = findings.first_mut() {
             first.reachability.took = REMARKABLE + Duration::from_millis(1);
         }
-        let report = Report::new("ps5", "10.0.0.1", findings);
+        let report = Report::new("prospero", "10.0.0.1", findings);
         assert_eq!(report.slow().len(), 1);
         assert_eq!(report.verdict(), Verdict::Ready, "slow is not down");
     }
@@ -457,7 +457,7 @@ mod declared_tests {
             false,
             false,
         )));
-        let report = Report::new("ps5", "10.0.0.1", findings);
+        let report = Report::new("prospero", "10.0.0.1", findings);
         assert_eq!(
             report.verdict(),
             Verdict::Blocked {
@@ -481,7 +481,7 @@ mod declared_tests {
             false,
             false,
         )));
-        let report = Report::new("ps5", "10.0.0.1", findings);
+        let report = Report::new("prospero", "10.0.0.1", findings);
         assert_eq!(
             report.verdict(),
             Verdict::Dimmed {

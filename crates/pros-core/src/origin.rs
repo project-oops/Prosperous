@@ -242,7 +242,7 @@ mod tests {
 
     fn origin(user: &str) -> Origin {
         Origin {
-            target: "ps5".to_owned(),
+            target: "prospero".to_owned(),
             address: "192.0.2.1".to_owned(),
             user: user.to_owned(),
             from: format!("/user/home/{user}/savedata_prospero/PPSA01650"),

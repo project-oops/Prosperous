@@ -53,13 +53,18 @@ observable behaviour, which is the one kind of protocol work this project does (
 that ever changes - a GPL library linked, any source taken - it is credited again and the licence
 consequence is faced then, not blurred now.
 
-**Moonshine** (hgaiser) is a fourth reference and a different kind: a pure-Rust GameStream host,
-**BSD-2-Clause**, so permissively licensed that its code *could* be used with attribution. It was
-not copied; what it settled was that each leg of this protocol has a pure-Rust crate that does the
-job without a C toolchain, and `crates/pros-moonlight/Cargo.toml` reaches for the same set it does
-- `rustls` (with the `ring` provider), `rcgen`/`x509-cert`, `rsa`/`sha2`/`aes`, `mdns-sd`, and for
-the streaming half `rtsp-types`, `fec-rs` and an ENet port. Following a working project's crate
-choices is cheaper than rediscovering them, and it is credited here rather than absorbed silently.
+**Moonshine** (Hans Gaiser) is the **base** of `crates/pros-moonlight`, and a different kind of
+credit from the three above: a pure-Rust GameStream host under the permissive **BSD 2-Clause**
+licence. The pairing half took its crate choices; the **streaming half is adapted from it** - the
+RTSP handshake, the RTP/NV video packet layout, the Reed-Solomon FEC scheme, and the AES-GCM
+control channel all follow Moonshine's wire behaviour, because it is the working reference for a
+protocol that has no specification. Each source file that closely follows a Moonshine one says so
+in its own documentation.
+
+Because this is derivation, not just consultation, BSD-2-Clause asks that Moonshine's copyright
+notice be retained: it is reproduced in full in [`THIRD-PARTY-LICENSES.md`](THIRD-PARTY-LICENSES.md)
+at the repository root. That file, not this paragraph, is the licence compliance; this is the
+plain-language acknowledgement that the bridge stands on Moonshine's shoulders.
 
 ## Ghostpad, for the controller layout
 
