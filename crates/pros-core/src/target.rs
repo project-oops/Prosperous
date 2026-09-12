@@ -403,18 +403,14 @@ mod tests {
     /// A registration that says nothing about a chain has not chosen one.
     #[test]
     fn no_chain_is_absent_rather_than_a_default() {
-        let again = parse(
-            "prospero 192.168.1.211\n",
-        );
+        let again = parse("prospero 192.168.1.211\n");
         assert_eq!(again[0].chain, None);
     }
 
     /// **A malformed chain is no chain**, the same as a malformed port is no port.
     #[test]
     fn an_empty_chain_is_not_a_chain() {
-        let again = parse(
-            "prospero 192.168.1.211 chain=\n",
-        );
+        let again = parse("prospero 192.168.1.211 chain=\n");
         assert_eq!(again[0].chain, None);
     }
 

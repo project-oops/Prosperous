@@ -247,7 +247,12 @@ mod tests {
             if let Ok((mut stream, _)) = target.accept() {
                 // SPS, PPS, an IDR, then a P-frame, each a NAL with a 4-byte start code.
                 let mut clip = Vec::new();
-                for (kind, body) in [(7_u8, &b"sps"[..]), (8, b"pps"), (5, b"keyframe-slice"), (1, b"inter")] {
+                for (kind, body) in [
+                    (7_u8, &b"sps"[..]),
+                    (8, b"pps"),
+                    (5, b"keyframe-slice"),
+                    (1, b"inter"),
+                ] {
                     clip.extend_from_slice(&[0, 0, 0, 1, kind]);
                     clip.extend_from_slice(body);
                 }
@@ -258,7 +263,9 @@ mod tests {
 
         // The client side: a UDP socket collecting the RTP packets.
         let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        client.set_read_timeout(Some(std::time::Duration::from_millis(500))).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .unwrap();
         let client_addr = client.local_addr().unwrap();
         let received = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&received);
@@ -277,13 +284,19 @@ mod tests {
             target_addr,
             client_addr,
             &sender,
-            &video::Config { shard_payload: 1024, fec_percentage: 20 },
+            &video::Config {
+                shard_payload: 1024,
+                fec_percentage: 20,
+            },
             || true,
         )
         .unwrap();
 
         let packets = collector.join().unwrap();
-        assert!(stats.frames >= 2, "the keyframe and the inter frame both went through");
+        assert!(
+            stats.frames >= 2,
+            "the keyframe and the inter frame both went through"
+        );
         assert!(stats.packets >= 2);
         assert!(!packets.is_empty(), "RTP packets reached the client socket");
         // The first packet is the start of a frame and its RTP version byte is 0x90.

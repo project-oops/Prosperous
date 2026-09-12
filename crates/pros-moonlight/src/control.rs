@@ -97,7 +97,12 @@ fn pump(
 }
 
 /// Act on one ENet event: a controller update on channel 0 becomes a `PPAD` record.
-fn handle(event: &Event<'_, UdpSocket>, cipher: &Aes128Gcm, feed: &mut Feed, sequences: &mut [u32]) {
+fn handle(
+    event: &Event<'_, UdpSocket>,
+    cipher: &Aes128Gcm,
+    feed: &mut Feed,
+    sequences: &mut [u32],
+) {
     let Event::Receive {
         channel_id: 0,
         packet,
@@ -197,7 +202,10 @@ mod tests {
     fn a_packet_that_is_not_encrypted_or_not_input_is_ignored() {
         let key = [3_u8; 16];
         let cipher = Aes128Gcm::new_from_slice(&key).unwrap();
-        assert!(decrypt_input(&cipher, &[0, 0, 0, 0]).is_none(), "wrong type");
+        assert!(
+            decrypt_input(&cipher, &[0, 0, 0, 0]).is_none(),
+            "wrong type"
+        );
         // Encrypted, but a ping (0x0200), not input.
         let mut ping = input_message(0);
         ping[0..2].copy_from_slice(&0x0200_u16.to_le_bytes());
@@ -209,6 +217,9 @@ mod tests {
     fn a_wrong_key_fails_the_tag_and_is_ignored() {
         let packet = encrypt(&[3_u8; 16], 1, &input_message(0x1000));
         let wrong = Aes128Gcm::new_from_slice(&[9_u8; 16]).unwrap();
-        assert!(decrypt_input(&wrong, &packet).is_none(), "GCM tag must reject a wrong key");
+        assert!(
+            decrypt_input(&wrong, &packet).is_none(),
+            "GCM tag must reject a wrong key"
+        );
     }
 }

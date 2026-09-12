@@ -60,7 +60,12 @@ fn serve(host: Host, apps: Apps, cert: ServerCert, target: String) -> Result<()>
     if let Err(error) = &advertisement {
         tracing::warn!(%error, "mDNS advertising failed; the client can still be given the address");
     }
-    tracing::info!(http = HTTP_PORT, https = HTTPS_PORT, rtsp = RTSP_PORT, "bridge serving");
+    tracing::info!(
+        http = HTTP_PORT,
+        https = HTTPS_PORT,
+        rtsp = RTSP_PORT,
+        "bridge serving"
+    );
 
     thread::scope(|scope| {
         let bridge = &bridge;
@@ -120,7 +125,9 @@ fn serve(host: Host, apps: Apps, cert: ServerCert, target: String) -> Result<()>
 fn peer_ip(stream: &std::net::TcpStream) -> std::net::IpAddr {
     stream
         .peer_addr()
-        .map_or(std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED), |addr| addr.ip())
+        .map_or(std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED), |addr| {
+            addr.ip()
+        })
 }
 
 #[cfg(test)]
@@ -239,7 +246,11 @@ mod tests {
         let pairing_secret = hex::decode(field(&p3, "pairingsecret")).unwrap();
         let (server_secret, server_sign) = pairing_secret.split_at(BLOCK);
         // The client checks the server it pinned, exactly as Moonlight does.
-        assert!(crypto::verify(&server_pinned.public, server_secret, server_sign));
+        assert!(crypto::verify(
+            &server_pinned.public,
+            server_secret,
+            server_sign
+        ));
 
         // Phase 4: clientpairingsecret.
         let client_sign = crypto::sign(&client.private, &client_secret);
@@ -367,10 +378,21 @@ mod tests {
         // in hand and the error is expected, not a failure.
         let _ = tls.read_to_string(&mut response);
 
-        assert!(response.contains("<hostname>prosperous-tls</hostname>"), "{response}");
+        assert!(
+            response.contains("<hostname>prosperous-tls</hostname>"),
+            "{response}"
+        );
         // The certificate the client saw is exactly the one the bridge would have handed out as
         // `plaincert` during pairing.
-        let seen = verifier.seen.lock().unwrap().clone().expect("a cert was presented");
-        assert_eq!(seen, expected_der, "the TLS listener served the pinned certificate");
+        let seen = verifier
+            .seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("a cert was presented");
+        assert_eq!(
+            seen, expected_der,
+            "the TLS listener served the pinned certificate"
+        );
     }
 }

@@ -101,7 +101,10 @@ impl Frames {
         };
         let is_picture = matches!(kind, Kind::Keyframe | Kind::Picture);
         // A picture arriving while the frame already holds one starts a new access unit.
-        if is_picture && self.has_picture && let Some(frame) = self.flush() {
+        if is_picture
+            && self.has_picture
+            && let Some(frame) = self.flush()
+        {
             frames.push(frame);
         }
         self.frame.extend_from_slice(nal);
@@ -169,7 +172,11 @@ mod tests {
         // Feed a trailing start code so the p-frame is seen as complete.
         stream.extend([0, 0, 0, 1, 1]);
         let out = frames.feed(&stream);
-        assert_eq!(out.len(), 2, "one keyframe access unit, then one inter picture");
+        assert_eq!(
+            out.len(),
+            2,
+            "one keyframe access unit, then one inter picture"
+        );
         assert!(out[0].keyframe, "the first frame is the keyframe");
         assert!(out[0].bytes.windows(3).any(|w| w == b"sps"));
         assert!(out[0].bytes.windows(3).any(|w| w == b"idr"));
@@ -181,10 +188,15 @@ mod tests {
         let mut frames = Frames::new();
         let whole = nal(5, b"keyframe-body");
         let (head, tail) = whole.split_at(6);
-        assert!(frames.feed(head).is_empty(), "an incomplete unit yields nothing");
+        assert!(
+            frames.feed(head).is_empty(),
+            "an incomplete unit yields nothing"
+        );
         frames.feed(tail);
         // Nothing is emitted until a following start code closes the picture; finish() flushes it.
-        let last = frames.finish().expect("the held picture flushes at end of stream");
+        let last = frames
+            .finish()
+            .expect("the held picture flushes at end of stream");
         assert!(last.keyframe);
         assert!(last.bytes.windows(8).any(|w| w == b"keyframe"));
     }

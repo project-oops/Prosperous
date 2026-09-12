@@ -45,10 +45,10 @@ const BUTTONS: [(u32, Button); 15] = [
     (0x0080, Button::R3),
     (0x0100, Button::L1),
     (0x0200, Button::R1),
-    (0x0400, Button::Home), // Special / Guide
-    (0x1000, Button::Cross), // A
-    (0x2000, Button::Circle), // B
-    (0x4000, Button::Square), // X
+    (0x0400, Button::Home),     // Special / Guide
+    (0x1000, Button::Cross),    // A
+    (0x2000, Button::Circle),   // B
+    (0x4000, Button::Square),   // X
     (0x8000, Button::Triangle), // Y
 ];
 
@@ -70,9 +70,14 @@ pub(crate) fn decode(payload: &[u8]) -> Option<Update> {
         return None;
     }
     let slot = payload[SLOT_AT];
-    let low = u32::from(u16::from_le_bytes([payload[BUTTONS_LOW_AT], payload[BUTTONS_LOW_AT + 1]]));
-    let high =
-        u32::from(u16::from_le_bytes([payload[BUTTONS_HIGH_AT], payload[BUTTONS_HIGH_AT + 1]]));
+    let low = u32::from(u16::from_le_bytes([
+        payload[BUTTONS_LOW_AT],
+        payload[BUTTONS_LOW_AT + 1],
+    ]));
+    let high = u32::from(u16::from_le_bytes([
+        payload[BUTTONS_HIGH_AT],
+        payload[BUTTONS_HIGH_AT + 1],
+    ]));
     let buttons = low | (high << 16);
 
     let mut pad = Pad::rest();
@@ -157,6 +162,10 @@ mod tests {
         assert!(up.pad.left_y < 8, "up is low, got {}", up.pad.left_y);
         // Full right (positive X) reads high.
         let right = decode(&packet(0, 0, 0, 0, 32767, 0)).unwrap();
-        assert!(right.pad.left_x > 247, "right is high, got {}", right.pad.left_x);
+        assert!(
+            right.pad.left_x > 247,
+            "right is high, got {}",
+            right.pad.left_x
+        );
     }
 }

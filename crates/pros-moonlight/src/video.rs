@@ -161,7 +161,11 @@ impl Packetizer {
         // RTP header: version 2, payload type 0, big-endian sequence and timestamp, zero SSRC.
         packet[0] = 0x90;
         packet[1] = 0;
-        packet[2..4].copy_from_slice(&u16::try_from(self.stream_index & 0xffff).unwrap_or(0).to_be_bytes());
+        packet[2..4].copy_from_slice(
+            &u16::try_from(self.stream_index & 0xffff)
+                .unwrap_or(0)
+                .to_be_bytes(),
+        );
         packet[4..8].copy_from_slice(&frame_index.to_be_bytes());
         // packet[8..12] SSRC stays zero.
         // NV video packet header (after the four padding bytes), all little-endian.
@@ -239,7 +243,10 @@ mod tests {
         let packets = packetizer.packetize(&frame, false, 3, &config);
         // (8-byte header + 500) / 64 = 8 data shards, no parity at 0%.
         assert_eq!(packets.len(), (8 + 500_usize).div_ceil(64));
-        assert_eq!(flags_of(&packets[0]) & flag::START_OF_FRAME, flag::START_OF_FRAME);
+        assert_eq!(
+            flags_of(&packets[0]) & flag::START_OF_FRAME,
+            flag::START_OF_FRAME
+        );
         assert_eq!(
             flags_of(packets.last().unwrap()) & flag::END_OF_FRAME,
             flag::END_OF_FRAME
@@ -257,14 +264,22 @@ mod tests {
         let second = packetizer.packetize(b"two", false, 1, &config);
         let seq = |p: &[u8]| u16::from_be_bytes([p[2], p[3]]);
         assert_eq!(seq(&first[0]), 0);
-        assert_eq!(seq(&second[0]), 1, "the sequence continues, it does not reset per frame");
+        assert_eq!(
+            seq(&second[0]),
+            1,
+            "the sequence continues, it does not reset per frame"
+        );
     }
 
     #[test]
     fn parity_is_capped_and_optional() {
         assert_eq!(parity_count(10, 0), 0);
         assert_eq!(parity_count(10, 20), 2);
-        assert_eq!(parity_count(1, 1), 1, "any FEC means at least one parity shard");
+        assert_eq!(
+            parity_count(1, 1),
+            1,
+            "any FEC means at least one parity shard"
+        );
         assert_eq!(parity_count(250, 100), super::MAX_SHARDS - 250);
     }
 }

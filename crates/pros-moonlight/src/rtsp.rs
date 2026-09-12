@@ -35,8 +35,10 @@ pub(crate) fn serve_one(stream: &mut TcpStream, server_ports: Ports) -> std::io:
     if read == 0 {
         return Ok(Next::Continue);
     }
-    let (message, _consumed) = rtsp_types::Message::<Vec<u8>>::parse(&buffer[..read])
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{error}")))?;
+    let (message, _consumed) =
+        rtsp_types::Message::<Vec<u8>>::parse(&buffer[..read]).map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{error}"))
+        })?;
     let rtsp_types::Message::Request(request) = message else {
         return Ok(Next::Continue); // not a request; nothing to answer
     };
@@ -83,7 +85,10 @@ fn answer<B>(request: &Request<B>, ports: Ports) -> (Response<Vec<u8>>, Next) {
         Method::Setup => {
             // The client's SETUP names the stream in the URL as `streamid=<name>/...`; the port to
             // answer with depends on which stream it is.
-            let uri = request.request_uri().map(ToString::to_string).unwrap_or_default();
+            let uri = request
+                .request_uri()
+                .map(ToString::to_string)
+                .unwrap_or_default();
             let port = if uri.contains("streamid=control") {
                 ports.control
             } else if uri.contains("streamid=audio") {
@@ -154,7 +159,13 @@ mod tests {
     fn options_lists_the_methods_and_echoes_cseq() {
         let (response, next) = answer(&request(Method::Options, "rtsp://host"), ports());
         assert_eq!(next, Next::Continue);
-        assert_eq!(response.header(&rtsp_types::headers::CSEQ).unwrap().as_str(), "3");
+        assert_eq!(
+            response
+                .header(&rtsp_types::headers::CSEQ)
+                .unwrap()
+                .as_str(),
+            "3"
+        );
         assert!(
             response
                 .header(&rtsp_types::headers::PUBLIC)
