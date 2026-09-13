@@ -136,6 +136,8 @@ pub fn local_build(payload: &Payload) -> Option<PathBuf> {
         }
 
         // 2. Conventional relative paths under oops-apps (src/ or root) or project root.
+        let bare = filename.strip_suffix(".elf").unwrap_or(filename);
+        let prospero_name = format!("{bare}-prospero.elf");
         let candidates = [
             root.join("oops-apps")
                 .join("src")
@@ -150,7 +152,21 @@ pub fn local_build(payload: &Payload) -> Option<PathBuf> {
             root.join("oops-apps")
                 .join("src")
                 .join(&payload.name)
+                .join("dist")
+                .join(&prospero_name),
+            root.join("oops-apps")
+                .join("src")
+                .join(&payload.name)
+                .join("build")
+                .join(&prospero_name),
+            root.join("oops-apps")
+                .join("src")
+                .join(&payload.name)
                 .join(filename),
+            root.join("oops-apps")
+                .join("src")
+                .join(&payload.name)
+                .join(&prospero_name),
             root.join("oops-apps")
                 .join(&payload.name)
                 .join("build")
@@ -159,11 +175,17 @@ pub fn local_build(payload: &Payload) -> Option<PathBuf> {
                 .join(&payload.name)
                 .join("dist")
                 .join(filename),
+            root.join("oops-apps")
+                .join(&payload.name)
+                .join("dist")
+                .join(&prospero_name),
             root.join("oops-apps").join(&payload.name).join(filename),
             root.join("oops-apps").join("build").join(filename),
             root.join("oops-apps").join("dist").join(filename),
+            root.join("oops-apps").join("dist").join(&prospero_name),
             root.join(&payload.name).join("build").join(filename),
             root.join(&payload.name).join("dist").join(filename),
+            root.join(&payload.name).join("dist").join(&prospero_name),
             root.join("build").join(filename),
             root.join("dist").join(filename),
         ];
@@ -595,5 +617,30 @@ mod tests {
         assert_eq!(std::fs::read(&into).expect("reads"), b"elf-payload-content");
 
         let _ = std::fs::remove_dir_all(&test_dir);
+    }
+
+    /// **pltauth-patch in recommended list resolves to the local build artifact.**
+    #[test]
+    fn recommended_pltauth_patch_resolves_local_source() {
+        let manifest = crate::manifest::recommended();
+        let payload = manifest
+            .find("pltauth-patch")
+            .expect("pltauth-patch must be in recommended list");
+        assert_eq!(
+            payload.source_local.as_deref(),
+            Some("oops-apps/src/pltauth-patch/dist/pltauth-patch-prospero.elf")
+        );
+        if let Some(local) = super::local_build(payload) {
+            assert!(local.is_file(), "local build candidate must exist");
+            assert!(
+                local.ends_with("pltauth-patch-prospero.elf"),
+                "resolved artifact filename"
+            );
+            let bytes = std::fs::read(&local).expect("must read local pltauth build");
+            let expected = payload.checksum().expect("checksum must parse");
+            expected
+                .verify(&bytes)
+                .expect("local build matches manifest checksum");
+        }
     }
 }

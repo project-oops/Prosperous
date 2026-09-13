@@ -122,8 +122,8 @@
       "url": "https://github.com/project-oops/oops-apps/releases/download/latest-main/pltauth-patch-prospero.elf",
       "source": "https://github.com/project-oops/oops-apps",
       "source_direct": "https://github.com/project-oops/oops-apps/releases/download/latest-main/pltauth-patch-prospero.elf",
-      "last_update": "2026-09-10",
-      "checksum": "78582dc5718b72108fff878b341120d0ff9c6d4d0faa1f5a524b39361a0bf759",
+      "last_update": "2026-09-13",
+      "checksum": "3613ef82fd54c3c7b21b76bce0ac67f9a5ff7b5acc435617b0f2238e72e5315e",
       "unlocks": "run native Prospero homebrew",
       "required": true
     },
