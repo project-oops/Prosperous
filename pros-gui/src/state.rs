@@ -118,6 +118,13 @@ pub(crate) enum Job {
     /// an edit, because what was reviewed line by line is a file and sending anything else
     /// would make the review a different document from the write.
     WriteAutoload(Target, String, String),
+    /// Turn autoload on in the manager's settings, keeping every other setting.
+    ///
+    /// **Reads before it writes.** Unlike [`Job::WriteAutoload`], which carries a reviewed file,
+    /// this reads the target's current settings, turns `AUTOLOAD_ENABLED` on, and writes the
+    /// result - so a deploy can guarantee the list it wrote is actually read without a person
+    /// having to open the settings and flip a switch. Deploying a manager chain queues it.
+    EnableAutoload(Target),
     /// Point a description at what its project has released now.
     ///
     /// **The one job that changes the payload list rather than a target.** It downloads the
@@ -168,6 +175,7 @@ impl Job {
             Self::DeleteHere(what) => format!("deleting {} from this machine", what.len()),
             Self::InstallPackage(_, path) => format!("installing {}", path.display()),
             Self::WriteAutoload(_, path, _) => format!("writing {path}"),
+            Self::EnableAutoload(_) => "turning autoload on".to_owned(),
         }
     }
 
@@ -203,7 +211,7 @@ impl Job {
             | Self::InstallPackage(..)
             | Self::DeleteThere(..) => &[Disturbs::There],
             // The file that was just replaced is the one being shown.
-            Self::WriteAutoload(..) => &[Disturbs::Autoload],
+            Self::WriteAutoload(..) | Self::EnableAutoload(..) => &[Disturbs::Autoload],
             // **A command can do anything at all**, so this assumes it did. The cost is a
             // listing being read again; the alternative is a window that quietly disagrees
             // with a target somebody has just changed by hand.
@@ -261,6 +269,7 @@ impl Job {
             | Self::DeleteHere(..)
             | Self::InstallPackage(..)
             | Self::WriteAutoload(..)
+            | Self::EnableAutoload(..)
             | Self::Relist(..)
             | Self::Fetch(..) => &[],
         }
@@ -298,7 +307,8 @@ impl Job {
             | Self::FindPayloads(..)
             | Self::DeleteThere(..)
             | Self::DeleteHere(..)
-            | Self::WriteAutoload(..) => Panel::Nothing,
+            | Self::WriteAutoload(..)
+            | Self::EnableAutoload(..) => Panel::Nothing,
             Self::Browse(..) => Panel::Library,
         }
     }
@@ -1301,7 +1311,8 @@ impl State {
             | Job::InstallPackage(target, _)
             | Job::FindPayloads(target, _)
             | Job::DeleteThere(target, _)
-            | Job::WriteAutoload(target, ..) => Some(&target.name),
+            | Job::WriteAutoload(target, ..)
+            | Job::EnableAutoload(target) => Some(&target.name),
             // Between this machine and a mirror. No target is involved, and saying one was
             // would put a fetch in the record under a machine that had nothing to do with it.
             Job::Fetch(..) | Job::Relist(..) | Job::DeleteHere(..) => None,

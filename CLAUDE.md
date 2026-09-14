@@ -2,9 +2,8 @@
 
 How Prosperous is built and the constraints to honour when changing it.
 
-**Read [the OOPS conventions](https://github.com/project-oops/OOPS/blob/main/docs/CONVENTIONS.md) first.** Provenance, naming, decision logs, worklogs and
-gates are shared across [Orbistoun](https://github.com/project-oops/Orbistoun), [obSCEne](https://github.com/project-oops/obSCEne), [Prosperous](https://github.com/project-oops/Prosperous) and
-[SELFish](https://github.com/project-oops/SELFish), and are stated once there. This file holds only what Prosperous adds.
+**Read [the master agent instructions](../AGENTS.md) and [the OOPS conventions](../docs/CONVENTIONS.md) first.** Provenance, naming, decision logs, worklogs, and
+gates are shared across all OOPS projects and centralized in the parent repository. This file holds only what Prosperous adds.
 
 ## Mission, in one breath
 

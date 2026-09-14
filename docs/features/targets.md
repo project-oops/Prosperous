@@ -11,7 +11,29 @@ pros list
 pros forget living-room
 ```
 
-In the window, the same three are the sidebar's target list and the **register** dialog.
+---
+
+## GUI: Target Browser & Health Matrix
+
+In the window, open the **Targets** tab (or press `Ctrl+T`):
+
+```text
++-------------------------------------------------------------------------------+
+|  Prosperous Target Browser                                       [_][O][X]    |
++-------------------------------------------------------------------------------+
+| Targets           | Status | elfldr | ftpsrv | klog | shsrv | pldmgr | Action |
+|-------------------+--------+--------+--------+------+-------+--------+--------|
+| (*) living-room   | ONLINE |   OK   |   OK   |  OK  |  OK   |   OK   | [Open] |
+| ( ) lab-ps5-pro   | OFFLINE|   --   |   --   |  --  |  --   |   --   | [Poll] |
++-------------------------------------------------------------------------------+
+| Selected Target: living-room (192.168.1.211)                                  |
+| OS: Prospero FW 12.40 | Storage: 412.8 GiB Free                               |
+| [ + Register New Target ]   [ Refresh Health ]   [ Open Remote Shell ]        |
++-------------------------------------------------------------------------------+
+```
+
+![Prosperous Target Browser](screenshots/targets.png)
+*(Screenshot placeholder: Target Browser & Health Matrix)*
 
 A registration is **a name and an address and nothing else**. That is deliberate: it is the
 smallest thing that can be wrong, and everything else about a console can change between one

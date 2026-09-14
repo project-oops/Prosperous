@@ -40,6 +40,12 @@ the CI that would produce one has never run.
 
 ### Fixed
 
+- **`close` finds a homebrew title.** The `ps` reader recognised a title column only by the two
+  retail prefixes, `PPSA` and `CUSA`, so a homebrew title such as `GLCB00001` sat in `RUN` with
+  its `eboot.bin` held open while `close` reported no running process. The column is now
+  recognised by its shape - four capital letters, then five digits - with the system's own
+  `NPXS` identifiers still excluded, so `SceShellUI` remains a job for `restart-ui`.
+
 - **A quiet stream no longer ends the watch on Windows.** The pump treated only `WouldBlock`
   as the pause between frames, which is the name Unix gives a timed-out read; Windows names
   it `TimedOut`, so the first half-second with nothing arriving was reported as the stream

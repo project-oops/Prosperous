@@ -4990,6 +4990,13 @@ impl App {
                     self.state.after_transfers.push(fix.clone());
                     edited += 1;
                 }
+                // Turn autoload on so the list this deploy writes is actually read. Queued like a
+                // transfer rather than held with the list edits: it writes the settings file
+                // beside the list, not the list, and is a no-op when autoload is already on.
+                Step::Enable { into: _ } => {
+                    self.state.queue(Job::EnableAutoload(target.clone()));
+                    queued += 1;
+                }
             }
         }
 
@@ -6668,10 +6675,40 @@ mod row_tests {
 /// *manual*: `DECISIONS.md` and `WORKLOG.md` are development record and stay in the repository.
 const DOCS: &[oops_docs::Doc] = &[
     oops_docs::Doc::new(
+        "user-guide",
+        "User Guide",
+        "Paths, portable mode, network daemons, and local-first storage",
+        include_str!("../../docs/features/user-guide.md"),
+    ),
+    oops_docs::Doc::new(
         "targets",
         "Targets",
         "Registering a console, and asking what it can currently do",
         include_str!("../../docs/features/targets.md"),
+    ),
+    oops_docs::Doc::new(
+        "logs",
+        "Kernel Logs",
+        "Streaming live system and title telemetry unbuffered",
+        include_str!("../../docs/features/logs.md"),
+    ),
+    oops_docs::Doc::new(
+        "files",
+        "Remote Storage",
+        "Browsing files, transferring saves, and staging titles",
+        include_str!("../../docs/features/files.md"),
+    ),
+    oops_docs::Doc::new(
+        "titles",
+        "Titles & Execution",
+        "Supervising running processes and launching BIG_APPs",
+        include_str!("../../docs/features/titles.md"),
+    ),
+    oops_docs::Doc::new(
+        "shell",
+        "Command Shell",
+        "Executing remote commands directly on the target",
+        include_str!("../../docs/features/shell.md"),
     ),
     oops_docs::Doc::new(
         "payloads",

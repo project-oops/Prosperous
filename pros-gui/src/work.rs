@@ -351,7 +351,7 @@ fn copying(job: &Job, watch: &mut dyn FnMut(&Progress), stop: &dyn Fn() -> bool)
                 .collect();
             Done::Named(found)
         }
-        Job::ReadAutoload(_) | Job::WriteAutoload(..) => settings(job),
+        Job::ReadAutoload(_) | Job::WriteAutoload(..) | Job::EnableAutoload(_) => settings(job),
         Job::ReadSystem(target) => asking(&target.link()),
         Job::RestartUi(target) => restart_ui(&target.link()),
         Job::CloseTitle(target, id) => close_title(&target.link(), id),
@@ -477,6 +477,28 @@ fn settings(job: &Job) -> Done {
                     text.len()
                 )),
                 Err(why) => Done::Failed(why.to_string()),
+            }
+        }
+        Job::EnableAutoload(target) => {
+            // **Read, then merge, then write.** The current settings are kept and only autoload is
+            // turned on, so a deploy guarantees the list it wrote is read without a person opening
+            // the settings to flip a switch. A target with no settings yet gets the working
+            // default. If it is already on, nothing is written and it says so.
+            let current = files::retrieve(&target.link(), pros_core::autoload::CONFIG)
+                .ok()
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+            match pros_core::autoload::ensure_autoload_on(current.as_deref()) {
+                None => Done::Said("autoload is already on - nothing to change".to_owned()),
+                Some(text) => {
+                    match files::store(&target.link(), pros_core::autoload::CONFIG, text.as_bytes())
+                    {
+                        Ok(()) => Done::Said(
+                            "autoload turned on - the manager reads its list at next startup"
+                                .to_owned(),
+                        ),
+                        Err(why) => Done::Failed(why.to_string()),
+                    }
+                }
             }
         }
         other => Done::Failed(format!("not a settings job: {}", other.describe())),
@@ -620,8 +642,12 @@ fn removing(link: &pros_link::Link, what: &[(String, bool)]) -> Done {
     };
     // One session for the whole selection, and one guarded walk per directory. The walk is in
     // `pros_core::remove`, where it can be tested against a pretend target - the same reason
-    // the backup's walk lives there rather than here.
-    let gone = pros_core::remove::these(&mut session, what);
+    // the backup's walk lives there rather than here. What the file service cannot remove - an
+    // empty directory its `RMD` refuses, a broken symlink it will not unlink - is finished over
+    // the shell with the least-powerful command that fits (`rmdir`, `rm -f`; never a recursive
+    // force), so the window completes the removal rather than handing back a command to run.
+    let mut shell = pros_core::remove::ShellForce::new(link);
+    let gone = pros_core::remove::these_then_force(&mut session, &mut shell, what);
     session.close();
     // **A partial removal is neither.** Something went and something did not, and reporting it
     // as done or as failed describes one half. The wording carries both, and which it is

@@ -21,15 +21,16 @@ New here? The [root README](../README.md) has the pitch. Then, depending on what
 
 ## Guide
 
-- **[Getting started](guide/getting-started.md)** - from a download to a target that answers,
-  and how to read the answer. Assumes nothing, including that you know what the five services
-  are.
-- **[Targets](features/targets.md)** - registering one, port overrides, and what a
-  registration does and does not remember.
-- **[Payloads](features/payloads.md)** - sending one, watching it, and reading the log when it
-  dies. Also why none are bundled.
-- **[The target's storage](features/library.md)** - titles, saves and packages, and the file
-  operations in both directions.
+- **[features/README.md](features/README.md)** - Features & screens index mapping GUI tabs to CLI commands.
+- **[features/user-guide.md](features/user-guide.md)** - Paths, portable mode, network daemons, and zero telemetry.
+- **[features/targets.md](features/targets.md)** - Target registration and health check matrix.
+- **[features/logs.md](features/logs.md)** - Live kernel telemetry streamer.
+- **[features/files.md](features/files.md)** - Remote storage browser and staging.
+- **[features/titles.md](features/titles.md)** - Title supervisor and process lifecycle.
+- **[features/shell.md](features/shell.md)** - Remote command shell console.
+- **[features/payloads.md](features/payloads.md)** - Sending payloads and memory injection.
+- **[features/library.md](features/library.md)** - Titles, saves, packages, and storage.
+- **[Getting started](guide/getting-started.md)** - from a download to a target that answers.
 - **[BUILDING.md](BUILDING.md)** - `bin/prosperous`, what each verb does, what `check` runs
   and in what order, and what CI runs. You do not need this to *use* Prosperous; the releases
   page has binaries.

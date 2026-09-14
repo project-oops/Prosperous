@@ -133,6 +133,32 @@ impl Settings {
     }
 }
 
+/// The one setting a deployed manager chain must guarantee.
+///
+/// Without it the manager ignores the list this program just wrote - which is the whole point of
+/// writing it, and the thing a person otherwise has to turn on by hand after every deploy. This is
+/// the switch that makes a list run, not a configuration choice: it is the settings-file companion
+/// to [`CONFIG`] and [`crate::chain::PATH`], not an opinion about delays or disc players, which are
+/// the manager's own defaults to keep.
+pub const AUTOLOAD_ON: (&str, &str) = ("AUTOLOAD_ENABLED", "1");
+
+/// The settings text to write so a deployed manager chain is actually read: the target's current
+/// settings with autoload turned on, or - when the target has none yet - the single line that
+/// turns it on and nothing else, leaving every other default to the manager.
+///
+/// **`None` means nothing needs writing** - autoload is already on - so a deploy does not offer a
+/// write that would change nothing. When there is a file, other settings are kept exactly as they
+/// were and only autoload is touched; nothing here bakes in a value the manager owns.
+#[must_use]
+pub fn ensure_autoload_on(current: Option<&str>) -> Option<String> {
+    match current {
+        Some(text) => Settings::parse(text)
+            .set(AUTOLOAD_ON.0, AUTOLOAD_ON.1)
+            .map(|change| change.now),
+        None => Some(format!("{}={}\n", AUTOLOAD_ON.0, AUTOLOAD_ON.1)),
+    }
+}
+
 /// A pending edit to a file on the target.
 ///
 /// **Carries both texts.** The new one is what would be written; the old one is what makes
@@ -622,5 +648,28 @@ mod toggling {
     #[test]
     fn setting_what_is_already_there_is_not_a_change() {
         assert!(Settings::parse(FILE).set("AUTOLOAD_ENABLED", "1").is_none());
+    }
+
+    /// **Enabling autoload on deploy keeps the other settings and only touches the one.**
+    ///
+    /// A target that has autoload off gets it turned on without losing its delay or its other
+    /// settings; a target with none gets a one-line file; a target already on gets nothing, so a
+    /// deploy does not write a change that would do nothing.
+    #[test]
+    fn ensuring_autoload_is_on_is_a_merge_not_a_replace() {
+        // Off, among other settings: turned on, everything else kept.
+        let off = "AUTOLOAD_ENABLED=0\nAUTOLOAD_DELAY=5\nSCAN_USB_PAYLOADS=0\n";
+        let now = super::ensure_autoload_on(Some(off)).expect("a change");
+        let after = Settings::parse(&now);
+        assert_eq!(after.get("AUTOLOAD_ENABLED"), Some("1"));
+        assert_eq!(after.get("AUTOLOAD_DELAY"), Some("5"), "kept");
+        assert_eq!(after.get("SCAN_USB_PAYLOADS"), Some("0"), "kept");
+
+        // Already on: nothing to write.
+        assert!(super::ensure_autoload_on(Some("AUTOLOAD_ENABLED=1\n")).is_none());
+
+        // None at all: a one-line file that turns it on.
+        let fresh = super::ensure_autoload_on(None).expect("a file");
+        assert_eq!(Settings::parse(&fresh).is_on("AUTOLOAD_ENABLED"), Some(true));
     }
 }

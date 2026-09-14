@@ -24,6 +24,9 @@
 //! - **What it could not do comes back.** A refusal on one entry does not abandon the rest, and
 //!   nothing is reported as gone that was not.
 
+use std::time::Duration;
+
+use pros_link::Link;
 use pros_link::files::{Entry, Kind, Session};
 
 /// How deep the walk will go before it stops and says so.
@@ -123,6 +126,19 @@ impl Gone {
     }
 }
 
+/// The reason recorded when a path could not be listed as a directory. Shared so the top-level
+/// removal can recognise its own walk's message and act on it.
+const UNLISTABLE: &str = "could not be listed, so nothing in it was touched";
+
+/// Whether the walk failed because `root` itself could not be listed - meaning it was called a
+/// folder but is not a directory (a symlink, or a mislabelled file), rather than a directory whose
+/// contents refused.
+fn failed_to_list(gone: &Gone, root: &str) -> bool {
+    gone.kept
+        .iter()
+        .any(|one| one.path == root && one.why.starts_with(UNLISTABLE))
+}
+
 /// Whether a listing entry names a way through the tree rather than a thing in it.
 ///
 /// The same rule the backup walk uses. All four of these make a joined path point outside the
@@ -150,6 +166,35 @@ pub fn one(remover: &mut dyn Removes, path: &str, folder: bool) -> Gone {
             match remover.remove_directory(&root) {
                 Ok(()) => gone.folders += 1,
                 Err(why) => gone.kept.push(Kept { path: root, why }),
+            }
+        } else if failed_to_list(&gone, &root) {
+            // **It was called a folder, but it cannot be listed as one.** A symlink is the
+            // usual reason - the library groups one with folders because it browses like one,
+            // and a *dangling* symlink is exactly the "stale copy" somebody is trying to be rid
+            // of, which is why the listing failed. It is not a directory, so it is not walked:
+            // it is removed as the single thing it is, which never follows it to what it points
+            // at - the one rule this module exists to keep. Try `DELE` (unlinks a symlink or a
+            // file); if the server will only take it as a directory entry, try `RMD`; a real
+            // directory that genuinely could not be listed refuses both, so nothing is deleted
+            // that should not be.
+            let by_file = remover.delete_file(&root);
+            let by_dir = if by_file.is_err() {
+                Some(remover.remove_directory(&root))
+            } else {
+                None
+            };
+            if by_file.is_ok() || matches!(by_dir, Some(Ok(()))) {
+                // It was the link (or a mislabelled file): drop the listing failure, count it gone.
+                gone.kept.retain(|one| one.path != root);
+                gone.files += 1;
+            } else if let Some(kept) = gone.kept.iter_mut().find(|one| one.path == root) {
+                // **Say what the target actually refused**, not just that it could not be listed:
+                // a thing that is neither listable nor deletable needs the reasons it gave, which
+                // are what somebody acts on. Both `DELE` and `RMD` were tried.
+                let dele = by_file.err().unwrap_or_default();
+                let rmd = by_dir.and_then(Result::err).unwrap_or_default();
+                kept.why =
+                    format!("not a listable directory, and could not be removed - DELE: {dele}; RMD: {rmd}");
             }
         } else if !gone.kept.iter().any(|one| one.path == root) {
             // **Unless the walk already said why.** A directory that could not be listed is
@@ -184,6 +229,136 @@ pub fn these(remover: &mut dyn Removes, what: &[(String, bool)]) -> Gone {
     all
 }
 
+/// A last resort for what the file service could not remove, over the target's shell.
+///
+/// # Why this exists, and why it is not `rm -rf`
+///
+/// Some things the file service cannot remove even though they are there: this target's `ftpsrv`
+/// empties a payload directory but then refuses `RMD` on the empty directory itself, and unlinking
+/// a broken symlink over FTP fails the same way. The shell can do both - but the shell can also do
+/// far more than was asked, so this reaches for the **least-powerful command that fits**, never a
+/// recursive force:
+///
+/// - a directory is removed with `rmdir`, which removes an **empty** directory and refuses a full
+///   one. The file service has already emptied it by the time this is reached, so `rmdir` finishes
+///   the job; and if it had not, `rmdir` refusing is the safe answer, not a tree deleted.
+/// - a file or a symlink is removed with `rm -f` - **no `-r`** - which unlinks one name and
+///   refuses a directory.
+///
+/// So nothing here can delete more than the single thing it names, whatever a path turns out to be.
+pub trait Forces {
+    /// Removes exactly one thing over the shell: an empty directory (`folder`) or a single file.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the shell reports, as text - a non-empty directory, a missing command, a refusal.
+    fn force(&mut self, path: &str, folder: bool) -> Result<(), String>;
+}
+
+/// How long the shell is given to answer a removal before its output is taken as complete.
+const SHELL_SETTLE: Duration = Duration::from_millis(1500);
+
+/// A [`Forces`] that runs on the target's shell service.
+#[derive(Debug)]
+pub struct ShellForce<'a> {
+    /// The target, for the shell service.
+    link: &'a Link,
+}
+
+impl<'a> ShellForce<'a> {
+    /// A shell fallback for `link`.
+    #[must_use]
+    pub fn new(link: &'a Link) -> Self {
+        Self { link }
+    }
+}
+
+impl Forces for ShellForce<'_> {
+    fn force(&mut self, path: &str, folder: bool) -> Result<(), String> {
+        let command = force_command(path, folder)?;
+        // `rmdir` and `rm -f` are silent on success, so anything printed is the reason it did not
+        // work - a non-empty directory, a missing utility, a permission refusal.
+        let said = pros_link::shell::run(self.link, &command, SHELL_SETTLE).map_err(|why| why.to_string())?;
+        if said.trim().is_empty() {
+            Ok(())
+        } else {
+            Err(said.trim().to_owned())
+        }
+    }
+}
+
+/// Builds the safe shell command to remove one thing, or refuses a path that has no business being
+/// force-removed.
+///
+/// **Never recursive, and never a path step.** `rmdir` for a directory, `rm -f` for a file, and a
+/// path that is empty, the root, or climbs with `..` is refused outright rather than quoted into a
+/// command - the same rule the walk keeps, held again at the one place a shell is involved.
+fn force_command(path: &str, folder: bool) -> Result<String, String> {
+    let path = path.trim().trim_end_matches('/');
+    if path.is_empty() || path == "/" || path == "~" {
+        return Err(format!("refusing to force-remove {path:?}: too broad a path"));
+    }
+    if path.split('/').any(|segment| segment == "..") {
+        return Err(format!("refusing to force-remove {path:?}: it climbs with '..'"));
+    }
+    // Single-quote for the shell, with the one escape single quotes need.
+    let quoted = format!("'{}'", path.replace('\'', "'\\''"));
+    Ok(if folder {
+        format!("rmdir {quoted}")
+    } else {
+        format!("rm -f {quoted}")
+    })
+}
+
+/// Removes several things over the file service, then finishes over the shell whatever the file
+/// service left behind.
+///
+/// **The shell only ever touches a thing the caller named that the file service could not fully
+/// remove**, and only with [`force_command`]'s safe, non-recursive commands. A selection the file
+/// service handled cleanly never reaches the shell at all.
+pub fn these_then_force(
+    remover: &mut dyn Removes,
+    forcer: &mut dyn Forces,
+    what: &[(String, bool)],
+) -> Gone {
+    let mut gone = these(remover, what);
+    if gone.kept.is_empty() {
+        return gone;
+    }
+    for (path, folder) in what {
+        let root = path.trim_end_matches('/').to_owned();
+        let under = format!("{root}/");
+        // Is this selection, or anything the walk built under it, still there?
+        if !gone
+            .kept
+            .iter()
+            .any(|one| one.path == root || one.path.starts_with(&under))
+        {
+            continue;
+        }
+        match forcer.force(&root, *folder) {
+            Ok(()) => {
+                // Gone now: drop what was kept under this selection, and count it.
+                gone.kept
+                    .retain(|one| one.path != root && !one.path.starts_with(&under));
+                if *folder {
+                    gone.folders += 1;
+                } else {
+                    gone.files += 1;
+                }
+            }
+            Err(why) => {
+                // Say the shell tried and could not, beside the file service's own reason - two
+                // services refused, and both are worth knowing.
+                if let Some(kept) = gone.kept.iter_mut().find(|one| one.path == root) {
+                    kept.why = format!("{}; the shell could not remove it either: {why}", kept.why);
+                }
+            }
+        }
+    }
+    gone
+}
+
 /// Empties a directory, depth first, without removing the directory itself.
 ///
 /// Returns whether it is now empty - which is the only thing that licenses removing it. **Not
@@ -208,7 +383,7 @@ fn empty_it(
         Err(why) => {
             gone.kept.push(Kept {
                 path: at.to_owned(),
-                why: format!("could not be listed, so nothing in it was touched: {why}"),
+                why: format!("{UNLISTABLE}: {why}"),
             });
             return false;
         }
@@ -282,9 +457,29 @@ fn empty_it(
 
 #[cfg(test)]
 mod tests {
-    use super::{Gone, Removes, one, these};
+    use super::{Forces, Gone, Removes, force_command, one, these, these_then_force};
     use pros_link::files::{Entry, Kind};
     use std::collections::BTreeMap;
+
+    /// A pretend shell, so the fallback can be tested without a target.
+    #[derive(Default)]
+    struct PretendShell {
+        /// Every command it was asked to run.
+        did: Vec<String>,
+        /// Paths it refuses to remove.
+        refuses: Vec<String>,
+    }
+
+    impl Forces for PretendShell {
+        fn force(&mut self, path: &str, folder: bool) -> Result<(), String> {
+            self.did
+                .push(format!("{} {path}", if folder { "rmdir" } else { "rm" }));
+            if self.refuses.iter().any(|one| one == path) {
+                return Err("still there".to_owned());
+            }
+            Ok(())
+        }
+    }
 
     /// A target made of a map, so a walk can be checked without a console.
     #[derive(Default)]
@@ -440,13 +635,128 @@ mod tests {
     }
 
     /// **Nothing is reported as gone that was not.**
+    ///
+    /// A real directory that could not be listed refuses `DELE` as well (the server wants `RMD`),
+    /// so the unlink fallback fails too and the listing failure stays the reason - nothing is
+    /// claimed gone. The unlink fallback only removes something when it actually can, which for a
+    /// real directory it cannot.
     #[test]
     fn a_directory_that_could_not_be_listed_is_not_reported_as_removed() {
         let mut target = Pretend::default();
+        // A real directory: the server refuses to remove it as a file or as a directory, the way
+        // it refuses `DELE` on a directory and `RMD` on a non-empty one.
+        target.refuses.push("/data/nowhere".to_owned());
         let gone = one(&mut target, "/data/nowhere", true);
         assert_eq!(gone.folders, 0, "{gone:?}");
         assert_eq!(gone.files, 0, "{gone:?}");
-        assert_eq!(gone.kept.len(), 1, "the listing failure is said: {gone:?}");
+        assert_eq!(gone.kept.len(), 1, "nothing was claimed gone: {gone:?}");
+        assert!(gone.kept[0].why.contains("could not be removed"), "{gone:?}");
+    }
+
+    /// **A symlink called a folder is unlinked, not walked.**
+    ///
+    /// The library groups a symlink with folders because it browses like one, so a delete arrives
+    /// asking to remove it as a folder. It is not a directory: listing it fails (a dangling one -
+    /// the "stale copy" - fails with *no such file or directory*), and the removal must then
+    /// unlink the link itself rather than give up. This is the bug a target reported: a stale
+    /// `pltauth-patch.elf` symlink that could not be deleted at all.
+    #[test]
+    fn a_symlink_labelled_a_folder_is_deleted_as_a_single_thing() {
+        // No such directory in the tree, so `list` fails - as it does for a symlink on the target.
+        let mut target = Pretend::default();
+        let gone = one(&mut target, "/data/pldmgr/payloads/pltauth-patch.elf", true);
+        assert_eq!(gone.files, 1, "the link itself was unlinked: {gone:?}");
+        assert_eq!(gone.folders, 0, "{gone:?}");
+        assert!(gone.kept.is_empty(), "nothing was left behind: {gone:?}");
+        assert!(
+            target
+                .did
+                .iter()
+                .any(|one| one == "dele /data/pldmgr/payloads/pltauth-patch.elf"),
+            "it was deleted, not walked: {:?}",
+            target.did
+        );
+    }
+
+    /// **The shell finishes a directory the file service emptied but could not remove.**
+    ///
+    /// This is the reported bug: the target's `ftpsrv` deletes the payload files inside a folder
+    /// but refuses `RMD` on the empty folder. The shell's `rmdir` - which only removes an *empty*
+    /// directory - completes it, from the GUI, with no recursive force anywhere.
+    #[test]
+    fn the_shell_removes_an_emptied_directory_the_file_service_would_not() {
+        let mut tree = BTreeMap::new();
+        tree.insert(
+            "/data/pldmgr/payloads/pltauth-patch".to_owned(),
+            vec![entry("pltauth-patch.elf", Kind::File), entry("pltauth-patch.json", Kind::File)],
+        );
+        // The file service empties it but refuses to remove the directory itself.
+        let mut ftp = Pretend {
+            tree,
+            refuses: vec!["/data/pldmgr/payloads/pltauth-patch".to_owned()],
+            ..Pretend::default()
+        };
+        let mut shell = PretendShell::default();
+        let gone = these_then_force(
+            &mut ftp,
+            &mut shell,
+            &[("/data/pldmgr/payloads/pltauth-patch".to_owned(), true)],
+        );
+        assert_eq!(gone.files, 2, "the two payload files went over the file service: {gone:?}");
+        assert_eq!(gone.folders, 1, "the empty directory went over the shell: {gone:?}");
+        assert!(gone.kept.is_empty(), "nothing was left: {gone:?}");
+        assert!(
+            shell.did.iter().any(|c| c == "rmdir /data/pldmgr/payloads/pltauth-patch"),
+            "it used rmdir, not a recursive force: {:?}",
+            shell.did
+        );
+    }
+
+    /// **What the file service handled cleanly never reaches the shell.**
+    #[test]
+    fn a_clean_removal_does_not_touch_the_shell() {
+        let mut ftp = nested();
+        let mut shell = PretendShell::default();
+        let gone = these_then_force(&mut ftp, &mut shell, &[("/data/x".to_owned(), true)]);
+        assert!(gone.kept.is_empty(), "{gone:?}");
+        assert!(shell.did.is_empty(), "the shell was not needed: {:?}", shell.did);
+    }
+
+    /// **A thing neither service can remove is reported by both, and nothing is claimed gone.**
+    #[test]
+    fn what_neither_service_can_remove_says_both_refused() {
+        // Not in the tree, so it cannot be listed; and both services refuse it.
+        let mut ftp = Pretend {
+            refuses: vec!["/data/x".to_owned()],
+            ..Pretend::default()
+        };
+        let mut shell = PretendShell {
+            refuses: vec!["/data/x".to_owned()],
+            ..PretendShell::default()
+        };
+        let gone = these_then_force(&mut ftp, &mut shell, &[("/data/x".to_owned(), true)]);
+        assert_eq!(gone.folders, 0, "{gone:?}");
+        assert_eq!(gone.kept.len(), 1, "{gone:?}");
+        assert!(
+            gone.kept[0].why.contains("the shell could not remove it"),
+            "both refusals are said: {gone:?}"
+        );
+    }
+
+    /// **The fallback command is the least-powerful one, and a broad path is refused.**
+    #[test]
+    fn the_force_command_is_never_recursive_and_guards_the_path() {
+        assert_eq!(force_command("/data/x/dir", true).unwrap(), "rmdir '/data/x/dir'");
+        assert_eq!(force_command("/data/x/file.elf", false).unwrap(), "rm -f '/data/x/file.elf'");
+        // Never a recursive force, whatever the input.
+        assert!(!force_command("/data/x", true).unwrap().contains("-r"));
+        assert!(!force_command("/data/x", false).unwrap().contains("-r"));
+        // Broad or climbing paths are refused rather than run.
+        assert!(force_command("/", true).is_err());
+        assert!(force_command("", false).is_err());
+        assert!(force_command("/data/../etc", false).is_err());
+        // A single quote in a name is escaped for the shell, not left to inject.
+        assert_eq!(force_command("/data/it's", false).unwrap(), "rm -f '/data/it'\\''s'");
     }
 
     /// The wording says what happened, including that nothing did.

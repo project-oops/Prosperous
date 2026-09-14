@@ -210,9 +210,10 @@ impl Session {
     pub fn make_directory(&mut self, path: &str) -> Result<()> {
         self.send(&format!("MKD {path}"))?;
         let reply = self.reply("making a directory")?;
-        // 257 is made; 521 and 550 are the two ways servers say it is already there. A
-        // directory that exists is the state the caller wanted either way.
-        if matches!(reply.code, 257 | 521 | 550) {
+        // 2xx is completion (standard 257, or 226/250/200 used by embedded servers);
+        // 521 and 550 are the two ways servers say it is already there. A directory that
+        // exists is the state the caller wanted either way.
+        if succeeded(reply.code) || matches!(reply.code, 521 | 550) {
             return Ok(());
         }
         Err(Error::Rejected {

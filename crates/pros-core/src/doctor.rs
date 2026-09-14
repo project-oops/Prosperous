@@ -111,6 +111,17 @@ pub enum Step {
         /// The full path on the target.
         path: String,
     },
+    /// Turn autoload on in the manager's settings, so the list it was just given is read.
+    ///
+    /// **A manager chain is two things: a list and the switch that makes it run.** Writing the
+    /// list without the switch produces a console that comes back with nothing loaded and no sign
+    /// why - the manager simply never reads a list it was told to ignore. So deploying a manager
+    /// chain carries this, and it is a merge: only `AUTOLOAD_ENABLED` is touched, every other
+    /// setting kept.
+    Enable {
+        /// The settings file - the manager's `pldmgr_config.txt`.
+        into: String,
+    },
 }
 
 impl Step {
@@ -127,6 +138,7 @@ impl Step {
                 format!("replace {into} with these {} entries", entries.len())
             }
             Self::Run { path } => format!("load {path} now, without sending anything"),
+            Self::Enable { into } => format!("turn autoload on in {into}, so the list is read"),
         }
     }
 
@@ -143,11 +155,16 @@ impl Step {
             | Self::Send { .. }
             | Self::List(_)
             | Self::Rebuild { .. }
-            | Self::Run { .. } => true,
+            | Self::Run { .. }
+            | Self::Enable { .. } => true,
         }
     }
 
     /// Whether this is an edit to the startup list.
+    ///
+    /// **`Enable` is not one.** It writes the settings file beside the list, not the list, so it
+    /// is not held back with the list edits and does not, on its own, mean the target will come
+    /// back differently - the list edit it accompanies is what does that.
     #[must_use]
     pub const fn is_a_list_edit(&self) -> bool {
         matches!(self, Self::List(_) | Self::Rebuild { .. })
@@ -760,9 +777,19 @@ pub fn provision(
 
     for placed in preset.in_order(kind) {
         // The manager is what a list of one kind requires and the other forbids, and the loader
-        // is kept out of an autoloader's list while belonging in the manager's. The audit knows
-        // which; taking the same decision twice in two places is how the two come to disagree.
-        if !crate::recovery::can_work_in(&placed.name, kind, what.known, what.loader_is_up()) {
+        // is kept out of an autoloader's list while belonging in the manager's - both of which
+        // are structural, not about the live target, so `None` is passed for whether the loader
+        // is answering.
+        //
+        // **This is deploy, not audit, and the difference is the loader.** A deployed list is for
+        // the NEXT boot, when the boot loader will have opened 9021 and this list re-adds the
+        // loader last to keep it open. Passing the *current* loader state here dropped the loader
+        // from the manager's own list on every deploy that happened while 9021 was answering -
+        // which is every deploy, because a person deploying with this program has the loader up
+        // to do it. The live check belongs to `audit`, which warns that a second loader would
+        // collide with the running one *now*; it has no business deciding what gets written for
+        // later.
+        if !crate::recovery::can_work_in(&placed.name, kind, what.known, None) {
             continue;
         }
         match get_it_there_into(what, &placed.name, &to) {
@@ -798,6 +825,19 @@ pub fn provision(
         },
         already: false,
     });
+    // **A manager chain is a list AND the switch that reads it.** Writing the manager's own list
+    // without turning autoload on gives a console that comes back with nothing loaded and no sign
+    // why - the exact failure a person hits after deploying and finding the target unchanged. So
+    // the manager's own list carries the switch beside it; an autoloader's list is read by the
+    // autoloader regardless and needs none.
+    if kind == Kind::Manager {
+        moves.push(Move {
+            step: Step::Enable {
+                into: crate::autoload::CONFIG.to_owned(),
+            },
+            already: false,
+        });
+    }
     (
         Plan {
             because: format!(
@@ -1642,7 +1682,7 @@ mod tests {
             Kind::Autoloader,
             &crate::recovery::baseline::first(),
         );
-        let Some(Step::Rebuild { entries, into }) = plan.moves.last().map(|one| one.step.clone())
+        let Some(Step::Rebuild { entries, into }) = plan.moves.iter().rev().map(|one| one.step.clone()).find(|step| matches!(step, Step::Rebuild { .. }))
         else {
             panic!("the last step writes the file");
         };
@@ -1659,17 +1699,63 @@ mod tests {
     /// was loaded through - so listing either is at best pointless and at worst the end of the
     /// chain.
     #[test]
-    fn setting_up_the_managers_own_list_leaves_out_what_cannot_work_in_it() {
+    fn setting_up_the_managers_own_list_includes_the_loader_whatever_9021_is_doing() {
         let manifest = Manifest::new(vec![
             described("elfldr", Some("https://example/elfldr")),
             described("pldmgr", Some("https://example/pldmgr")),
             described("ftpsrv", Some("https://example/ftpsrv")),
         ]);
         let known = Catalogue::builtin();
-        // With the loader answering, both are left out; with it silent only the manager is.
-        let up = with_loader(true);
+        // The list written into a manager's own file is for the NEXT boot, so the live loader
+        // state must not change it: the loader belongs last in this list either way, and the
+        // manager itself never belongs in the list it reads. It was dropping the loader here
+        // whenever 9021 was answering - which is every deploy - that this asserts against.
+        for answering in [true, false] {
+            let report = with_loader(answering);
+            let what = Known {
+                report: Some(&report),
+                there: Some(&[]),
+                staged: &[],
+                described: &manifest,
+                chain: None,
+                kind: Kind::Manager,
+                list: None,
+                preset: &crate::recovery::baseline::first(),
+                known: &known,
+            };
+            let (plan, _) = provision(
+                &what,
+                crate::chain::PATH,
+                Kind::Manager,
+                &crate::recovery::baseline::first(),
+            );
+            let Some(Step::Rebuild { entries, .. }) = plan.moves.iter().rev().map(|one| one.step.clone()).find(|step| matches!(step, Step::Rebuild { .. }))
+            else {
+                panic!("the last step writes the file");
+            };
+            assert!(
+                entries.iter().any(|one| one == "elfldr.elf"),
+                "the loader is in the manager's own list, 9021 answering={answering}: {entries:?}"
+            );
+            assert!(
+                !entries.iter().any(|one| one == "pldmgr.elf"),
+                "the manager is not in the list it reads: {entries:?}"
+            );
+            assert!(entries.iter().any(|one| one == "ftpsrv.elf"), "{entries:?}");
+        }
+    }
+
+    /// **Deploying a manager chain turns autoload on; deploying an autoloader list does not.**
+    ///
+    /// The manager ignores a list it is told to ignore, so the switch is written beside the list -
+    /// the step a person otherwise flips by hand after every deploy, and the reported bug. An
+    /// autoloader's list is read regardless and needs no such step.
+    #[test]
+    fn deploying_the_managers_list_also_enables_autoload() {
+        let manifest = Manifest::new(vec![described("ftpsrv", Some("https://example/ftpsrv"))]);
+        let known = Catalogue::builtin();
         let what = Known {
-            report: Some(&up),
+            report: None,
             there: Some(&[]),
             staged: &[],
             described: &manifest,
@@ -1679,47 +1765,27 @@ mod tests {
             preset: &crate::recovery::baseline::first(),
             known: &known,
         };
-
-        let (plan, _) = provision(
+        let (manager, _) = provision(
             &what,
             crate::chain::PATH,
             Kind::Manager,
             &crate::recovery::baseline::first(),
         );
-        let Some(Step::Rebuild { entries, .. }) = plan.moves.last().map(|one| one.step.clone())
-        else {
-            panic!("the last step writes the file");
-        };
         assert!(
-            !entries.iter().any(|one| one == "elfldr.elf"),
-            "{entries:?}"
+            manager.moves.iter().any(|one| matches!(one.step, Step::Enable { .. })),
+            "deploying the manager's list turns autoload on: {:?}",
+            manager.moves
         );
-        assert!(
-            !entries.iter().any(|one| one == "pldmgr.elf"),
-            "{entries:?}"
-        );
-        assert!(entries.iter().any(|one| one == "ftpsrv.elf"), "{entries:?}");
-
-        // The manager stays out whatever happens; the loader comes in once it is silent.
-        let down = with_loader(false);
-        let quiet = Known {
-            report: Some(&down),
-            ..what
-        };
-        let (plan, _) = provision(
-            &quiet,
-            crate::chain::PATH,
-            Kind::Manager,
+        let (autoloader, _) = provision(
+            &what,
+            "/mnt/usb0/ps5_autoloader/autoload.txt",
+            Kind::Autoloader,
             &crate::recovery::baseline::first(),
         );
-        let Some(Step::Rebuild { entries, .. }) = plan.moves.last().map(|one| one.step.clone())
-        else {
-            panic!("the last step writes the file");
-        };
-        assert!(entries.iter().any(|one| one == "elfldr.elf"), "{entries:?}");
         assert!(
-            !entries.iter().any(|one| one == "pldmgr.elf"),
-            "{entries:?}"
+            !autoloader.moves.iter().any(|one| matches!(one.step, Step::Enable { .. })),
+            "an autoloader's list is read regardless and needs no switch: {:?}",
+            autoloader.moves
         );
     }
 
@@ -1748,7 +1814,7 @@ mod tests {
             Kind::Manager,
             &crate::recovery::baseline::first(),
         );
-        let Some(Step::Rebuild { entries, .. }) = plan.moves.last().map(|one| one.step.clone())
+        let Some(Step::Rebuild { entries, .. }) = plan.moves.iter().rev().map(|one| one.step.clone()).find(|step| matches!(step, Step::Rebuild { .. }))
         else {
             panic!("the last step writes the file");
         };
@@ -2111,7 +2177,7 @@ shsrv_v0.20.elf
             Kind::Manager,
             &crate::recovery::baseline::first(),
         );
-        let Some(Step::Rebuild { entries, .. }) = plan.moves.last().map(|one| one.step.clone())
+        let Some(Step::Rebuild { entries, .. }) = plan.moves.iter().rev().map(|one| one.step.clone()).find(|step| matches!(step, Step::Rebuild { .. }))
         else {
             panic!("the last step writes the file");
         };

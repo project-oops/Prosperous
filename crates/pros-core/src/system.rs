@@ -93,9 +93,9 @@ impl Process {
     /// Whether this is a game or application rather than a payload or a system process.
     #[must_use]
     pub fn is_a_title(&self) -> bool {
-        // Title identifiers on this platform start PPSA or CUSA. Anything else in the column
-        // is a placeholder the listing uses for processes that have none.
-        self.title.starts_with("PPSA") || self.title.starts_with("CUSA")
+        // The title column is only filled for a game or application - see [`processes`] for
+        // how that column is told apart from the system's own identifiers.
+        !self.title.is_empty()
     }
 }
 
@@ -204,11 +204,35 @@ pub fn storage(output: &str) -> Vec<Filesystem> {
     found
 }
 
+/// Whether `column` has the shape of a title identifier: four capital letters, then five digits.
+///
+/// Measured off a target's `ps`: `PPSA02664` and `CUSA` ids are retail games, `NPXS40087` is the
+/// system's own shell, `GLCB00001` and `PUWX90000` are homebrew. Matching the shape rather than
+/// the two retail prefixes is what lets a homebrew title be found and closed. The placeholder
+/// the listing leaves for a process that has none is a memory figure such as `4.7`, which does
+/// not fit.
+#[must_use]
+pub fn is_a_title_id(column: &str) -> bool {
+    column.len() == 9
+        && column.bytes().take(4).all(|b| b.is_ascii_uppercase())
+        && column.bytes().skip(4).all(|b| b.is_ascii_digit())
+}
+
+/// Whether a title identifier is the system's own rather than a game's or an application's.
+///
+/// Every system process on a target carried the `NPXS` prefix - `SceShellUI` is `NPXS40087`,
+/// `SceSysCore` is `NPXS45091` - and none of them is something `close` should find.
+#[must_use]
+pub fn is_the_systems_own(id: &str) -> bool {
+    id.starts_with("NPXS")
+}
+
 /// Reads a `ps` listing.
 ///
 /// The columns measured are: pid, ppid, pgid, sid, uid, state, appid, titleid, memory, then
-/// the command - and the title column is blank for anything that is not a title, which is why
-/// it cannot be found by counting from the left.
+/// the command. The title column is blank for anything that is not a title, so counting from
+/// the left puts the memory figure in its place for most rows; [`is_a_title_id`] is what tells
+/// the two apart.
 #[must_use]
 pub fn processes(output: &str) -> Vec<Process> {
     let mut found = Vec::new();
@@ -218,9 +242,9 @@ pub fn processes(output: &str) -> Vec<Process> {
             continue;
         }
         let title = columns
-            .iter()
-            .find(|column| column.starts_with("PPSA") || column.starts_with("CUSA"))
+            .get(7)
             .copied()
+            .filter(|column| is_a_title_id(column) && !is_the_systems_own(column))
             .unwrap_or_default();
         found.push(Process {
             pid: columns[0].to_owned(),
@@ -365,8 +389,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        Process, Report, Signal, end, kill, number_in, of_title, processes, shell_ui, storage,
-        value_in,
+        Process, Report, Signal, end, is_a_title_id, kill, number_in, of_title, processes,
+        shell_ui, storage, value_in,
     };
 
     /// Exactly what a target printed for `sysctl kern.version`.
@@ -442,6 +466,43 @@ mod tests {
             payload.title.is_empty(),
             "a payload has no title, not a blank one"
         );
+    }
+
+    /// **A homebrew title is found by the same shape as a retail one, and the system's own
+    /// processes are not titles at all.**
+    ///
+    /// Measured on a target running a homebrew title: `close GLCB00001` found nothing while
+    /// the process sat in `RUN`, because only the two retail prefixes were recognised.
+    #[test]
+    fn a_homebrew_title_is_a_title_and_the_system_is_not() {
+        let ps = "     PID      PPID     PGID      SID      UID      State  AppId    TitleId     Memory (MiB)  Command\n\
+                       274        55       55       55        1        RUN   c018  GLCB00001    82.8 /   90.8  eboot.bin\n\
+                       266        55       55       55        0      SLEEP   4007  NPXS40087   740.5 / 3782.4  SceShellUI\n\
+                       289       288      288      288        0        RUN   0000                4.7 /   21.4  ps\n";
+        let found = processes(ps);
+        assert_eq!(found.len(), 3);
+
+        let mine = of_title(&found, "GLCB00001");
+        assert_eq!(mine.len(), 1, "the homebrew title is closable");
+        assert_eq!(mine[0].pid, "274");
+        assert!(mine[0].is_a_title());
+
+        let ui = shell_ui(&found).expect("the shell is listed");
+        assert!(
+            !ui.is_a_title(),
+            "the system's own processes are not titles"
+        );
+        assert!(ui.title.is_empty());
+        assert!(
+            of_title(&found, "NPXS40087").is_empty(),
+            "and cannot be closed as one"
+        );
+
+        assert!(is_a_title_id("PPSA02664"));
+        assert!(is_a_title_id("CUSA00001"));
+        assert!(!is_a_title_id("4.7"));
+        assert!(!is_a_title_id("eboot.bin"));
+        assert!(!is_a_title_id("PPSA0266"));
     }
 
     /// A target that answers some keys and not others reports what it answered.
