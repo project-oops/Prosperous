@@ -220,6 +220,12 @@ enum Command {
         from: PathBuf,
         /// Where it goes, as the target sees it
         to: String,
+        /// Accept the suggested destination path without prompting
+        #[arg(short, long)]
+        yes: bool,
+        /// Force transfer to requested destination without guard checks
+        #[arg(long)]
+        force: bool,
         #[command(flatten)]
         which: Which,
     },
@@ -485,6 +491,9 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
         Command::Pull { path, into, which } => pull(&path, into, which.name.as_deref()),
         Command::Push { from, to, which } => {
+            if pros_core::guard::is_inert_target_path(&to) {
+                eprintln!("warning: destination '{to}' is an internal system mount point (/user/app). Uploaded files here will not be indexed or mounted as apps.");
+            }
             let target = pick(which.name.as_deref())?;
             let bytes = std::fs::read(&from)?;
             pros_link::files::store(&target.link(), &to, &bytes)?;
@@ -512,7 +521,13 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
             which,
         } => library(&path, titles, which.name.as_deref()),
         Command::Backup { from, into, which } => backup(&from, into, which.name.as_deref()),
-        Command::Restore { from, to, which } => restore(&from, &to, which.name.as_deref()),
+        Command::Restore {
+            from,
+            to,
+            yes,
+            force,
+            which,
+        } => restore(&from, &to, yes, force, which.name.as_deref()),
         Command::Saves { which } => saves(which.name.as_deref()),
         Command::Titles { appmeta, which } => titles(&appmeta, which.name.as_deref()),
         Command::Launch { id, which } => launch(&id, which.name.as_deref()),
@@ -882,21 +897,58 @@ fn backup(
 fn restore(
     from: &Path,
     to: &str,
+    yes: bool,
+    force: bool,
     name: Option<&str>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let mut target_dest = to.to_string();
+    if !force {
+        if let Some(refusal) = pros_core::guard::check(from, to) {
+            if yes {
+                eprintln!("redirecting: {}", refusal.explanation);
+                eprintln!("using suggested path: {}", refusal.suggested_path);
+                target_dest = refusal.suggested_path;
+            } else if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                use std::io::Write as _;
+                eprintln!("\nRefusal: {}", refusal.explanation);
+                eprintln!("  Remedy:    {}", refusal.remedy);
+                eprintln!("  Requested: {}", refusal.target_path);
+                eprintln!("  Suggested: {}", refusal.suggested_path);
+                eprint!("\nUse suggested path '{}' instead? [Y/n] ", refusal.suggested_path);
+                std::io::stderr().flush()?;
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                let choice = line.trim();
+                if choice.is_empty() || choice.eq_ignore_ascii_case("y") || choice.eq_ignore_ascii_case("yes") {
+                    target_dest = refusal.suggested_path;
+                    eprintln!("Proceeding with destination {target_dest}");
+                } else {
+                    eprintln!("Transfer aborted. Pass --force to upload to requested path anyway.");
+                    return Ok(ExitCode::FAILURE);
+                }
+            } else {
+                eprintln!("Refusal: {}", refusal.explanation);
+                eprintln!("  Remedy:    {}", refusal.remedy);
+                eprintln!("  Requested: {}", refusal.target_path);
+                eprintln!("  Suggested: {}", refusal.suggested_path);
+                eprintln!("Pass -y / --yes to accept suggested path, or --force to override.");
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+    }
     let target = pick(name)?;
     let mut session = pros_link::files::Session::open(&target.link())?;
     let summary = pros_core::transfer::upload(
         &mut session,
         from,
-        to,
+        &target_dest,
         &mut |progress| {
             println!("  {}", progress.current);
         },
         &|| false,
     );
     session.close();
-    Ok(say::copied(&summary?, to))
+    Ok(say::copied(&summary?, &target_dest))
 }
 
 /// What a registry command is asking for.

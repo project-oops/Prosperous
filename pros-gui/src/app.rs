@@ -3569,6 +3569,54 @@ impl App {
     /// there regardless - and refusing outright would make the tool the obstacle. What it will
     /// not do is copy first and let them find out later.
     fn refusal(&mut self, ui: &mut egui::Ui) {
+        if let Some(refusal) = self.state.guard_refusal.clone() {
+            let amber = egui::Color32::from_rgb(210, 190, 120);
+            ui.colored_label(
+                amber,
+                "not copied: title destination is inert or identifier is incompatible",
+            );
+            ui.small(format!("source      {}", refusal.from.display()));
+            ui.small(format!("target      {}", refusal.target_path));
+            ui.small(format!("issue       {}", refusal.explanation));
+            ui.small(format!("remedy      {}", refusal.remedy));
+            ui.horizontal(|ui| {
+                let suggested = refusal.suggested_path.clone();
+                if ui
+                    .button(format!("Use '{suggested}' instead"))
+                    .on_hover_text("copy to the canonical homebrew directory scanned by the console")
+                    .clicked()
+                    && let Some(target) = self.state.target().cloned()
+                {
+                    self.state.library_path = refusal.suggested_path.clone();
+                    self.state.guard_refusal = None;
+                    self.state.begin(Job::Restore(
+                        target,
+                        refusal.from.clone(),
+                        refusal.suggested_path.clone(),
+                        false,
+                    ));
+                }
+                if ui
+                    .button("copy anyway")
+                    .on_hover_text("send it regardless - having read the above")
+                    .clicked()
+                    && let Some(target) = self.state.target().cloned()
+                {
+                    self.state.guard_refusal = None;
+                    self.state.begin(Job::Restore(
+                        target,
+                        refusal.from.clone(),
+                        refusal.target_path.clone(),
+                        true,
+                    ));
+                }
+                if ui.button("leave it").clicked() {
+                    self.state.guard_refusal = None;
+                }
+            });
+            ui.separator();
+        }
+
         let Some(needs) = self.state.refused.clone() else {
             return;
         };

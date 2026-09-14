@@ -324,6 +324,9 @@ fn restoring(
             return Done::Refused(needs);
         }
     }
+    if !anyway && let Some(refusal) = pros_core::guard::check(from, to) {
+        return Done::GuardRefused(refusal);
+    }
 
     let mut session = match files::Session::open(&target.link()) {
         Ok(session) => session,

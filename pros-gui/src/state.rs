@@ -427,6 +427,8 @@ pub(crate) enum Done {
     /// made before anything moved, and it carries what would be needed instead - which is the
     /// part somebody acts on.
     Refused(pros_core::origin::Needs),
+    /// A staged title was refused because of an inert destination path or incompatible title prefix.
+    GuardRefused(pros_core::guard::Refusal),
     /// It did not work, in the target's words or the system's.
     Failed(String),
 }
@@ -1091,6 +1093,8 @@ pub(crate) struct State {
     pub(crate) queued: std::collections::VecDeque<Job>,
     /// A copy that was not attempted, and what it would need.
     pub(crate) refused: Option<pros_core::origin::Needs>,
+    /// A title transfer that was refused because of an inert destination path or incompatible prefix.
+    pub(crate) guard_refusal: Option<pros_core::guard::Refusal>,
     /// What the last finished job may have made untrue.
     ///
     /// **Set here and acted on by the window**, so the state machine keeps owning what is
@@ -1187,6 +1191,7 @@ impl State {
         }
         self.trouble = None;
         self.progress = None;
+        self.guard_refusal = None;
         // Recorded as it starts, not as it finishes: a job that never comes back should still
         // appear in the record, as one that never came back.
         self.journal
@@ -1331,6 +1336,7 @@ impl State {
                 pros_core::origin::Needs::Unknown(why) => why.clone(),
                 pros_core::origin::Needs::Nothing => String::new(),
             }),
+            Done::GuardRefused(refusal) => Ending::Refused(refusal.explanation.clone()),
             // A copy that was asked to stop is not a copy that finished, and the record
             // should not read as though four hundred files went across when forty did.
             Done::Copied(summary, _)
@@ -1480,6 +1486,9 @@ impl State {
             Done::Said(text) => self.said = text,
             Done::Refused(needs) => {
                 self.refused = Some(needs.clone());
+            }
+            Done::GuardRefused(refusal) => {
+                self.guard_refusal = Some(refusal.clone());
             }
             Done::Payloads(found) => self.payloads_there = Some(found),
             Done::Launched(said) => self.said = said.describe(),

@@ -39,6 +39,8 @@ pub mod doctor;
 pub mod fetch;
 /// Putting one save's contents into another save's container.
 pub mod graft;
+/// Validating title paths and prefixes before staging.
+pub mod guard;
 /// Holding one file out for the target to fetch.
 pub mod handover;
 /// Starting a title on the target.
