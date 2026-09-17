@@ -88,7 +88,7 @@ warning nobody fails on is a warning nobody reads.
 
 ## The two binaries
 
-The workspace builds four crates; two of them are programs, and they do **nearly** the same
+The workspace builds five crates; two of them are programs, and they do **nearly** the same
 things - see the exception below.
 
 | | |

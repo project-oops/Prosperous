@@ -22,7 +22,7 @@ Shared across all OOPS projects, so registering a console in Prosperous makes it
 
 ### Portable Mode
 
-Drop a `.portable` directory (or sentinel file) next to the Prosperous executable, or set `PROS_PORTABLE=1` / `OOPS_PORTABLE=1`:
+Drop a `.portable` directory (or sentinel file) next to the Prosperous executable, or set `PROSPEROUS_PORTABLE=1` / `OOPS_PORTABLE=1`:
 
 ```text
 <wherever you put it>/

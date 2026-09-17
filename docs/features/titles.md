@@ -8,7 +8,7 @@ Prosperous interfaces with platform launch daemons and shell services to start a
 
 ## GUI: Title Supervisor
 
-Open the **Titles** tab from the main navigation panel (or press `Ctrl+T`).
+Open the **Titles** tab from the main navigation panel.
 
 ```text
 +-------------------------------------------------------------------------------+

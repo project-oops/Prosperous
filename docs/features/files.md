@@ -8,7 +8,7 @@ Prosperous allows complete exploration of the console's internal storage partiti
 
 ## GUI: Remote Storage Browser
 
-Open the **Files** tab from the main navigation panel (or press `Ctrl+F`).
+Open the **Files** tab from the main navigation panel.
 
 ```text
 +-------------------------------------------------------------------------------+
@@ -41,15 +41,16 @@ Open the **Files** tab from the main navigation panel (or press `Ctrl+F`).
 
 ---
 
-## CLI: `pros restore`
+## CLI: `pros restore` and `pros backup`
 
-The command line supports recursive staging and restoration:
+The command line supports recursive staging and retrieval - `restore` uploads, `backup`
+downloads:
 
 ```bash
 # Upload a complete game folder to the target
 pros restore build/title/GLCB00001 /data/homebrew/GLCB00001
 
 # Retrieve a directory from the console to your PC
-pros restore /data/homebrew/GLCB00001 local_backup/
+pros backup /data/homebrew/GLCB00001 --into local_backup/
 ```
 

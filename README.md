@@ -100,7 +100,8 @@ Prosperous is designed as a library first, with CLI and GUI frontends layered on
 |---|---|---|
 | **`pros-link`** | Low-level target socket protocols (`elfldr` :9021, `ftpsrv` :2121, `klogsrv` :3232, `shsrv` :2323, `pldmgr` :8084). Shared by `obscene-tool` and `orbistoun`. | `std::net`, `tracing` only |
 | **`pros-core`** | Target registry, payload manifest hashing, title staging, and check workflows. | `pros-link`, `serde` |
-| **`pros-cli`** | The `pros` command-line executable. | `pros-core`, `clap` |
+| **`pros-moonlight`** | Moonlight/GameStream host bridge in front of Porthole's ports, so any Moonlight client can pair with and stream a target (`pros moonlight`, `pros fake-target`). See [VIDEO.md](docs/VIDEO.md) part four. | `pros-link`, `rustls` |
+| **`pros-cli`** | The `pros` command-line executable. | `pros-core`, `pros-moonlight`, `clap` |
 | **`pros-gui`** | Native desktop window interface for visual control. | `pros-core`, `eframe` (egui) |
 
 ---

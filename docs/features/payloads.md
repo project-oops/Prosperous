@@ -22,7 +22,7 @@ shows what is described, what can be trusted, and what is already on the target.
 ## Fetching, and why a checksum comes first
 
 ```bash
-pros send --name living-room <payload>
+pros fetch --name living-room <payload>
 ```
 
 A payload with **no usable checksum is refused before anything is downloaded**. There is no
@@ -32,10 +32,14 @@ is the same problem, discovered later.
 
 Nothing that fails its digest is kept.
 
+If you already have the file, `pros stage <file> --as <name>` checks it against the manifest on
+the way in, and `pros verify <file> --against <name> --manifest <path>` checks one without
+keeping it. Every path refuses a payload it cannot verify rather than passing it through.
+
 If you want to watch the verification:
 
 ```bash
-OOPS_LOG=debug pros send --name living-room <payload>
+OOPS_LOG=debug pros fetch --name living-room <payload>
 ```
 
 A mismatch is logged with both digests - the one expected and the one found - because "checksum
@@ -44,8 +48,8 @@ download.
 
 ## Staging and delivery
 
-Fetching puts a verified file in the staging directory. Sending hands it to the loader on the
-target and runs it.
+Fetching (`pros fetch`) puts a verified file in the staging directory. Sending (`pros send`)
+hands it to the loader on the target and runs it.
 
 Those are separate steps because they fail for unrelated reasons: a fetch fails because of the
 network or a bad digest, a send fails because the loader is not running. Collapsing them would

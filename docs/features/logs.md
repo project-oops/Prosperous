@@ -8,7 +8,7 @@ Every print from the operating system kernel, system daemons, and running homebr
 
 ## GUI: Live Telemetry Streamer
 
-Open the **Logs** tab from the main navigation panel (or press `Ctrl+L`).
+Open the **Logs** tab from the main navigation panel.
 
 ```text
 +-------------------------------------------------------------------------------+

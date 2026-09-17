@@ -28,7 +28,7 @@ If you are an AI coding agent or systems architect seeking the low-level socket 
 
 ## 1. Quickstart: Connecting to Your Target
 
-Prosperous stores registrations locally under `%APPDATA%\OOPS\prosperous\` (on Windows) or `~/.config/oops/prosperous/` (on Linux).
+Prosperous stores registrations in `targets.txt` at the shared OOPS data root - `%APPDATA%\OOPS\` (on Windows) or `~/.local/share/OOPS/` (on Linux) - so a console registered here is one Orbistoun and obSCEne can reach too.
 
 ### 1. Register a Target Console
 ```powershell
@@ -52,14 +52,20 @@ pros check --name living-room
 ```
 
 ```text
-Target: living-room (192.168.1.211)
-  elfldr  [9021] : UP (12ms)   - Direct memory payload execution
-  ftpsrv  [2121] : UP (8ms)    - Remote filesystem access & staging
-  klogsrv [3232] : UP (5ms)    - Kernel log stream
-  shsrv   [2323] : UP (14ms)   - Direct remote command shell
-  pldmgr  [8084] : UP (9ms)    - Resident payload management
-Status: READY
+living-room (192.168.1.211)
+  up   elfldr    :9021  send a payload to the target and run it
+  up   ftpsrv    :2121  retrieve reports, stage payloads and packages
+  up   klogsrv   :3232  read the system's own log - why a payload died, not just that it did
+  up   shsrv     :2323  run commands on the target without loading a payload
+  up   pldmgr    :8084  inspect and reload the payload chain
+
+ready
 ```
+
+Each row says **what the service unlocks**, not just whether the port is open. A service that is
+down but required is marked `DOWN`; an optional one that is down is marked `--`; and a port that
+answered slowly carries its timing, e.g. `(1508ms)`. The last line is a sentence, not a status
+word: `ready`, or `usable, but ...`, or a blocked verdict that names the remedy.
 
 ---
 

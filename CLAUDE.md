@@ -111,6 +111,10 @@ because outbound NAT forwards fine.
   `handover`, `transfer`. The logic layer. Pure builders and parsers where it can be, with the
   effect (running a shell line over `pros-link`) left to the shim - `launch` and `system` are
   the pattern to copy.
+- `crates/pros-moonlight` - the Moonlight/GameStream bridge in front of Porthole's two ports,
+  reached by `pros moonlight` and `pros fake-target`. A second consumer of `pros-link` rather
+  than a `pros-core` workflow, because it carries a TLS stack, RTSP, RTP and pairing that
+  `pros-link` must never grow (principle 4). See `docs/VIDEO.md` part four.
 - `pros-cli` - the `pros` command. `pros-gui` - the window. Neither holds logic (principle 3).
 - `docs/DESIGN.md` - the transport and the services in full. `docs/CAPABILITIES.md` - the
   three-layer model of what is durable versus configurable. `docs/USAGE.md` - the verbs, for

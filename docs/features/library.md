@@ -6,7 +6,7 @@ things on and off it.
 ```bash
 pros library --name living-room
 pros ls     --name living-room /data
-pros pull   --name living-room /data/report.txt ./report.txt
+pros pull   --name living-room /data/report.txt --into ./report.txt
 pros push   --name living-room ./payload.elf /data/payload.elf
 ```
 
@@ -15,7 +15,7 @@ The window shows the same three groups in its listing panel.
 ## Backup and restore
 
 ```bash
-pros backup  --name living-room /data/savedata ./my-saves
+pros backup  --name living-room /data/savedata --into ./my-saves
 pros restore --name living-room ./my-saves /data/savedata
 ```
 
@@ -29,7 +29,7 @@ is between you and the console.
 ## Reading the system log
 
 ```bash
-pros logs --name living-room --for 10s
+pros logs --name living-room --seconds 10
 ```
 
 The log **streams and never ends**, so a reader has to say how long to listen. There is no

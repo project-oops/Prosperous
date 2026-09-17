@@ -10,10 +10,17 @@ changes are grouped **Added / Changed / Fixed**.
 Nothing has shipped yet. This is the initial commit, so no entry below carries a SHA and
 the CI that would produce one has never run.
 
-## [unreleased] - as of 2026-09-01
+## [unreleased] - as of 2026-09-17
 
 ### Added
 
+- **The Moonlight bridge.** A third library crate, `pros-moonlight`, re-presents Porthole's two
+  ports (9805/9806) as the NVIDIA GameStream protocol, so any Moonlight client can discover, pair
+  with and stream a registered target. Reached by two verbs: `pros moonlight` runs the bridge, and
+  `pros fake-target` stands in for the console payload so the whole client leg can be tested with
+  no hardware. Discovery, PIN pairing, RTSP, RTP video and the ENet control/input channel are
+  built and unit-tested; it decodes no video (reading is not decoding) and copies no GPL code. See
+  [`docs/VIDEO.md`](docs/VIDEO.md) part four and `ACKNOWLEDGEMENTS.md` (Moonshine, BSD-2-Clause).
 - **Two programs over one library.** `pros` (command line) and `pros-gui` (an eframe
   window) sit on `pros-core` and `pros-link`. Both do nearly the same things, deliberately:
   a capability that exists in only one of them is a capability that gets forgotten.

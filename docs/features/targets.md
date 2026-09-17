@@ -15,7 +15,7 @@ pros forget living-room
 
 ## GUI: Target Browser & Health Matrix
 
-In the window, open the **Targets** tab (or press `Ctrl+T`):
+In the window, open the **Targets** tab:
 
 ```text
 +-------------------------------------------------------------------------------+
@@ -55,8 +55,9 @@ running inside a packaged container has its writes there redirected into a per-p
 made invisible. That hazard is real and belongs to *packaged* applications - this is a plain
 executable, so the platform's own directory is right.
 
-The file is one line per target - a name, an address, optional `service:port` overrides - and is
-meant to be edited by hand. If Prosperous cannot work out where to write it, it says so rather
+The file is one line per target - a name, an address, optional `service=port` overrides (e.g.
+`ftpsrv=2122`) - and is meant to be edited by hand. A pair that is not `service=port` is
+silently ignored rather than guessed at. If Prosperous cannot work out where to write it, it says so rather
 than putting it somewhere you will never look.
 
 ## Asking what a target can do

@@ -8,7 +8,7 @@ Prosperous connects directly to the target's remote root command shell, allowing
 
 ## GUI: Remote Shell Console
 
-Open the **Shell** tab from the main navigation panel (or press `Ctrl+S`).
+Open the **Shell** tab from the main navigation panel.
 
 ```text
 +-------------------------------------------------------------------------------+

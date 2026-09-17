@@ -19,18 +19,21 @@ saying where to get them.
 | `ps5-payload-dev` payloads (`elfldr`, `ftpsrv`, `klogsrv`, `shsrv`) | the services this tool is a client for. GPL-3.0 |
 | `pldmgr` | the payload manager, its dashboard, and the repository schema this project copies rather than invents |
 | `ShadowMountPlus`, `ps5upload`, `nanodns`, `kstuff-lite` | the rest of the chain a working target runs |
-| `linkdev` (`ps5-payload-dev`) | remote-play registration without a vendor account |
+| `linkdev` (`ps5-payload-dev`) | remote-play registration without a vendor account (part of the remote-play route since removed - see below) |
 
 The repository schema in `pldmgr`'s `repository_cache.json` is adopted directly. Copying a
 working schema is better than inventing a second one, and it means a target already
 configured is already described.
 
-## Remote play
+## Remote play (removed route, credited for the record)
 
-**Chiaki / chiaki-ng.** Remote play is used rather than reimplemented. The protocol
-involves pairing, a bespoke UDP transport, per-session authenticated encryption,
-forward error correction, two video codecs and an audio codec - which is why Chiaki is
-large, and why writing a second one would be a project rather than a feature.
+**Chiaki / chiaki-ng.** This project once drove Chiaki rather than reimplementing remote play -
+the protocol involves pairing, a bespoke UDP transport, per-session authenticated encryption,
+forward error correction, two video codecs and an audio codec, which is why Chiaki is large and
+why writing a second one would be a project rather than a feature. **That route is gone**: once
+Porthole gave this project its own stream, a second way to watch - one needing pairing, a vendor
+account's worth of protocol and an AGPL dependency - was one too many. See `docs/DESIGN.md` and
+`docs/VIDEO.md`. The credit stands for the code that existed; the client is no longer driven.
 
 ## Moonlight, Sunshine and Wolf, for the GameStream protocol
 

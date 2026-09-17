@@ -86,7 +86,7 @@ feature flags, no duplicated code.
 prosperous/
   crates/pros-link      the five target services - transport only
   crates/pros-core      device registry, dependency probing, workflows, the manifest
-  (a video crate is discussed below and has not been created)
+  crates/pros-moonlight the Moonlight/GameStream bridge in front of Porthole (see below)
   pros-cli              shim
   pros-gui              shim - the standalone product
 
@@ -114,15 +114,23 @@ So the line is drawn at **what needs a dependency**:
   async. This is the part obSCEne takes.
 - **`pros-core`** verifies checksums, reads and writes the manifest, holds the registry
   and sequences workflows. It needs a hash and a JSON reader, and obSCEne never sees them.
-**There is no third crate.** This named a `pros-video` that would integrate a remote-play
+**There was never a `pros-video` crate.** This named one that would integrate a remote-play
 client and, later, the frame-grab client. The remote-play half is gone - see
 `DECISIONS.md` - and the frame-grab half turned out to belong in `pros-link`, because it is a
 socket protocol and that is what `pros-link` is for. The counting-and-piping half of Porthole
 is in `pros-core::watch`, for the same reason: it sequences a workflow.
 
+**There is a third library crate, but it is not that one.** `pros-moonlight` bridges the
+Moonlight/GameStream protocol to Porthole's two ports so any Moonlight client can stream a
+target - and it earns a crate because it is neither transport (it holds a TLS stack, RTSP, RTP
+and pairing that `pros-link` must never grow, principle 4) nor a general workflow layer. It
+takes `pros-link` and adds what that crate deliberately does without. See
+[VIDEO.md](VIDEO.md) part four.
+
 That leaves a dependency spine in orbistoun's sense: `link` -> `core`, each layer adding what
-the one below deliberately does without - and video distributed across the two by what each
-piece actually is, rather than gathered into a crate named after a subject.
+the one below deliberately does without - with `pros-moonlight` a second consumer of `link`
+alongside `core` - and video distributed by what each piece actually is, rather than gathered
+into a crate named after a subject.
 
 ### The cost, accepted rather than discovered
 
