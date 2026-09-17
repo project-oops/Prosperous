@@ -124,6 +124,54 @@
       "source": "https://github.com/ps5-payload-dev/websrv",
       "last_update": "2026-08-02",
       "checksum": "b628f6e489aae2e6cd788fd641826521fb0c9aa9649f88cbb43818707990bb14"
+    },
+    {
+      "name": "gallery",
+      "filename": "gallery-title-prospero.zip",
+      "version": "latest",
+      "category": "OOPS Apps",
+      "description": "SDK subsystem gallery - a page each for graphics primitives, live pad state, machine facts, audio, the network and the capability matrix. L1/R1 to page.",
+      "source_local": "oops-apps/src/gallery/dist/gallery-title-prospero.zip",
+      "url": "https://github.com/project-oops/oops-apps/releases/download/latest-main/gallery-title-prospero.zip",
+      "source": "https://github.com/project-oops/oops-apps",
+      "last_update": "2026-09-16",
+      "checksum": "57fa92441f857037c7c7b6998687c58bf236aeaad96ce831c46d853a0faafdff"
+    },
+    {
+      "name": "net-tool",
+      "filename": "net-tool-title-prospero.zip",
+      "version": "latest",
+      "category": "OOPS Apps",
+      "description": "Network status and a socket you can talk to - what the network is, and a listening socket for poking at it.",
+      "source_local": "oops-apps/src/net-tool/dist/net-tool-title-prospero.zip",
+      "url": "https://github.com/project-oops/oops-apps/releases/download/latest-main/net-tool-title-prospero.zip",
+      "source": "https://github.com/project-oops/oops-apps",
+      "last_update": "2026-09-16",
+      "checksum": "656ec1d6f02c1b94bc8b39ece5c584a3bd04ad7cb6feac257138cf77f986a2fe"
+    },
+    {
+      "name": "pad-viz",
+      "filename": "pad-viz-title-prospero.zip",
+      "version": "latest",
+      "category": "OOPS Apps",
+      "description": "A live controller diagram - buttons light when pressed, the sticks and analog triggers move, the touch-pad shows its contacts and a tilt box follows the accelerometer.",
+      "source_local": "oops-apps/src/pad-viz/dist/pad-viz-title-prospero.zip",
+      "url": "https://github.com/project-oops/oops-apps/releases/download/latest-main/pad-viz-title-prospero.zip",
+      "source": "https://github.com/project-oops/oops-apps",
+      "last_update": "2026-09-16",
+      "checksum": "9c688df916db37a04fa666007acbedae2d06c0d7e7221fec4d954d7dc03e9774"
+    },
+    {
+      "name": "seashell",
+      "filename": "seashell-title-prospero.zip",
+      "version": "latest",
+      "category": "OOPS Apps",
+      "description": "Clean-room reimplementation of the PS5 shell (Prospero UX) - a freestanding homebrew shell and launcher with a Games/Media carousel, game hubs and a Control Centre.",
+      "source_local": "oops-apps/src/seashell/dist/seashell-title-prospero.zip",
+      "url": "https://github.com/project-oops/oops-apps/releases/download/latest-main/seashell-title-prospero.zip",
+      "source": "https://github.com/project-oops/oops-apps",
+      "last_update": "2026-09-16",
+      "checksum": "11990e5c397a434b2236ca935ba235b3854ccc4ab182756ce24ae0027f53fd5f"
     }
   ]
 }

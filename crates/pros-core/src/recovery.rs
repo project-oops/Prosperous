@@ -1221,6 +1221,71 @@ pub mod baseline {
         /// chains declare, so a path is on it because a file said so.
         #[serde(default)]
         pub lists: Vec<Held>,
+        /// Files this chain carries verbatim, to be put back exactly as they were read.
+        ///
+        /// # Why a chain has files at all, and why they are not modelled
+        ///
+        /// A chain is a list of payloads in an order, but a console that runs it also has
+        /// **settings** beside that list - the manager's own, and whatever else somebody's setup
+        /// keeps - and none of that is expressible as an ordered list of names. Exporting the
+        /// list alone loses it: the payload order comes back, the behaviour around it does not.
+        ///
+        /// So a chain can carry a copy of any file, as **bytes with a path and nothing more**.
+        /// This program reads none of it - it does not know a settings file from a note - which
+        /// is deliberate: the filesystem those files live on is somebody else's, the names on it
+        /// move, and a program that understood the contents would be a program that broke when
+        /// they changed. What it can do without understanding is put a file back where it was.
+        ///
+        /// **Which files these are is not decided here.** [`Capture`] declares the paths worth
+        /// reading, in the same tracked file the lists are declared in, so the set is corrected
+        /// by editing data rather than by a rebuild. This field is only the result: a copy of
+        /// what was found. It is empty for a shipped preset - shipping a console's settings would
+        /// bake one machine's habits into the program - and populated for one exported off a
+        /// target.
+        #[serde(default)]
+        pub files: Vec<Captured>,
+    }
+
+    /// A file a chain carries: where it was read, and the bytes that were there.
+    ///
+    /// **Text, not raw bytes.** The files this captures are configuration a person reads and
+    /// edits - lines of `key=value` - and everything else here that touches them treats them as
+    /// text. A file that is not text has no business in a chain a person reviews before deploying,
+    /// and storing it as a string says so.
+    #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+    pub struct Captured {
+        /// What it is, carried over from the [`Capture`] that named it, for somebody reviewing
+        /// the export. Not matched on - the path is the identity.
+        #[serde(default)]
+        pub label: String,
+        /// The full path it was read from, and the full path it will be written back to.
+        pub path: String,
+        /// The bytes that were there, as text, to be written back exactly.
+        pub content: String,
+    }
+
+    /// A path worth copying off a target when a chain is written down, declared as data.
+    ///
+    /// # Why this is a declaration and not a constant
+    ///
+    /// The one path this began with - the manager's settings - is measured, and a measured path
+    /// could be a constant (principle 2). But *which files are worth carrying* is not one fact,
+    /// it is a list that grows: a setup that keeps a second settings file, a target whose
+    /// filesystem has moved a name. A constant would answer today's list and need a rebuild for
+    /// tomorrow's. So it is here, beside the lists it sits next to on a real machine, and both
+    /// are corrected the same way - by editing the tracked file, by the person who can see what
+    /// their console actually keeps.
+    #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+    pub struct Capture {
+        /// What to call it, for somebody reviewing what an export copied.
+        pub label: String,
+        /// Why it is worth carrying, in the same voice a preset entry's `why` uses.
+        #[serde(default)]
+        pub why: String,
+        /// Every place it may be, highest priority first. `{device}` / `{usb}` are expanded over
+        /// a target's removable mounts exactly as a list's `at` is, so a file on a stick is
+        /// written once rather than ten times.
+        pub at: Vec<String>,
     }
 
     /// One startup list a chain uses, as the chain declares it.
@@ -1315,6 +1380,13 @@ pub mod baseline {
         pub required_for_prosperous: Vec<Requirement>,
         /// Preset startup chains.
         pub presets: Vec<Preset>,
+        /// Paths worth copying off a target when a chain is written down.
+        ///
+        /// Top-level rather than per-preset, because a chain being exported is a chain being
+        /// *read off a console*, and which console it is may not match any preset here - so the
+        /// set of files worth grabbing cannot depend on knowing that. See [`Capture`].
+        #[serde(default)]
+        pub capture: Vec<Capture>,
     }
 
     /// Where somebody's own presets go.
@@ -1405,6 +1477,34 @@ pub mod baseline {
     #[must_use]
     pub fn named(name: &str) -> Option<Preset> {
         all().0.into_iter().find(|one| one.name == name)
+    }
+
+    /// Every path worth copying off a target: the ones shipped here, plus any a person declared
+    /// in their own file.
+    ///
+    /// **Read from the same two files the presets are**, and for the same reason: the set of
+    /// files a chain should carry is a fact about somebody else's machine, so a person who can
+    /// see one this program has not heard of can name it without a rebuild. A `capture` block in
+    /// a `chains.json` beside the registry adds to what is shipped; a shipped entry is not
+    /// replaced, because there is nothing there to disagree about - a path is a path.
+    #[must_use]
+    pub fn captures() -> Vec<Capture> {
+        let mut found = document().capture;
+        let Some(path) = path() else {
+            return found;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return found;
+        };
+        if let Ok(document) = serde_json::from_str::<Document>(&text) {
+            for one in document.capture {
+                // By the paths it names, so the same file declared in both files is read once.
+                if !found.iter().any(|kept| kept.at == one.at) {
+                    found.push(one);
+                }
+            }
+        }
+        found
     }
 
     /// The one used when nobody has chosen, which is the first shipped.
@@ -1533,6 +1633,10 @@ pub mod baseline {
             // chain that was deployed, not something this copy learnt - and inventing one here
             // would let an exported chain quietly redirect where a later deploy writes.
             lists: Vec::new(),
+            // **Empty here, filled by whoever measured the target.** This builder is pure - it
+            // reads no console - and a captured file is bytes read off one. The caller that has
+            // the target reads the declared paths and sets them; see [`Capture`].
+            files: Vec::new(),
         };
         (preset, notes)
     }
@@ -1886,6 +1990,7 @@ mod baseline_tests {
             result: "Custom".to_owned(),
             entries: Vec::new(),
             lists: Vec::new(),
+            files: Vec::new(),
         };
         let chain = crate::chain::Chain::parse("!3000\nnanodns.elf\n");
         let hazards = super::audit(

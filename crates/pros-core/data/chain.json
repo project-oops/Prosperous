@@ -42,6 +42,8 @@
     "",
     "`lists` IS WHERE A CHAIN KEEPS ITS STARTUP LISTS, and it is here rather than in the program because it is a fact about somebody else's software that this project cannot settle and the person holding the console can. Every path the screen offers comes from this field, in some chain, in this file or in yours.",
     "",
+    "`capture` IS THE FILES A CHAIN CARRIES BESIDE ITS LIST. A chain is a payload order, but a console running it also has settings, and those are not expressible as a list of names. `capture` names the paths worth copying off a target when a chain is written down (`export chain`); an exported chain then carries a verbatim copy of each, and deploying that chain puts them back exactly. It is top-level, not per-chain, because a chain being exported is being read off a console that may match no preset here. This declares PATHS only - no machine's settings are shipped, the copies live only in chains people export. `{device}`/`{usb}` expand the same way they do for a list.",
+    "",
     "",
     "`{device}` stands for a removable device's mount point and is expanded over every one a target can have - /mnt/usb0 to /mnt/usb7 and /mnt/ext0 to /mnt/ext1. Write the stick once.",
     "",
@@ -81,6 +83,16 @@
       "required": true
     },
     {
+      "name": "sandbox-daemon",
+      "alternatives": ["etaHEN"],
+      "order": 16,
+      "autoloader": false,
+      "why": "services on-demand filesystem unsandboxing requests from native titles and homebrew shells.",
+      "unlocks": "allow native titles to access /user and /data",
+      "gravity": "warning",
+      "required": true
+    },
+    {
       "name": "ftpsrv",
       "alternatives": ["etaHEN"],
       "order": 50,
@@ -100,6 +112,13 @@
       "unlocks": "send a payload to the target and run it",
       "gravity": "warning",
       "required": true
+    }
+  ],
+  "capture": [
+    {
+      "label": "payload manager settings",
+      "why": "the manager's own settings file. It holds the switch that decides whether the manager reads its list at all, and whatever else a setup has tuned - the disc-player behaviour, the startup delay. Exporting a chain without it keeps the payload order and loses the behaviour around it, so an exported chain carries a copy and a deploy puts it back. This is a PATH, not its contents: nothing about one machine's settings is shipped here - the copy only ever lives in a chain somebody exported off their own console.",
+      "at": ["/data/pldmgr/pldmgr_config.txt"]
     }
   ],
   "presets": [
@@ -122,6 +141,15 @@
           "autoloader": false,
           "why": "patches /dev/pltauth so native Prospero (category 0) homebrew passes PFAuthClient entitlement verification (0x80de0051). Must run after kstuff-lite so kernel memory is accessible, and before any native application launches.",
           "unlocks": "run native Prospero homebrew",
+          "required": true
+        },
+        {
+          "name": "sandbox-daemon",
+          "order": 16,
+          "autoloader": false,
+          "why": "services on-demand filesystem unsandboxing requests from native titles and homebrew shells.",
+          "unlocks": "allow native titles to access /user and /data",
+          "alternatives": ["etaHEN"],
           "required": true
         },
         {

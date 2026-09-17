@@ -11,15 +11,15 @@
 //! It is deliberately dumb. It does not encode - it loops a canned Annex-B clip, because the
 //! bridge only reads the bytes and never decodes them, so a real recording played on repeat is
 //! indistinguishable from a live encoder as far as the code under test can tell. And it does not
-//! act on input - it decodes each [`Pad`] record and prints it, because the thing being tested is
+//! act on input - it decodes each [`pros_link::pad::Pad`] record and prints it, because the thing being tested is
 //! that the bridge *produces* correct records, and a printed line is the cheapest possible proof.
 //!
 //! # The direction of each port, which is easy to get backwards
 //!
 //! The **target listens; the host connects.** Porthole's payload is the server on both ports -
 //! the host (the bridge, or Porthole's own `watch`/`feed`) connects *out* to it. So the fake
-//! target is two listeners: a client that connects to [`Ports::video`] is fed the clip, and a
-//! client that connects to [`Ports::input`] has its records read.
+//! target is two listeners: a client that connects to `Ports::video` is fed the clip, and a
+//! client that connects to `Ports::input` has its records read.
 
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -96,8 +96,8 @@ pub fn describe(pad: &Pad) -> String {
     format!("pad {} #{}: {}", pad.slot, pad.sequence, parts.join(" "))
 }
 
-/// Read 24-byte controller records from `from` until it closes, handing each decoded [`Pad`] to
-/// `on_pad`. Returns how many valid records were read.
+/// Read 24-byte controller records from `from` until it closes, handing each decoded
+/// [`pros_link::pad::Pad`] to `on_pad`. Returns how many valid records were read.
 ///
 /// A record that does not decode - wrong magic, a reserved byte set, a slot out of range - is
 /// counted as read but reported through `tracing` and not passed on, because a bridge that sent a

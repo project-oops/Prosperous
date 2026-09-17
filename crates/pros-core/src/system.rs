@@ -355,6 +355,19 @@ pub fn shell_ui(processes: &[Process]) -> Option<&Process> {
     processes.iter().find(|p| p.command == SHELL_UI)
 }
 
+/// The process with this pid in a listing, if it is running.
+///
+/// **One process, matched exactly.** A pid names a single process, unlike a title, which several
+/// processes can share - so this returns at most one. It is trimmed because the pid a person
+/// hands in on a command line arrives with whatever whitespace the shell left on it, the same way
+/// [`kill`] trims what it signals. A caller whose pid is not here is told, rather than left to
+/// signal into a number nothing is using.
+#[must_use]
+pub fn by_pid<'a>(processes: &'a [Process], pid: &str) -> Option<&'a Process> {
+    let pid = pid.trim();
+    processes.iter().find(|p| p.pid == pid)
+}
+
 /// Every process a listing attributes to a title.
 ///
 /// Matched by the title column first; also by the command carrying the id, because a
@@ -389,8 +402,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        Process, Report, Signal, end, is_a_title_id, kill, number_in, of_title, processes,
-        shell_ui, storage, value_in,
+        Process, Report, SHELL_UI, Signal, by_pid, end, is_a_title_id, kill, number_in, of_title,
+        processes, shell_ui, storage, value_in,
     };
 
     /// Exactly what a target printed for `sysctl kern.version`.
@@ -580,6 +593,19 @@ mod tests {
         let mine = of_title(&found, "PPSA00001");
         assert_eq!(mine.len(), 1);
         assert_eq!(mine[0].pid, "200");
+    }
+
+    /// A process is found by its exact pid, whitespace and all, and a pid nothing is using is
+    /// `None` rather than a wrong match.
+    #[test]
+    fn a_process_is_found_by_its_pid() {
+        let found = listing();
+        assert_eq!(by_pid(&found, "200").expect("it is running").pid, "200");
+        assert_eq!(
+            by_pid(&found, "  100\n").expect("trimmed").command,
+            SHELL_UI
+        );
+        assert!(by_pid(&found, "999999").is_none());
     }
 
     /// A running process is killed outright; a stopped one is woken first so its own teardown

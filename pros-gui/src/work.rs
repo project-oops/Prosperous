@@ -354,10 +354,15 @@ fn copying(job: &Job, watch: &mut dyn FnMut(&Progress), stop: &dyn Fn() -> bool)
                 .collect();
             Done::Named(found)
         }
-        Job::ReadAutoload(_) | Job::WriteAutoload(..) | Job::EnableAutoload(_) => settings(job),
+        Job::ReadAutoload(_)
+        | Job::WriteAutoload(..)
+        | Job::EnableAutoload(_)
+        | Job::CaptureConfig(_)
+        | Job::PlaceFile(..) => settings(job),
         Job::ReadSystem(target) => asking(&target.link()),
         Job::RestartUi(target) => restart_ui(&target.link()),
         Job::CloseTitle(target, id) => close_title(&target.link(), id),
+        Job::EndProcess(target, pid) => end_process(&target.link(), pid),
         Job::Launch(target, id) => {
             match pros_link::shell::run(&target.link(), &pros_core::launch::command(id), SETTLE) {
                 Ok(said) => Done::Launched(pros_core::launch::read(&said)),
@@ -504,6 +509,38 @@ fn settings(job: &Job) -> Done {
                 }
             }
         }
+        Job::CaptureConfig(target) => {
+            // **Read every declared companion file; note the ones a target does not have.** The
+            // paths come from the chain data, not from here - so which files a chain carries is
+            // corrected by editing that file, never a rebuild. A path that is not on this target
+            // is not a failure: a chain may name a file another setup keeps and this one does not.
+            let mut files = Vec::new();
+            let mut notes = Vec::new();
+            for (path, label) in pros_core::chain::capture_spots() {
+                match files::retrieve(&target.link(), &path) {
+                    Ok(bytes) => files.push(pros_core::recovery::baseline::Captured {
+                        label,
+                        path,
+                        content: String::from_utf8_lossy(&bytes).into_owned(),
+                    }),
+                    Err(why) => notes.push(format!(
+                        "{path}: not carried - it could not be read from this target ({why})"
+                    )),
+                }
+            }
+            Done::Captured(files, notes)
+        }
+        Job::PlaceFile(target, path, content) => {
+            // **Written whole, exactly as captured.** This program reads none of it; what was
+            // copied off one console is what goes onto this one.
+            match files::store(&target.link(), path, content.as_bytes()) {
+                Ok(()) => Done::Said(format!(
+                    "{path} restored - {} bytes, as the chain carries it",
+                    content.len()
+                )),
+                Err(why) => Done::Failed(why.to_string()),
+            }
+        }
         other => Done::Failed(format!("not a settings job: {}", other.describe())),
     }
 }
@@ -578,6 +615,36 @@ fn close_title(link: &pros_link::Link, id: &str) -> Done {
         format!("{id} is gone")
     } else {
         format!("{id} is still listed - it did not close")
+    };
+    Done::Signalled { note, report }
+}
+
+/// Ends one process by pid, then reads the target again to say whether it is gone.
+///
+/// The by-pid twin of [`close_title`], and the same `pros_core::system` primitive underneath -
+/// `end` wakes a stopped process before killing it. A pid nothing is using is said, not signalled
+/// into.
+fn end_process(link: &pros_link::Link, pid: &str) -> Done {
+    let listing = pros_link::shell::run(link, "ps", SETTLE).unwrap_or_default();
+    let running = pros_core::system::processes(&listing);
+    let found = pros_core::system::by_pid(&running, pid).map(|process| {
+        let what = process.command.clone();
+        for command in pros_core::system::end(process) {
+            let _ = pros_link::shell::run(link, &command, SETTLE);
+        }
+        what
+    });
+    let Done::System(report) = asking(link) else {
+        return Done::Failed("reading the target after the end did not answer".into());
+    };
+    let pid = pid.trim();
+    let note = match found {
+        None => format!("no process with pid {pid} is running"),
+        Some(_) if pros_core::system::by_pid(&report.processes, pid).is_none() => {
+            format!("pid {pid} is gone")
+        }
+        Some(what) if what.is_empty() => format!("pid {pid} is still listed - it did not end"),
+        Some(what) => format!("{what} (pid {pid}) is still listed - it did not end"),
     };
     Done::Signalled { note, report }
 }

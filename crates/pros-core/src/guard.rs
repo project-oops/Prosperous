@@ -172,13 +172,12 @@ pub fn check(from: &Path, to: &str) -> Option<Refusal> {
         .to_string();
 
     // Determine the active title ID: from metadata, destination directory, or local directory name
-    let detected_id = detected
-        .as_ref()
-        .and_then(|d| d.title_id.clone());
+    let detected_id = detected.as_ref().and_then(|d| d.title_id.clone());
 
     let raw_title_id = if let Some(ref id) = detected_id {
         id.clone()
-    } else if target_last_component.len() == 9 && !target_last_component.eq_ignore_ascii_case("app") {
+    } else if target_last_component.len() == 9 && !target_last_component.eq_ignore_ascii_case("app")
+    {
         target_last_component.clone()
     } else if from_dir_name.len() == 9 {
         from_dir_name.clone()
@@ -223,19 +222,19 @@ pub fn check(from: &Path, to: &str) -> Option<Refusal> {
         IssueKind::IncompatiblePrefix => (
             format!(
                 "Title ID '{raw_title_id}' has prefix '{}', which is not recognized by ShadowMountPlus (requires PPSA, CUSA, or FAKE).",
-                if raw_title_id.len() >= 4 { &raw_title_id[0..4] } else { "unknown" }
+                if raw_title_id.len() >= 4 {
+                    &raw_title_id[0..4]
+                } else {
+                    "unknown"
+                }
             ),
-            format!(
-                "Use standard prefix '{suggested_id}' so the console indexes the title."
-            ),
+            format!("Use standard prefix '{suggested_id}' so the console indexes the title."),
         ),
         IssueKind::Both => (
             format!(
                 "Destination '{trimmed_to}' is an inert mount point, and Title ID '{raw_title_id}' uses an unsupported prefix."
             ),
-            format!(
-                "Install to '{suggested_path}' using the conforming prefix."
-            ),
+            format!("Install to '{suggested_path}' using the conforming prefix."),
         ),
     };
 
@@ -283,10 +282,16 @@ mod tests {
     #[test]
     fn json_title_id_parsing() {
         let json = r#"{"titleId":"PPSA90001","titleName":"Home Shell"}"#;
-        assert_eq!(parse_title_id_from_json(json), Some("PPSA90001".to_string()));
+        assert_eq!(
+            parse_title_id_from_json(json),
+            Some("PPSA90001".to_string())
+        );
 
         let formatted = "{\n  \"titleId\": \"GLCB00002\",\n  \"category\": \"big-app\"\n}";
-        assert_eq!(parse_title_id_from_json(formatted), Some("GLCB00002".to_string()));
+        assert_eq!(
+            parse_title_id_from_json(formatted),
+            Some("GLCB00002".to_string())
+        );
 
         assert_eq!(parse_title_id_from_json("{}"), None);
     }
@@ -315,7 +320,11 @@ mod tests {
         assert_eq!(res.suggested_path, "/data/homebrew/PPSA00001");
 
         // Target inert but valid prefix
-        writeln!(File::create(temp.join("sce_sys").join("param.json")).unwrap(), "{{\"titleId\":\"PPSA90001\"}}").unwrap();
+        writeln!(
+            File::create(temp.join("sce_sys").join("param.json")).unwrap(),
+            "{{\"titleId\":\"PPSA90001\"}}"
+        )
+        .unwrap();
         let res2 = check(&temp, "/user/app/PPSA90001").expect("should refuse");
         assert_eq!(res2.kind, IssueKind::InertPath);
         assert_eq!(res2.suggested_path, "/data/homebrew/PPSA90001");

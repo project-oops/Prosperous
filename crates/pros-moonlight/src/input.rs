@@ -1,11 +1,11 @@
-//! Turning a Moonlight controller packet into a [`Pad`] the target understands.
+//! Turning a Moonlight controller packet into a [`pros_link::pad::Pad`] the target understands.
 //!
 //! **The packet layout is adapted from Moonshine** (Hans Gaiser, BSD-2-Clause; see
 //! `THIRD-PARTY-LICENSES.md`), whose `control/input/gamepad.rs` reads the same multi-controller
 //! packet. The mapping from Moonlight's XInput-style button bits to the target's own buttons is
 //! this project's, because the target's bitmap is not Moonlight's - `pros_link::pad::Button` uses
 //! the values measured on the console, so each Moonlight bit is *translated* through
-//! [`Pad::hold`] rather than copied.
+//! [`pros_link::pad::Pad::hold`] rather than copied.
 //!
 //! Sticks are the other translation: Moonlight sends signed 16-bit axes centred on zero with up
 //! positive; the target reads unsigned bytes centred on 128 with up *low* (`pros_link::pad`), so

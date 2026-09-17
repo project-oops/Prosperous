@@ -122,6 +122,22 @@ pub enum Step {
         /// The settings file - the manager's `pldmgr_config.txt`.
         into: String,
     },
+    /// Put a file the chain carries back on the target, verbatim.
+    ///
+    /// **The settings around a list, not the list.** A chain exported off a working console
+    /// carries copies of the files that made it behave the way it did - the manager's own
+    /// settings above all - and deploying that chain elsewhere means putting them back. This is
+    /// how: the bytes are carried in the step, written whole to the path they were read from,
+    /// with no attempt to understand or merge them. It writes exactly what was captured.
+    ///
+    /// A shipped chain carries none of these, so this appears only when deploying a chain
+    /// somebody exported from a real target - see [`crate::recovery::baseline::Captured`].
+    Place {
+        /// The full path on the target, where the file was read and will be written back.
+        into: String,
+        /// The bytes to write, as they were captured.
+        content: String,
+    },
 }
 
 impl Step {
@@ -139,6 +155,12 @@ impl Step {
             }
             Self::Run { path } => format!("load {path} now, without sending anything"),
             Self::Enable { into } => format!("turn autoload on in {into}, so the list is read"),
+            Self::Place { into, content } => {
+                format!(
+                    "restore {into} ({} bytes) as the chain carries it",
+                    content.len()
+                )
+            }
         }
     }
 
@@ -156,15 +178,17 @@ impl Step {
             | Self::List(_)
             | Self::Rebuild { .. }
             | Self::Run { .. }
-            | Self::Enable { .. } => true,
+            | Self::Enable { .. }
+            | Self::Place { .. } => true,
         }
     }
 
     /// Whether this is an edit to the startup list.
     ///
-    /// **`Enable` is not one.** It writes the settings file beside the list, not the list, so it
-    /// is not held back with the list edits and does not, on its own, mean the target will come
-    /// back differently - the list edit it accompanies is what does that.
+    /// **Neither `Enable` nor `Place` is one.** Both write a file beside the list, not the list -
+    /// the settings switch, and the files a chain carries - so neither is held back with the list
+    /// edits, and neither on its own means the target comes back differently. The list edit they
+    /// accompany is what does that.
     #[must_use]
     pub const fn is_a_list_edit(&self) -> bool {
         matches!(self, Self::List(_) | Self::Rebuild { .. })
@@ -838,12 +862,33 @@ pub fn provision(
             already: false,
         });
     }
+    // **The files the chain carries, put back last.** A chain exported off a working console
+    // brings copies of the settings that made it behave - restore them verbatim, after the switch
+    // above, so a captured settings file becomes the target's again. A shipped chain carries
+    // none, so this adds nothing to it; only a chain somebody exported has files here. The switch
+    // still runs regardless, so a chain whose captured settings happen to have autoload off is
+    // not deployed inert.
+    for file in &preset.files {
+        moves.push(Move {
+            step: Step::Place {
+                into: file.path.clone(),
+                content: file.content.clone(),
+            },
+            already: false,
+        });
+    }
+    let carried = preset.files.len();
     (
         Plan {
             because: format!(
                 "a working chain from nothing: {} payloads into {to}, in the recommended order, \
-                 and {into} replaced with the list that names them",
-                entries.len()
+                 and {into} replaced with the list that names them{}",
+                entries.len(),
+                match carried {
+                    0 => String::new(),
+                    1 => ", and 1 file the chain carries put back".to_owned(),
+                    many => format!(", and {many} files the chain carries put back"),
+                }
             ),
             moves,
         },
@@ -1682,7 +1727,12 @@ mod tests {
             Kind::Autoloader,
             &crate::recovery::baseline::first(),
         );
-        let Some(Step::Rebuild { entries, into }) = plan.moves.iter().rev().map(|one| one.step.clone()).find(|step| matches!(step, Step::Rebuild { .. }))
+        let Some(Step::Rebuild { entries, into }) = plan
+            .moves
+            .iter()
+            .rev()
+            .map(|one| one.step.clone())
+            .find(|step| matches!(step, Step::Rebuild { .. }))
         else {
             panic!("the last step writes the file");
         };
@@ -1729,7 +1779,12 @@ mod tests {
                 Kind::Manager,
                 &crate::recovery::baseline::first(),
             );
-            let Some(Step::Rebuild { entries, .. }) = plan.moves.iter().rev().map(|one| one.step.clone()).find(|step| matches!(step, Step::Rebuild { .. }))
+            let Some(Step::Rebuild { entries, .. }) = plan
+                .moves
+                .iter()
+                .rev()
+                .map(|one| one.step.clone())
+                .find(|step| matches!(step, Step::Rebuild { .. }))
             else {
                 panic!("the last step writes the file");
             };
@@ -1772,7 +1827,10 @@ mod tests {
             &crate::recovery::baseline::first(),
         );
         assert!(
-            manager.moves.iter().any(|one| matches!(one.step, Step::Enable { .. })),
+            manager
+                .moves
+                .iter()
+                .any(|one| matches!(one.step, Step::Enable { .. })),
             "deploying the manager's list turns autoload on: {:?}",
             manager.moves
         );
@@ -1783,9 +1841,102 @@ mod tests {
             &crate::recovery::baseline::first(),
         );
         assert!(
-            !autoloader.moves.iter().any(|one| matches!(one.step, Step::Enable { .. })),
+            !autoloader
+                .moves
+                .iter()
+                .any(|one| matches!(one.step, Step::Enable { .. })),
             "an autoloader's list is read regardless and needs no switch: {:?}",
             autoloader.moves
+        );
+    }
+
+    /// **A chain that carries files puts each one back, verbatim, after the list and the switch.**
+    ///
+    /// This is the deploy half of `export chain`: a chain exported off a working console carries
+    /// copies of the settings beside its list, and deploying it restores them. The bytes are put
+    /// back exactly, and the step comes after the list is written and after autoload is turned on -
+    /// so a captured settings file is the last word on its own path, and the switch has already
+    /// guaranteed the list is read whatever the captured settings said.
+    #[test]
+    fn a_chain_that_carries_files_has_them_restored_on_deploy() {
+        let manifest = Manifest::new(vec![described("ftpsrv", Some("https://example/ftpsrv"))]);
+        let known = Catalogue::builtin();
+        let mut preset = crate::recovery::baseline::first();
+        preset.files = vec![crate::recovery::baseline::Captured {
+            label: "payload manager settings".to_owned(),
+            path: "/data/pldmgr/pldmgr_config.txt".to_owned(),
+            content: "AUTOLOAD_ENABLED=1\nAUTOLOAD_DELAY=5\n".to_owned(),
+        }];
+        let what = Known {
+            report: None,
+            there: Some(&[]),
+            staged: &[],
+            described: &manifest,
+            chain: None,
+            kind: Kind::Manager,
+            list: None,
+            preset: &preset,
+            known: &known,
+        };
+        let (plan, _) = provision(&what, crate::chain::PATH, Kind::Manager, &preset);
+
+        let place_at = plan
+            .moves
+            .iter()
+            .position(|one| {
+                matches!(&one.step, Step::Place { into, content }
+                    if into == "/data/pldmgr/pldmgr_config.txt"
+                        && content == "AUTOLOAD_ENABLED=1\nAUTOLOAD_DELAY=5\n")
+            })
+            .expect("the carried settings file is put back verbatim");
+        let rebuild_at = plan
+            .moves
+            .iter()
+            .position(|one| matches!(one.step, Step::Rebuild { .. }))
+            .expect("the list is written");
+        let enable_at = plan
+            .moves
+            .iter()
+            .position(|one| matches!(one.step, Step::Enable { .. }))
+            .expect("the switch is flipped");
+        assert!(
+            place_at > rebuild_at && place_at > enable_at,
+            "the carried file is put back after the list and the switch: {:?}",
+            plan.moves
+        );
+    }
+
+    /// **A shipped chain carries no files, so deploying it places none.** The feature is inert
+    /// for the chains this program ships - it only ever restores what somebody exported off their
+    /// own target - so a plain deploy is exactly as it was.
+    #[test]
+    fn a_chain_that_carries_no_files_places_nothing() {
+        let manifest = Manifest::new(vec![described("ftpsrv", Some("https://example/ftpsrv"))]);
+        let known = Catalogue::builtin();
+        let preset = crate::recovery::baseline::first();
+        assert!(
+            preset.files.is_empty(),
+            "a shipped preset ships no captured files"
+        );
+        let what = Known {
+            report: None,
+            there: Some(&[]),
+            staged: &[],
+            described: &manifest,
+            chain: None,
+            kind: Kind::Manager,
+            list: None,
+            preset: &preset,
+            known: &known,
+        };
+        let (plan, _) = provision(&what, crate::chain::PATH, Kind::Manager, &preset);
+        assert!(
+            !plan
+                .moves
+                .iter()
+                .any(|one| matches!(one.step, Step::Place { .. })),
+            "nothing to put back: {:?}",
+            plan.moves
         );
     }
 
@@ -1814,7 +1965,12 @@ mod tests {
             Kind::Manager,
             &crate::recovery::baseline::first(),
         );
-        let Some(Step::Rebuild { entries, .. }) = plan.moves.iter().rev().map(|one| one.step.clone()).find(|step| matches!(step, Step::Rebuild { .. }))
+        let Some(Step::Rebuild { entries, .. }) = plan
+            .moves
+            .iter()
+            .rev()
+            .map(|one| one.step.clone())
+            .find(|step| matches!(step, Step::Rebuild { .. }))
         else {
             panic!("the last step writes the file");
         };
@@ -2111,6 +2267,7 @@ shsrv_v0.20.elf
             [
                 "kstuff-lite",
                 "pltauth-patch",
+                "sandbox-daemon",
                 "nanoDNS",
                 "ShadowMountPlus",
                 "ps5upload",
@@ -2177,7 +2334,12 @@ shsrv_v0.20.elf
             Kind::Manager,
             &crate::recovery::baseline::first(),
         );
-        let Some(Step::Rebuild { entries, .. }) = plan.moves.iter().rev().map(|one| one.step.clone()).find(|step| matches!(step, Step::Rebuild { .. }))
+        let Some(Step::Rebuild { entries, .. }) = plan
+            .moves
+            .iter()
+            .rev()
+            .map(|one| one.step.clone())
+            .find(|step| matches!(step, Step::Rebuild { .. }))
         else {
             panic!("the last step writes the file");
         };

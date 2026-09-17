@@ -128,6 +128,20 @@
       "required": true
     },
     {
+      "name": "sandbox-daemon",
+      "filename": "sandbox-daemon.elf",
+      "version": "latest",
+      "category": "System & Jailbreak",
+      "description": "On-demand unsandboxing daemon. Services requests from Big Apps by redirecting a process's fd_rdir/fd_jdir to the kernel rootvnode and elevating its credentials, then unlinking the trigger. Runs as a background service under pldmgr/elfldr.",
+      "source_local": "oops-apps/src/sandbox-daemon/dist/sandbox-daemon-prospero.elf",
+      "url": "https://github.com/project-oops/oops-apps/releases/download/latest-main/sandbox-daemon-prospero.elf",
+      "source": "https://github.com/project-oops/oops-apps",
+      "source_direct": "https://github.com/project-oops/oops-apps/releases/download/latest-main/sandbox-daemon-prospero.elf",
+      "last_update": "2026-09-16",
+      "checksum": "416e672eab479d14916c905af93feaa09c266050981ccbfefc601714f409f89a",
+      "unlocks": "unsandbox Big Apps and homebrew on demand"
+    },
+    {
       "name": "BFpilot",
       "filename": "BFpilot_v0.4.4.elf",
       "version": "v0.4.4",

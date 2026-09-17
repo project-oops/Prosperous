@@ -91,6 +91,13 @@ pub(crate) enum Job {
     RestartUi(Target),
     /// Close a title, ending every process it owns, then read the target again.
     CloseTitle(Target, String),
+    /// End one process by its pid, then read the target again.
+    ///
+    /// **By pid, where [`Job::CloseTitle`] is by title.** Aimed at a single process a person
+    /// picked off the system panel - a stuck payload, a process a title left behind - it wakes a
+    /// stopped one first and reads the target again afterwards, the same primitive `pros kill`
+    /// uses from the command line.
+    EndProcess(Target, String),
     /// Find every payload file the manager holds, looking inside its folders.
     FindPayloads(Target, String),
     /// Remove files from the target.
@@ -125,6 +132,21 @@ pub(crate) enum Job {
     /// result - so a deploy can guarantee the list it wrote is actually read without a person
     /// having to open the settings and flip a switch. Deploying a manager chain queues it.
     EnableAutoload(Target),
+    /// Read the files a chain should carry off a target, to write a chain down with them.
+    ///
+    /// **The settings-and-files half of `export chain`.** The payload order comes from the boot
+    /// list already on screen; this reads the declared companion files - the manager's settings
+    /// above all - so the exported chain carries them. Which paths those are is declared in the
+    /// chain data, not here (see [`pros_core::chain::capture_spots`]); a path that is not there is
+    /// noted, not an error, because a target need not have every file a chain might.
+    CaptureConfig(Target),
+    /// Put a file a chain carries back on the target, verbatim.
+    ///
+    /// **The deploy half of `export chain`.** Carries the whole file rather than an edit, like
+    /// [`Job::WriteAutoload`], because what was captured is bytes and what goes back is the same
+    /// bytes - this program reads none of it. The path travels with the content because a deploy
+    /// may put back several such files, each to its own place.
+    PlaceFile(Target, String, String),
     /// Point a description at what its project has released now.
     ///
     /// **The one job that changes the payload list rather than a target.** It downloads the
@@ -170,12 +192,15 @@ impl Job {
             Self::ReadSystem(_) => "asking the target what it is".to_owned(),
             Self::RestartUi(_) => "restarting the user interface".to_owned(),
             Self::CloseTitle(_, id) => format!("closing {id}"),
+            Self::EndProcess(_, pid) => format!("ending pid {pid}"),
             Self::FindPayloads(..) => "looking for payloads".to_owned(),
             Self::DeleteThere(_, what) => format!("deleting {} from the target", what.len()),
             Self::DeleteHere(what) => format!("deleting {} from this machine", what.len()),
             Self::InstallPackage(_, path) => format!("installing {}", path.display()),
             Self::WriteAutoload(_, path, _) => format!("writing {path}"),
             Self::EnableAutoload(_) => "turning autoload on".to_owned(),
+            Self::CaptureConfig(_) => "reading the files the chain carries".to_owned(),
+            Self::PlaceFile(_, path, _) => format!("restoring {path}"),
         }
     }
 
@@ -196,7 +221,8 @@ impl Job {
             | Self::Launch(..)
             | Self::RunThere(..)
             | Self::RestartUi(..)
-            | Self::CloseTitle(..) => &[Disturbs::Report],
+            | Self::CloseTitle(..)
+            | Self::EndProcess(..) => &[Disturbs::Report],
             // Something arrived here, or left it.
             Self::Fetch(..)
             | Self::Relist(..)
@@ -210,8 +236,11 @@ impl Job {
             | Self::Restore(..)
             | Self::InstallPackage(..)
             | Self::DeleteThere(..) => &[Disturbs::There],
-            // The file that was just replaced is the one being shown.
-            Self::WriteAutoload(..) | Self::EnableAutoload(..) => &[Disturbs::Autoload],
+            // The file that was just replaced is the one being shown - and a file a deploy put
+            // back is settings-adjacent, so the settings screen re-reads for the same reason.
+            Self::WriteAutoload(..) | Self::EnableAutoload(..) | Self::PlaceFile(..) => {
+                &[Disturbs::Autoload]
+            }
             // **A command can do anything at all**, so this assumes it did. The cost is a
             // listing being read again; the alternative is a window that quietly disagrees
             // with a target somebody has just changed by hand.
@@ -225,6 +254,7 @@ impl Job {
             | Self::ReadList(..)
             | Self::ReadAutoload(..)
             | Self::ReadSystem(..)
+            | Self::CaptureConfig(..)
             | Self::FindPayloads(..) => &[],
         }
     }
@@ -241,7 +271,10 @@ impl Job {
             Self::Check(_) => &[Section::Check, Section::Autoload],
             Self::ReadAutoload(_) | Self::ReadList(..) => &[Section::Autoload],
             // All three leave the system panel showing a fresh reading.
-            Self::ReadSystem(_) | Self::RestartUi(_) | Self::CloseTitle(..) => &[Section::System],
+            Self::ReadSystem(_)
+            | Self::RestartUi(_)
+            | Self::CloseTitle(..)
+            | Self::EndProcess(..) => &[Section::System],
             Self::FindPayloads(..) => &[Section::Payloads],
             Self::FindSaves(_) => &[Section::Saves],
             // One listing, five views over it - see the section dispatcher.
@@ -270,6 +303,8 @@ impl Job {
             | Self::InstallPackage(..)
             | Self::WriteAutoload(..)
             | Self::EnableAutoload(..)
+            | Self::CaptureConfig(..)
+            | Self::PlaceFile(..)
             | Self::Relist(..)
             | Self::Fetch(..) => &[],
         }
@@ -301,6 +336,7 @@ impl Job {
             | Self::ReadSystem(..)
             | Self::RestartUi(..)
             | Self::CloseTitle(..)
+            | Self::EndProcess(..)
             | Self::Launch(..)
             | Self::RunThere(..)
             | Self::InstallPackage(..)
@@ -308,7 +344,9 @@ impl Job {
             | Self::DeleteThere(..)
             | Self::DeleteHere(..)
             | Self::WriteAutoload(..)
-            | Self::EnableAutoload(..) => Panel::Nothing,
+            | Self::EnableAutoload(..)
+            | Self::CaptureConfig(..)
+            | Self::PlaceFile(..) => Panel::Nothing,
             Self::Browse(..) => Panel::Library,
         }
     }
@@ -376,6 +414,12 @@ pub(crate) enum Done {
         Box<pros_core::autoload::Settings>,
         Box<pros_core::boot::Boot>,
     ),
+    /// The files a chain should carry, read off a target, with a note for any that could not be.
+    ///
+    /// **Both halves, because an export that silently dropped a file would be worse than one that
+    /// says what it could not find.** The files are what an exported chain carries; the notes go
+    /// beside the ones about what a list could not say, in the same panel.
+    Captured(Vec<pros_core::recovery::baseline::Captured>, Vec<String>),
     /// What the target is.
     System(Box<pros_core::system::Report>),
     /// A process was signalled - the interface restarted, or a title closed - and the target
@@ -787,6 +831,14 @@ pub(crate) struct Exporting {
     pub(crate) preset: pros_core::recovery::baseline::Preset,
     /// What the export could not know, in its own words.
     pub(crate) notes: Vec<String>,
+    /// Whether the files the chain should carry are still being read off the target.
+    ///
+    /// **Open the moment the list is measured, closed when the read comes back.** Reading the
+    /// payload order costs nothing - it is already on screen - but reading the companion files is
+    /// a round trip, so the panel opens showing the list and fills the files in when they land.
+    /// While this is set, the panel says so and will not write, because a chain written half way
+    /// through the read would carry the list and not the files.
+    pub(crate) capturing: bool,
     /// How many disabled lines were left out.
     pub(crate) disabled: usize,
     /// Where it would be written.
@@ -1313,11 +1365,14 @@ impl State {
             | Job::ReadSystem(target)
             | Job::RestartUi(target)
             | Job::CloseTitle(target, _)
+            | Job::EndProcess(target, _)
             | Job::InstallPackage(target, _)
             | Job::FindPayloads(target, _)
             | Job::DeleteThere(target, _)
             | Job::WriteAutoload(target, ..)
-            | Job::EnableAutoload(target) => Some(&target.name),
+            | Job::EnableAutoload(target)
+            | Job::CaptureConfig(target)
+            | Job::PlaceFile(target, ..) => Some(&target.name),
             // Between this machine and a mirror. No target is involved, and saying one was
             // would put a fetch in the record under a machine that had nothing to do with it.
             Job::Fetch(..) | Job::Relist(..) | Job::DeleteHere(..) => None,
@@ -1401,6 +1456,11 @@ impl State {
                 settings.all().len(),
                 boot.steps.len()
             )),
+            Done::Captured(files, _) => Ending::Done(format!(
+                "{} file{} the chain will carry",
+                files.len(),
+                if files.len() == 1 { "" } else { "s" }
+            )),
             Done::System(report) => Ending::Done(format!("{} facts", report.facts.len())),
             Done::Signalled { note, .. } => Ending::Done(note.clone()),
             Done::Said(_) | Done::FoundSaves(_) => Ending::Done(String::new()),
@@ -1442,21 +1502,7 @@ impl State {
                 }
                 self.library = items;
             }
-            Done::FoundSaves(found) => match found {
-                pros_core::saves::Found::Here(path) => self.go_to = Some(path),
-                // Named rather than chosen between, and put where trouble goes so it is
-                // read: a target with two accounts has two people's saves on it.
-                pros_core::saves::Found::Several(users) => {
-                    self.trouble = Some(format!(
-                        "several users, so this does not choose: {}",
-                        users.join(", ")
-                    ));
-                }
-                pros_core::saves::Found::None => {
-                    self.trouble =
-                        Some(format!("no user folders under {}", pros_core::saves::HOME));
-                }
-            },
+            Done::FoundSaves(found) => self.carry_saves(found),
             Done::Named(found) => {
                 for about in found {
                     if let Some(name) = about.name {
@@ -1504,6 +1550,7 @@ impl State {
                 self.boot = Some(*boot);
                 self.boot_at = None;
             }
+            Done::Captured(files, notes) => self.carry_captured(files, notes),
             Done::System(report) | Done::Signalled { report, .. } => {
                 self.system = Some(*report);
             }
@@ -1538,6 +1585,42 @@ impl State {
             }
         }
         self.next_in_line();
+    }
+
+    /// Where the target said its saves are, or why it could not say.
+    ///
+    /// **A choice this does not make goes where trouble goes.** A target with two accounts has
+    /// two people's saves on it, and picking one for somebody would be picking whose saves they
+    /// meant - so it names them and stops, rather than guessing.
+    fn carry_saves(&mut self, found: pros_core::saves::Found) {
+        match found {
+            pros_core::saves::Found::Here(path) => self.go_to = Some(path),
+            pros_core::saves::Found::Several(users) => {
+                self.trouble = Some(format!(
+                    "several users, so this does not choose: {}",
+                    users.join(", ")
+                ));
+            }
+            pros_core::saves::Found::None => {
+                self.trouble = Some(format!("no user folders under {}", pros_core::saves::HOME));
+            }
+        }
+    }
+
+    /// **Folds a capture into the export waiting for it.** The panel opened when the list was
+    /// measured and has been showing it; this is the other half - the files the chain carries -
+    /// arriving. If the panel was closed in the meantime the read is discarded, which is right:
+    /// there is nothing left to carry it.
+    fn carry_captured(
+        &mut self,
+        files: Vec<pros_core::recovery::baseline::Captured>,
+        notes: Vec<String>,
+    ) {
+        if let Some(export) = self.exporting.as_mut() {
+            export.preset.files = files;
+            export.notes.extend(notes);
+            export.capturing = false;
+        }
     }
 
     /// Starts whatever is waiting, unless the last one gave somebody something to read.

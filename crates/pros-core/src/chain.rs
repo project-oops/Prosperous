@@ -449,6 +449,39 @@ pub fn lists() -> Vec<Held> {
     found
 }
 
+/// Every actual path worth copying off a target when a chain is written down, each with its
+/// label.
+///
+/// The declared [`crate::recovery::baseline::Capture`] paths, with `{device}` / `{usb}` expanded
+/// over a target's removable mounts the same way a list's places are - so a file declared once on
+/// "any stick" becomes the eight paths a stick can be at, each labelled, and a placeholder never
+/// reaches a caller as itself. Deduplicated by path, because two chains naming the same settings
+/// file mean one file to read.
+///
+/// **A pair, not a [`Held`].** A captured file is read and written back; it is not a startup list
+/// and has no autoloader/manager kind or recovery-path caution, so it borrows none of that
+/// structure. The path is where to read and write; the label is for the person reviewing it.
+///
+/// # Reading this costs a file read
+///
+/// Like [`lists`], it parses the chains including somebody's own file; call it once and keep the
+/// answer rather than asking per frame.
+#[must_use]
+pub fn capture_spots() -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    for one in crate::recovery::baseline::captures() {
+        for at in &one.at {
+            for (path, label) in spread(at, &one.label) {
+                if found.iter().any(|(kept, _)| *kept == path) {
+                    continue;
+                }
+                found.push((path, label));
+            }
+        }
+    }
+    found
+}
+
 /// One declared place, as the paths it actually means.
 ///
 /// A path naming [`DEVICE`] is every removable device a target can have; anything else is
@@ -567,5 +600,30 @@ mod lists {
         let mut once = paths.clone();
         once.dedup();
         assert_eq!(paths, once, "a path is offered twice");
+    }
+
+    /// **The declared capture paths reach a caller as real paths, deduplicated.** The set is
+    /// read from the tracked chain file, not from a constant, and what ships names the manager's
+    /// settings - the file `export chain` copies and a deploy puts back.
+    #[test]
+    fn the_declared_capture_paths_are_offered() {
+        let spots = super::capture_spots();
+        assert!(
+            spots
+                .iter()
+                .any(|(path, _)| path == "/data/pldmgr/pldmgr_config.txt"),
+            "the shipped capture declaration names the manager's settings: {spots:?}"
+        );
+        assert!(
+            !spots
+                .iter()
+                .any(|(path, _)| path.contains(DEVICE) || path.contains(USB)),
+            "a placeholder reached a caller unexpanded: {spots:?}"
+        );
+        let mut paths: Vec<&str> = spots.iter().map(|(path, _)| path.as_str()).collect();
+        paths.sort_unstable();
+        let mut once = paths.clone();
+        once.dedup();
+        assert_eq!(paths, once, "a capture path is offered twice");
     }
 }

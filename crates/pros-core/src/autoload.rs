@@ -670,6 +670,9 @@ mod toggling {
 
         // None at all: a one-line file that turns it on.
         let fresh = super::ensure_autoload_on(None).expect("a file");
-        assert_eq!(Settings::parse(&fresh).is_on("AUTOLOAD_ENABLED"), Some(true));
+        assert_eq!(
+            Settings::parse(&fresh).is_on("AUTOLOAD_ENABLED"),
+            Some(true)
+        );
     }
 }

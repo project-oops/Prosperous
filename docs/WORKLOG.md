@@ -1,4 +1,93 @@
 
+## The oops-apps payloads and titles join the catalogue, by their relative paths
+
+The payloads pane reads the manifest, not the chains file, so a payload named only in `chains.json`
+is invisible there and unfetchable - the catalogue is where prosperous *knows* a payload, and it
+is the app-store master list the whole tracking/downloading/multi-source machinery hangs off. Added
+the first-party oops-apps builds to it, `source_local` (a repository-relative path) as the primary
+source, exactly as `pltauth-patch` already was (D-era local-build resolution, commit that added
+"conventional path resolution"): `sandbox-daemon` to `recommended.json`, and `gallery`, `net-tool`,
+`pad-viz`, `seashell` to `titles.json`. Each resolves under `oops-apps/src/<name>/dist/` at runtime
+via `fetch::local_build`, with a `github.com/project-oops/oops-apps` release as the remote fallback
+and a pinned digest so that fallback is verifiable.
+
+**No absolute path is written anywhere** - `source_local` is relative and resolved against the OOPS
+root discovered at runtime, which is the whole reason it can be a tracked source rather than a
+machine-specific one.
+
+Two surprises worth keeping:
+
+- **`gl-cube` and `tracer` were held back**, and a test is why. `every_shipped_entry_can_be_fetched_and_verified`
+  requires every shipped entry to carry both a url and a digest - "nothing ships with a url it cannot
+  check." Neither has a `-title-prospero.zip` built yet (`gl-cube`'s dist ships only an eboot,
+  `tracer`'s is empty), so there is nothing to hash and nothing to ship. The invariant is right: the
+  master list must not advertise an artifact that does not exist. They go in once built.
+- **The manifest was already configurable without a rebuild.** `recommended.json`/`titles.json` are
+  compiled in for a useful fresh install, but `Tracked::read` merges an on-disk `payloads.json` /
+  `titles.json` beside the registry over the shipped defaults and writes the merge back - so the new
+  shipped entries fold into a machine's existing file on next launch, and anyone can add one to that
+  file by hand without recompiling. The compile is for the default, not the ceiling.
+
+**Follow-up: the payloads-pane refresh now reconciles instead of reading raw.** A new entry not
+showing up turned out to be a stale binary - the shipped catalogue is compiled in, so an
+already-running window (a debug build a day old) knew nothing of it, and its `payloads.json` on
+disk was untouched, which is exactly what a current binary would have rewritten. That was the
+diagnosis. But it also exposed a real papercut: the pane's *refresh* button read `payloads.json`
+raw (`Manifest::from_file`), so it could only ever show what the file already held, never a payload
+learnt since. Refresh now goes through `Tracked::read`, the same path startup uses - shipped merged
+over the file and written back - so it reconciles rather than re-displays. The lesson worth keeping:
+"the manifest is being ignored" was really "the binary is older than the manifest", and the on-disk
+file's mtime is what said so.
+
+## `pros ps` and `pros kill`, so process control needs no raw shell
+
+Ending a process by pid was reaching for `pros sh "kill …"`, and the target's `kill` builtin
+rejects the `-9` shorthand - it wants `-s <number>`, the form `pros_core::system::kill` has always
+built. So the knowledge to do this cleanly was already here (D027's primitive - `Signal`, `kill`,
+`end`, which wakes a stopped process before killing it); what was missing was a verb that used it
+instead of a person guessing shell syntax. Added `pros kill <pid>`, over a new
+`system::by_pid` selector, doing exactly what `pros close` does but aimed by pid rather than by
+title: find the one process, run `end`, read the target again, say whether it is gone.
+
+`pros kill` on its own would have been half a tool - **you cannot kill a pid you cannot see, and
+the command line had no way to list them** (the window's system panel did, the CLI did not). So
+`pros ps` came with it: the same `ps` the panel reads, parsed by `system::processes`, printed as
+a table. That closes the principle-3 gap the other direction too - and the window gained the
+matching half, an *end* button on each non-title process, beside the *close* it already had on
+titles.
+
+The surprise worth keeping: **the fix was a verb, not a primitive.** Everything needed to end a
+process correctly - the right signal number, the wake-first-if-stopped order, all measured - had
+been sitting in `system` since D027, used only by `close` and `restart-ui`. The raw-shell
+workaround people reached for was worse than code that already existed; it just had no name a
+person could type.
+
+## A chain carries its files, so export and deploy keep the settings around the list
+
+`export chain` wrote a payload order and nothing else, so a chain read off a working console
+came back in the right order and behaved differently - the console's settings, the switch that
+decides whether the list runs at all, were never in the chain. Now a chain carries files: a
+`{path, content}` copy of each declared companion file. Export reads them off the target and
+folds them into the preset; deploy puts each back verbatim (`Step::Place`), after writing the
+list and before the autoload switch is guaranteed.
+
+**Which files are worth carrying is declared in `chain.json`, not written in code** (a top-level
+`capture` block, `baseline::Capture`), with `{device}`/`{usb}` expanded the way a list's places
+are. That is the whole point of the shape: the pldmgr settings path lives there as data, so a
+name that moves or a second file worth keeping is a JSON edit, not a rebuild - and it declares
+*paths only*, so no console's settings are shipped in this repository. The one thing in code is
+the switch, which stays as the protocol guarantee that a list nobody reads is pointless (D029).
+
+The surprise worth keeping: **the gate was already red on this toolchain, in three crates, before
+any of this.** `cargo clippy --all-targets -- -D warnings` under clippy 1.98 aborts a crate at
+its first lint, so `pros-cli`'s `run` (102 lines) hid behind a `collapsible_if` the stabilised
+let-chains now flag; `pros-gui` had an `assigning_clones`; and `cargo doc -D warnings` had never
+been green on `pros-moonlight` (a handful of intra-doc links to `Ports`/`Pad` that do not
+resolve from where they were written). None of it was this change - it surfaced because the full
+gate was run. The incidental fixes are all mechanical (clippy's own rewrites, full-path doc
+links, one arm of `run` extracted into a `push` helper the file's own principle 3 wanted anyway),
+and the whole gate is green again: fmt, clippy, tests, doc.
+
 ## The Moonlight bridge streams: video and input, on Moonshine's shoulders
 
 The bridge now does the whole of part four. Video: the target's Annex-B off 9805 is grouped into

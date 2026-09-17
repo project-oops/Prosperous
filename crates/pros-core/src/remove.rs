@@ -193,8 +193,9 @@ pub fn one(remover: &mut dyn Removes, path: &str, folder: bool) -> Gone {
                 // are what somebody acts on. Both `DELE` and `RMD` were tried.
                 let dele = by_file.err().unwrap_or_default();
                 let rmd = by_dir.and_then(Result::err).unwrap_or_default();
-                kept.why =
-                    format!("not a listable directory, and could not be removed - DELE: {dele}; RMD: {rmd}");
+                kept.why = format!(
+                    "not a listable directory, and could not be removed - DELE: {dele}; RMD: {rmd}"
+                );
             }
         } else if !gone.kept.iter().any(|one| one.path == root) {
             // **Unless the walk already said why.** A directory that could not be listed is
@@ -278,7 +279,8 @@ impl Forces for ShellForce<'_> {
         let command = force_command(path, folder)?;
         // `rmdir` and `rm -f` are silent on success, so anything printed is the reason it did not
         // work - a non-empty directory, a missing utility, a permission refusal.
-        let said = pros_link::shell::run(self.link, &command, SHELL_SETTLE).map_err(|why| why.to_string())?;
+        let said = pros_link::shell::run(self.link, &command, SHELL_SETTLE)
+            .map_err(|why| why.to_string())?;
         if said.trim().is_empty() {
             Ok(())
         } else {
@@ -296,10 +298,14 @@ impl Forces for ShellForce<'_> {
 fn force_command(path: &str, folder: bool) -> Result<String, String> {
     let path = path.trim().trim_end_matches('/');
     if path.is_empty() || path == "/" || path == "~" {
-        return Err(format!("refusing to force-remove {path:?}: too broad a path"));
+        return Err(format!(
+            "refusing to force-remove {path:?}: too broad a path"
+        ));
     }
     if path.split('/').any(|segment| segment == "..") {
-        return Err(format!("refusing to force-remove {path:?}: it climbs with '..'"));
+        return Err(format!(
+            "refusing to force-remove {path:?}: it climbs with '..'"
+        ));
     }
     // Single-quote for the shell, with the one escape single quotes need.
     let quoted = format!("'{}'", path.replace('\'', "'\\''"));
@@ -314,7 +320,7 @@ fn force_command(path: &str, folder: bool) -> Result<String, String> {
 /// service left behind.
 ///
 /// **The shell only ever touches a thing the caller named that the file service could not fully
-/// remove**, and only with [`force_command`]'s safe, non-recursive commands. A selection the file
+/// remove**, and only with `force_command`'s safe, non-recursive commands. A selection the file
 /// service handled cleanly never reaches the shell at all.
 pub fn these_then_force(
     remover: &mut dyn Removes,
@@ -650,7 +656,10 @@ mod tests {
         assert_eq!(gone.folders, 0, "{gone:?}");
         assert_eq!(gone.files, 0, "{gone:?}");
         assert_eq!(gone.kept.len(), 1, "nothing was claimed gone: {gone:?}");
-        assert!(gone.kept[0].why.contains("could not be removed"), "{gone:?}");
+        assert!(
+            gone.kept[0].why.contains("could not be removed"),
+            "{gone:?}"
+        );
     }
 
     /// **A symlink called a folder is unlinked, not walked.**
@@ -688,7 +697,10 @@ mod tests {
         let mut tree = BTreeMap::new();
         tree.insert(
             "/data/pldmgr/payloads/pltauth-patch".to_owned(),
-            vec![entry("pltauth-patch.elf", Kind::File), entry("pltauth-patch.json", Kind::File)],
+            vec![
+                entry("pltauth-patch.elf", Kind::File),
+                entry("pltauth-patch.json", Kind::File),
+            ],
         );
         // The file service empties it but refuses to remove the directory itself.
         let mut ftp = Pretend {
@@ -702,11 +714,20 @@ mod tests {
             &mut shell,
             &[("/data/pldmgr/payloads/pltauth-patch".to_owned(), true)],
         );
-        assert_eq!(gone.files, 2, "the two payload files went over the file service: {gone:?}");
-        assert_eq!(gone.folders, 1, "the empty directory went over the shell: {gone:?}");
+        assert_eq!(
+            gone.files, 2,
+            "the two payload files went over the file service: {gone:?}"
+        );
+        assert_eq!(
+            gone.folders, 1,
+            "the empty directory went over the shell: {gone:?}"
+        );
         assert!(gone.kept.is_empty(), "nothing was left: {gone:?}");
         assert!(
-            shell.did.iter().any(|c| c == "rmdir /data/pldmgr/payloads/pltauth-patch"),
+            shell
+                .did
+                .iter()
+                .any(|c| c == "rmdir /data/pldmgr/payloads/pltauth-patch"),
             "it used rmdir, not a recursive force: {:?}",
             shell.did
         );
@@ -719,7 +740,11 @@ mod tests {
         let mut shell = PretendShell::default();
         let gone = these_then_force(&mut ftp, &mut shell, &[("/data/x".to_owned(), true)]);
         assert!(gone.kept.is_empty(), "{gone:?}");
-        assert!(shell.did.is_empty(), "the shell was not needed: {:?}", shell.did);
+        assert!(
+            shell.did.is_empty(),
+            "the shell was not needed: {:?}",
+            shell.did
+        );
     }
 
     /// **A thing neither service can remove is reported by both, and nothing is claimed gone.**
@@ -746,8 +771,14 @@ mod tests {
     /// **The fallback command is the least-powerful one, and a broad path is refused.**
     #[test]
     fn the_force_command_is_never_recursive_and_guards_the_path() {
-        assert_eq!(force_command("/data/x/dir", true).unwrap(), "rmdir '/data/x/dir'");
-        assert_eq!(force_command("/data/x/file.elf", false).unwrap(), "rm -f '/data/x/file.elf'");
+        assert_eq!(
+            force_command("/data/x/dir", true).unwrap(),
+            "rmdir '/data/x/dir'"
+        );
+        assert_eq!(
+            force_command("/data/x/file.elf", false).unwrap(),
+            "rm -f '/data/x/file.elf'"
+        );
         // Never a recursive force, whatever the input.
         assert!(!force_command("/data/x", true).unwrap().contains("-r"));
         assert!(!force_command("/data/x", false).unwrap().contains("-r"));
@@ -756,7 +787,10 @@ mod tests {
         assert!(force_command("", false).is_err());
         assert!(force_command("/data/../etc", false).is_err());
         // A single quote in a name is escaped for the shell, not left to inject.
-        assert_eq!(force_command("/data/it's", false).unwrap(), "rm -f '/data/it'\\''s'");
+        assert_eq!(
+            force_command("/data/it's", false).unwrap(),
+            "rm -f '/data/it'\\''s'"
+        );
     }
 
     /// The wording says what happened, including that nothing did.

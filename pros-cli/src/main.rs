@@ -275,6 +275,25 @@ enum Command {
         #[command(flatten)]
         which: Which,
     },
+    /// End one process by its pid, freeing what it holds open
+    ///
+    /// The native way to do what a hand-typed `sh kill …` fumbles: it sends the signal the
+    /// target's `kill` builtin actually takes (`-s <number>`, not the `-9` shorthand it rejects),
+    /// and it wakes a stopped process first so its own teardown completes. `pros ps` lists pids.
+    Kill {
+        /// Which process, by pid - `pros ps` lists them
+        pid: String,
+        #[command(flatten)]
+        which: Which,
+    },
+    /// List the processes running on the target
+    ///
+    /// The same `ps` the window's system panel reads, so a pid to `pros kill` comes from here
+    /// rather than from a raw shell.
+    Ps {
+        #[command(flatten)]
+        which: Which,
+    },
     /// Fetch a payload described by the manifest, and keep it if it is the right one
     Fetch {
         /// Which entry. Omit with --all to fetch everything that can be checked
@@ -383,9 +402,12 @@ impl Command {
             Self::Logs { .. } => Some("klogsrv"),
             // A line typed at the shell, a title started, and process control - all shell
             // work, and none of it wants the loader.
-            Self::Sh { .. } | Self::Launch { .. } | Self::RestartUi { .. } | Self::Close { .. } => {
-                Some("shsrv")
-            }
+            Self::Sh { .. }
+            | Self::Launch { .. }
+            | Self::RestartUi { .. }
+            | Self::Close { .. }
+            | Self::Kill { .. }
+            | Self::Ps { .. } => Some("shsrv"),
             // Running a payload, and re-running one that died.
             Self::Send { .. } | Self::Supervise { .. } => Some("elfldr"),
             // Everything that reads or moves a file.
@@ -490,16 +512,7 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Pull { path, into, which } => pull(&path, into, which.name.as_deref()),
-        Command::Push { from, to, which } => {
-            if pros_core::guard::is_inert_target_path(&to) {
-                eprintln!("warning: destination '{to}' is an internal system mount point (/user/app). Uploaded files here will not be indexed or mounted as apps.");
-            }
-            let target = pick(which.name.as_deref())?;
-            let bytes = std::fs::read(&from)?;
-            pros_link::files::store(&target.link(), &to, &bytes)?;
-            println!("{} bytes {} -> {to}", bytes.len(), from.display());
-            Ok(ExitCode::SUCCESS)
-        }
+        Command::Push { from, to, which } => push(&from, &to, which.name.as_deref()),
         Command::Payloads {
             file,
             from_target,
@@ -533,6 +546,8 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
         Command::Launch { id, which } => launch(&id, which.name.as_deref()),
         Command::RestartUi { which } => restart_ui(which.name.as_deref()),
         Command::Close { id, which } => close(&id, which.name.as_deref()),
+        Command::Ps { which } => ps(which.name.as_deref()),
+        Command::Kill { pid, which } => kill_pid(&pid, which.name.as_deref()),
         Command::Fetch {
             payload,
             all,
@@ -761,6 +776,23 @@ fn pull(
     Ok(ExitCode::SUCCESS)
 }
 
+/// Copies one local file onto the target, at a path the caller chose.
+///
+/// **Warns before an inert destination.** A file put under a system mount point is not indexed
+/// or mounted, so it lands and does nothing - said here rather than left to be discovered.
+fn push(from: &Path, to: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    if pros_core::guard::is_inert_target_path(to) {
+        eprintln!(
+            "warning: destination '{to}' is an internal system mount point (/user/app). Uploaded files here will not be indexed or mounted as apps."
+        );
+    }
+    let target = pick(name)?;
+    let bytes = std::fs::read(from)?;
+    pros_link::files::store(&target.link(), to, &bytes)?;
+    println!("{} bytes {} -> {to}", bytes.len(), from.display());
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Checks a local file against what a manifest says it should be.
 fn verify(
     file: &Path,
@@ -902,38 +934,42 @@ fn restore(
     name: Option<&str>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let mut target_dest = to.to_string();
-    if !force {
-        if let Some(refusal) = pros_core::guard::check(from, to) {
-            if yes {
-                eprintln!("redirecting: {}", refusal.explanation);
-                eprintln!("using suggested path: {}", refusal.suggested_path);
+    if !force && let Some(refusal) = pros_core::guard::check(from, to) {
+        if yes {
+            eprintln!("redirecting: {}", refusal.explanation);
+            eprintln!("using suggested path: {}", refusal.suggested_path);
+            target_dest = refusal.suggested_path;
+        } else if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            use std::io::Write as _;
+            eprintln!("\nRefusal: {}", refusal.explanation);
+            eprintln!("  Remedy:    {}", refusal.remedy);
+            eprintln!("  Requested: {}", refusal.target_path);
+            eprintln!("  Suggested: {}", refusal.suggested_path);
+            eprint!(
+                "\nUse suggested path '{}' instead? [Y/n] ",
+                refusal.suggested_path
+            );
+            std::io::stderr().flush()?;
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            let choice = line.trim();
+            if choice.is_empty()
+                || choice.eq_ignore_ascii_case("y")
+                || choice.eq_ignore_ascii_case("yes")
+            {
                 target_dest = refusal.suggested_path;
-            } else if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                use std::io::Write as _;
-                eprintln!("\nRefusal: {}", refusal.explanation);
-                eprintln!("  Remedy:    {}", refusal.remedy);
-                eprintln!("  Requested: {}", refusal.target_path);
-                eprintln!("  Suggested: {}", refusal.suggested_path);
-                eprint!("\nUse suggested path '{}' instead? [Y/n] ", refusal.suggested_path);
-                std::io::stderr().flush()?;
-                let mut line = String::new();
-                std::io::stdin().read_line(&mut line)?;
-                let choice = line.trim();
-                if choice.is_empty() || choice.eq_ignore_ascii_case("y") || choice.eq_ignore_ascii_case("yes") {
-                    target_dest = refusal.suggested_path;
-                    eprintln!("Proceeding with destination {target_dest}");
-                } else {
-                    eprintln!("Transfer aborted. Pass --force to upload to requested path anyway.");
-                    return Ok(ExitCode::FAILURE);
-                }
+                eprintln!("Proceeding with destination {target_dest}");
             } else {
-                eprintln!("Refusal: {}", refusal.explanation);
-                eprintln!("  Remedy:    {}", refusal.remedy);
-                eprintln!("  Requested: {}", refusal.target_path);
-                eprintln!("  Suggested: {}", refusal.suggested_path);
-                eprintln!("Pass -y / --yes to accept suggested path, or --force to override.");
+                eprintln!("Transfer aborted. Pass --force to upload to requested path anyway.");
                 return Ok(ExitCode::FAILURE);
             }
+        } else {
+            eprintln!("Refusal: {}", refusal.explanation);
+            eprintln!("  Remedy:    {}", refusal.remedy);
+            eprintln!("  Requested: {}", refusal.target_path);
+            eprintln!("  Suggested: {}", refusal.suggested_path);
+            eprintln!("Pass -y / --yes to accept suggested path, or --force to override.");
+            return Ok(ExitCode::FAILURE);
         }
     }
     let target = pick(name)?;
@@ -1384,6 +1420,81 @@ fn close(id: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::E
         println!("{id} is still listed - it did not close");
         Ok(ExitCode::FAILURE)
     }
+}
+
+/// Ends one process by pid, freeing what it holds open.
+///
+/// The same primitive `close` uses, aimed by pid rather than by title: read the listing, find the
+/// one process it names, and run the kill commands `pros_core::system::end` produces - which wake
+/// a stopped process before killing it. A pid nothing is using is said, not signalled into.
+fn kill_pid(pid: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let target = pick(name)?;
+    let listing = pros_link::shell::run(&target.link(), "ps", SETTLE)?;
+    let processes = pros_core::system::processes(&listing);
+    let Some(process) = pros_core::system::by_pid(&processes, pid) else {
+        println!("no process with pid {} is running", pid.trim());
+        return Ok(ExitCode::FAILURE);
+    };
+    let pid = process.pid.clone();
+    println!(
+        "ending {} (pid {pid}, state {}){}",
+        if process.command.is_empty() {
+            "the process"
+        } else {
+            &process.command
+        },
+        process.state,
+        if process.title.is_empty() {
+            String::new()
+        } else {
+            format!(", title {}", process.title)
+        }
+    );
+    for command in pros_core::system::end(process) {
+        let _ = pros_link::shell::run(&target.link(), &command, SETTLE)?;
+    }
+    // Ask again rather than assume, exactly as `close` does: a pid still listed did not end.
+    let after = pros_link::shell::run(&target.link(), "ps", SETTLE)?;
+    if pros_core::system::by_pid(&pros_core::system::processes(&after), &pid).is_none() {
+        println!("pid {pid} is gone");
+        Ok(ExitCode::SUCCESS)
+    } else {
+        println!("pid {pid} is still listed - it did not end");
+        Ok(ExitCode::FAILURE)
+    }
+}
+
+/// Lists the processes running on the target.
+///
+/// The same `ps` the window's system panel reads, parsed the same way, so a pid handed to
+/// `pros kill` comes from here rather than from a raw shell. Prints the columns this project
+/// keeps - pid, state, title, command - and nothing the parser dropped.
+fn ps(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let target = pick(name)?;
+    let listing = pros_link::shell::run(&target.link(), "ps", SETTLE)?;
+    let processes = pros_core::system::processes(&listing);
+    if processes.is_empty() {
+        println!("no processes listed - is the shell loaded? `pros check` will say");
+        return Ok(ExitCode::SUCCESS);
+    }
+    // Wide enough for the widest pid in this listing, so the columns line up without a dependency
+    // on how many digits a pid happens to have.
+    let width = processes.iter().map(|p| p.pid.len()).max().unwrap_or(3);
+    println!("{:>width$}  {:5}  {:10}  COMMAND", "PID", "STATE", "TITLE");
+    for process in &processes {
+        println!(
+            "{:>width$}  {:5}  {:10}  {}",
+            process.pid,
+            process.state,
+            if process.title.is_empty() {
+                "-"
+            } else {
+                &process.title
+            },
+            process.command
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Fetches payloads and keeps the ones that are what they claim to be.

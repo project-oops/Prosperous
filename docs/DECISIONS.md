@@ -18,11 +18,11 @@ on or after that day and nothing narrower is recoverable. Entries after them car
 |---|---|---|---|---|
 | 🟢 | D001 | [Prosperous exists, and it is a library with two consumers](decisions/D001-prosperous-exists-and-it-is-a-library.md) | decided | 2026-08-25 |
 | 🟢 | D002 | [A target's answer is read on its own terms, and a refusal is not a failure](decisions/D002-a-target-s-answer-is-read-on-its-own.md) | decided | 2026-08-25 |
-| 🟢 | D003 | [The fake blocks on accept and knocks to stop, because polling was measured and was terrible](decisions/D003-the-fake-blocks-on-accept-and-knocks-to.md) | measured | 2026-08-26 |
+| 🟢 | D003 | [The fake blocks on accept and knocks to stop, because polling was measured and was terrible](decisions/D003-the-fake-blocks-on-accept-and-knocks-to.md) | decided | 2026-08-26 |
 | 🟢 | D004 | [What cannot be checked is refused by name, in both places it comes up](decisions/D004-what-cannot-be-checked-is-refused-by.md) | decided | 2026-08-26 |
 | 🟢 | D005 | [The command line holds nothing, and its exit codes are part of what it holds](decisions/D005-the-command-line-holds-nothing-and-its.md) | decided | 2026-08-26 |
 | 🟢 | D006 | [Continuous integration runs the one dev command, and nothing else](decisions/D006-continuous-integration-runs-the-one-dev.md) | decided | 2026-08-26 |
-| 🟡 | D007 | [The target is a manifest source, and the path is asked for rather than assumed](decisions/D007-the-target-is-a-manifest-source-and-the.md) | assumed | 2026-08-26 |
+| 🟢 | D007 | [The target is a manifest source, and the path is asked for rather than assumed](decisions/D007-the-target-is-a-manifest-source-and-the.md) | decided | 2026-08-26 |
 | 🟢 | D008 | [The frame grabber is a resident payload with its own port, and its protocol is written down before it is built](decisions/D008-the-frame-grabber-is-a-resident-payload.md) | decided | 2026-08-26 |
 | 🟢 | D009 | [The window matches orbistoun's, deliberately, down to the version](decisions/D009-the-window-matches-orbistoun-s.md) | decided | 2026-08-26 |
 | 🟢 | D010 | [Two more columns, and neither of them may lie about what was not looked at](decisions/D010-two-more-columns-and-neither-of-them.md) | decided | 2026-08-26 |
@@ -32,17 +32,19 @@ on or after that day and nothing narrower is recoverable. Entries after them car
 | 🟢 | D014 | [Downloading is built, because a target handed over digests to check it against](decisions/D014-downloading-is-built-because-a-target.md) | decided | 2026-08-26 |
 | 🟢 | D015 | [Names come from the target, and are never invented](decisions/D015-names-come-from-the-target-and-are.md) | decided | 2026-08-26 |
 | ⚪ | D016 | [The manifest format is one tool's file, and `port` is ours](decisions/D016-the-manifest-format-is-one-tool-s-file.md) | unrecorded | ~2026-08-26..08-30 |
-| 🟢 | D017 | [Five lists, one mechanism, and what an honest list can contain](decisions/D017-five-lists-one-mechanism-and-what-an.md) | measured | ~2026-08-26..08-30 |
+| ⚪ | D017 | [Five lists, one mechanism, and what an honest list can contain](decisions/D017-five-lists-one-mechanism-and-what-an.md) | unrecorded | ~2026-08-26..08-30 |
 | ⚪ | D018 | [A save transfer decides before it moves anything](decisions/D018-a-save-transfer-decides-before-it-moves.md) | unrecorded | ~2026-08-26..08-30 |
 | ⚪ | D019 | [The first write to a target, and what it had to earn](decisions/D019-the-first-write-to-a-target-and-what-it.md) | unrecorded | ~2026-08-26..08-30 |
-| 🟢 | D020 | [What the target is, measured rather than looked up](decisions/D020-what-the-target-is-measured-rather-than.md) | measured | ~2026-08-26..08-30 |
-| 🟢 | D021 | [Package installation was a shell builtin, not a service](decisions/D021-package-installation-was-a-shell.md) | measured | ~2026-08-26..08-30 |
-| 🟢 | D022 | [This project sends and supervises; it does not drive](decisions/D022-this-project-sends-and-supervises-it.md) | hardware | ~2026-08-26..08-30 |
+| ⚪ | D020 | [What the target is, measured rather than looked up](decisions/D020-what-the-target-is-measured-rather-than.md) | unrecorded | ~2026-08-26..08-30 |
+| ⚪ | D021 | [Package installation was a shell builtin, not a service](decisions/D021-package-installation-was-a-shell.md) | unrecorded | ~2026-08-26..08-30 |
+| ⚪ | D022 | [This project sends and supervises; it does not drive](decisions/D022-this-project-sends-and-supervises-it.md) | unrecorded | ~2026-08-26..08-30 |
 | ⚪ | D023 | [Two pad models, on purpose](decisions/D023-two-pad-models-on-purpose.md) | unrecorded | ~2026-08-26..08-30 |
 | ⚪ | D024 | [Three ways to make something run on a target, and three buttons](decisions/D024-three-ways-to-make-something-run-on-a.md) | unrecorded | ~2026-08-26..08-30 |
 | 🟢 | D025 | [`pros-link` takes the logging facade, and the empty dependency table goes](decisions/D025-pros-link-takes-the-logging-facade-and.md) | decided | 2026-08-30 |
 | 🟢 | D026 | [The window ships its own manual](decisions/D026-the-window-ships-its-own-manual.md) | decided | 2026-08-30 |
 | 🟢 | D027 | [Process control is prosperous work, not obSCEne's](decisions/D027-process-control-is-prosperous-work.md) | decided | 2026-09-04 |
+| 🟢 | D028 | [The `param.sfo` reader comes from SELFish; the in-place writer stays](decisions/D028-the-param-sfo-reader-comes-from-selfish.md) | decided | 2026-09-10 |
+| 🟢 | D029 | [A chain carries its files, and which files is data](decisions/D029-a-chain-carries-its-files-and-which.md) | decided | 2026-09-15 |
 
 | | meaning |
 |---|---|

@@ -126,6 +126,8 @@ shell, and both live here rather than in a consumer that happened to need them f
 ```bash
 pros restart-ui                    # kill SceShellUI; the system respawns it, no reboot
 pros close PPSA00001               # end every process the title owns
+pros ps                            # list what is running, with pids
+pros kill 274                      # end one process by pid
 ```
 
 **`restart-ui`** finds `SceShellUI` by name - so no other process can be hit - and terminates
@@ -137,6 +139,17 @@ it is killed, because a title killed while stopped never runs its own exit teard
 locked files behind. Afterwards it reads the target again and says whether the title is gone or
 still listed - a measured answer rather than an assumed one.
 
-**The window does both too.** `pros-gui`'s system panel has a *restart UI* button beside *ask
-the target*, and a *close* button on each running title. Both leave the process list showing
-what is running now, because the action reads the target again when it finishes.
+**`ps`** lists the running processes - the same `ps` the window's system panel reads, parsed the
+same way - so a pid for `kill` comes from here rather than from a raw shell.
+
+**`kill`** ends one process by its pid, for what `close` cannot name: a payload, a stuck process,
+anything with no title of its own. It is the native form of what a hand-typed `sh kill …`
+fumbles - the target's `kill` builtin takes `-s <number>`, not the `-9` shorthand, and rejects
+the wrong one - so the verb builds the command the builtin accepts and wakes a stopped process
+first, exactly as `close` does. Like `close`, it reads the target again afterwards and says
+whether the pid is gone.
+
+**The window does all of these too.** `pros-gui`'s system panel has a *restart UI* button beside
+*ask the target*, a *close* button on each running title, and an *end* button on every other
+process (under "everything else") that ends it by pid. Each leaves the process list showing what
+is running now, because the action reads the target again when it finishes.

@@ -31,6 +31,18 @@ use pros_core::target;
 use crate::state::{Job, Section, State};
 use crate::work::Worker;
 
+/// What was pressed on a row of the process list.
+///
+/// **Two ways to end something, because there are two things to end.** A title is closed by
+/// identity - every process it owns - and anything else is ended by its one pid. The split is the
+/// same one `pros close` and `pros kill` make, kept here so the panel dispatches the right job.
+enum ProcAction {
+    /// Close a title by its identifier.
+    CloseTitle(String),
+    /// End a single process by its pid.
+    EndPid(String),
+}
+
 /// One row of a listing: a tick, a name, and what that side knows about it.
 ///
 /// Returns `true` when the row was clicked. **No action buttons.** What can be done depends on
@@ -924,23 +936,25 @@ impl App {
         self.state.showing.registering = open;
     }
 
-    /// Reads the manifest from the usual place.
+    /// Re-reads the manifest the same way startup does.
+    ///
+    /// # Why through `Tracked::read` and not a raw file read
+    ///
+    /// This was `Manifest::from_file` on the on-disk file alone, so a refresh showed **only what
+    /// the file already held** - never a payload this program had learnt about since the file was
+    /// last written. A payload added to the shipped catalogue by a new build was therefore
+    /// invisible until the file happened to be rewritten, which a refresh does not do: the report
+    /// was "I updated the catalogue, refreshed, and it is not there", and it was right.
+    ///
+    /// `Tracked::read` is what startup uses. It merges the shipped catalogue over whatever is on
+    /// disk and writes the result back, so a shipped addition and a hand-edit to the file both
+    /// appear, and the file on disk is reconciled rather than left behind. A machine with no file
+    /// yet is `Ok(shipped)`, not an error - only a file that exists and does not parse is one.
     fn read_manifest(&mut self) {
-        let Some(path) = pros_core::manifest::default_path() else {
-            self.state.trouble =
-                Some("no home directory, so there is nowhere to keep one".to_owned());
-            return;
-        };
-        if !path.exists() {
-            // Not a failure. A machine where nobody has written one is the ordinary state
-            // of a machine where nobody has written one.
-            self.manifest = Some(pros_core::manifest::recommended());
-            return;
-        }
-        match Manifest::from_file(&path) {
+        match pros_core::manifest::Tracked::Payloads.read() {
             Ok(manifest) => self.manifest = Some(manifest),
-            // Named rather than swallowed: *there is no manifest* and *this is not a
-            // manifest* are different problems, and the library words both already.
+            // Named rather than swallowed: *there is no manifest* is `Ok(shipped)`, so this is
+            // only ever *this is not a manifest* - a file somebody wrote that does not parse.
             Err(why) => self.state.trouble = Some(why.to_string()),
         }
     }
@@ -1849,10 +1863,13 @@ impl App {
         }
 
         Self::storage_table(ui, &report);
-        if let Some(id) = Self::process_list(ui, &report, idle)
+        if let Some(act) = Self::process_list(ui, &report, idle)
             && let Some(target) = self.state.target().cloned()
         {
-            self.state.begin(Job::CloseTitle(target, id));
+            match act {
+                ProcAction::CloseTitle(id) => self.state.begin(Job::CloseTitle(target, id)),
+                ProcAction::EndPid(pid) => self.state.begin(Job::EndProcess(target, pid)),
+            };
         }
     }
 
@@ -1899,16 +1916,19 @@ impl App {
     }
 
     /// What is running, titles first.
-    /// Draws the running processes, and returns the title id whose `close` was pressed.
+    /// Draws the running processes, and returns the action whose button was pressed.
     ///
     /// A value comes back rather than the work being started here, because this is a static
-    /// view with no way to reach the state - the caller, which has both, does the dispatch.
+    /// view with no way to reach the state - the caller, which has both, does the dispatch. A
+    /// title is closed by identity (`close`, every process it owns); anything else is ended by
+    /// pid (`end`, the one process) - the by-title and by-pid halves of the same primitive, the
+    /// same split as `pros close` and `pros kill`.
     fn process_list(
         ui: &mut egui::Ui,
         report: &pros_core::system::Report,
         idle: bool,
-    ) -> Option<String> {
-        let mut close: Option<String> = None;
+    ) -> Option<ProcAction> {
+        let mut act: Option<ProcAction> = None;
         let titles: Vec<&pros_core::system::Process> = report
             .processes
             .iter()
@@ -1931,7 +1951,7 @@ impl App {
                         .on_disabled_hover_text("busy")
                         .clicked()
                     {
-                        close = Some(one.title.clone());
+                        act = Some(ProcAction::CloseTitle(one.title.clone()));
                     }
                     ui.monospace(&one.title);
                     ui.label(&one.command);
@@ -1946,6 +1966,19 @@ impl App {
                             continue;
                         }
                         ui.horizontal(|ui| {
+                            // A payload or system process has no title to close, so it is ended
+                            // by pid - the case `pros kill` answers, and the reason a raw shell
+                            // `kill` was reached for before.
+                            if ui
+                                .add_enabled(idle, egui::Button::new("end").small())
+                                .on_hover_text(
+                                    "end this process by pid (SIGKILL, waking it first if stopped)",
+                                )
+                                .on_disabled_hover_text("busy")
+                                .clicked()
+                            {
+                                act = Some(ProcAction::EndPid(one.pid.clone()));
+                            }
                             ui.weak(&one.pid);
                             ui.label(&one.command);
                             ui.weak(&one.state);
@@ -1953,7 +1986,7 @@ impl App {
                     }
                 });
         }
-        close
+        act
     }
 
     /// What the target loads at startup, and the manager's settings.
@@ -2118,6 +2151,10 @@ impl App {
             ),
             preset,
             notes,
+            // Reading the payload order costs nothing - it is the list already on screen - but the
+            // files the chain should carry are a round trip, so the panel opens now and they fill
+            // in when the read below returns. Nothing is written while this is set.
+            capturing: true,
             disabled,
             into: pros_core::recovery::baseline::path().map_or_else(
                 || "nowhere on this machine".to_owned(),
@@ -2129,6 +2166,14 @@ impl App {
                 .map(|one| one.name)
                 .collect(),
         });
+        // **The other half of the export.** Reads the declared companion files off the target so
+        // the chain carries them; folded into the panel above when it returns. If nothing is
+        // declared to capture, the read comes back empty at once and the panel simply says so.
+        if let Some(target) = self.state.target().cloned() {
+            self.state.queue(Job::CaptureConfig(target));
+        } else if let Some(export) = self.state.exporting.as_mut() {
+            export.capturing = false;
+        }
     }
 
     /// What would be written down, where, and what it could not know.
@@ -2164,6 +2209,29 @@ impl App {
                 egui::Color32::from_rgb(230, 160, 90),
                 format!("there is already a custom preset called {name}, and this replaces it."),
             );
+        }
+    }
+
+    /// **The files the chain carries beside its list.** A settings file read off the target, put
+    /// back verbatim on deploy. While the read is still out the panel says so; when it has
+    /// returned it shows exactly what will be stored, by path and size, because a chain that
+    /// carries a copy of somebody's settings should show it before it is written.
+    fn export_files_shown(ui: &mut egui::Ui, export: &crate::state::Exporting) {
+        ui.add_space(4.0);
+        if export.capturing {
+            ui.weak("    reading the files this chain carries...");
+        } else if export.preset.files.is_empty() {
+            ui.weak("    no settings files carried - just the payload order");
+        } else {
+            ui.label("and it carries these files, put back as they are on deploy:");
+            for file in &export.preset.files {
+                ui.weak(format!(
+                    "    {} - {} ({} bytes)",
+                    file.label,
+                    file.path,
+                    file.content.len()
+                ));
+            }
         }
     }
 
@@ -2219,6 +2287,9 @@ impl App {
                 }
             ));
         }
+
+        Self::export_files_shown(ui, export);
+
         if !export.notes.is_empty() {
             ui.add_space(4.0);
             ui.colored_label(
@@ -2233,10 +2304,18 @@ impl App {
         ui.add_space(6.0);
         let mut write_it = false;
         let mut drop_it = false;
+        // **Not while the files are still being read.** A chain written half way through the
+        // capture would carry the list and not the files, which is the export this whole panel
+        // exists to avoid - one somebody believes is complete and is not.
+        let ready = usable && !export.capturing;
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(usable, egui::Button::new("write it"))
-                .on_disabled_hover_text("give it a one-word name first")
+                .add_enabled(ready, egui::Button::new("write it"))
+                .on_disabled_hover_text(if export.capturing {
+                    "still reading the files this chain carries"
+                } else {
+                    "give it a one-word name first"
+                })
                 .clicked()
             {
                 write_it = true;
@@ -3583,11 +3662,13 @@ impl App {
                 let suggested = refusal.suggested_path.clone();
                 if ui
                     .button(format!("Use '{suggested}' instead"))
-                    .on_hover_text("copy to the canonical homebrew directory scanned by the console")
+                    .on_hover_text(
+                        "copy to the canonical homebrew directory scanned by the console",
+                    )
                     .clicked()
                     && let Some(target) = self.state.target().cloned()
                 {
-                    self.state.library_path = refusal.suggested_path.clone();
+                    self.state.library_path.clone_from(&refusal.suggested_path);
                     self.state.guard_refusal = None;
                     self.state.begin(Job::Restore(
                         target,
@@ -5043,6 +5124,16 @@ impl App {
                 // beside the list, not the list, and is a no-op when autoload is already on.
                 Step::Enable { into: _ } => {
                     self.state.queue(Job::EnableAutoload(target.clone()));
+                    queued += 1;
+                }
+                // Put a file the chain carries back, verbatim. Queued like a transfer: it writes a
+                // file beside the list, not the list, and carries its own bytes to its own path.
+                Step::Place { into, content } => {
+                    self.state.queue(Job::PlaceFile(
+                        target.clone(),
+                        into.clone(),
+                        content.clone(),
+                    ));
                     queued += 1;
                 }
             }
