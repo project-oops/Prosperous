@@ -238,49 +238,6 @@ fn walk(
     Ok(())
 }
 
-/// Returns the uncompressed ELF payload size if `bytes` begins with a SELF container.
-///
-/// On jailbroken consoles running kstuff, the kernel VFS hook transparently unwraps fake-signed
-/// SELFs on file access (`stat()`, `read()`), causing FTP `SIZE` to report the uncompressed ELF
-/// payload size (the max segment end in the embedded ELF program headers) rather than the
-/// container byte count on disk.
-fn unwrapped_self_size(bytes: &[u8]) -> Option<u64> {
-    if bytes.len() < 0x20 {
-        return None;
-    }
-    let magic = &bytes[0..4];
-    // Orbis (\x54\x14\xF5\xEE) or Prospero (\x4F\x15\x3D\x1D) SELF
-    if magic != [0x4F, 0x15, 0x3D, 0x1D] && magic != [0x54, 0x14, 0xF5, 0xEE] {
-        return None;
-    }
-    let count = u16::from_le_bytes(bytes.get(0x18..0x1A)?.try_into().ok()?);
-    let elf_hdr_off = 0x20_usize.checked_add((count as usize).checked_mul(32)?)?;
-    let elf_hdr = bytes.get(elf_hdr_off..)?;
-    if elf_hdr.get(..4)? != b"\x7fELF" {
-        return None;
-    }
-    let e_phoff = usize::try_from(u64::from_le_bytes(elf_hdr.get(0x20..0x28)?.try_into().ok()?)).ok()?;
-    let e_phentsize = usize::from(u16::from_le_bytes(elf_hdr.get(0x36..0x38)?.try_into().ok()?));
-    let e_phnum = usize::from(u16::from_le_bytes(elf_hdr.get(0x38..0x3A)?.try_into().ok()?));
-
-    let mut max_end = 0_u64;
-    for i in 0..e_phnum {
-        let ph_start = elf_hdr_off.checked_add(e_phoff)?.checked_add(i.checked_mul(e_phentsize)?)?;
-        let ph = bytes.get(ph_start..ph_start.checked_add(e_phentsize)?)?;
-        let p_offset = u64::from_le_bytes(ph.get(8..16)?.try_into().ok()?);
-        let p_filesz = u64::from_le_bytes(ph.get(32..40)?.try_into().ok()?);
-        let end = p_offset.checked_add(p_filesz)?;
-        if end > max_end {
-            max_end = end;
-        }
-    }
-    if max_end > 0 {
-        Some(max_end)
-    } else {
-        None
-    }
-}
-
 /// Puts a local folder back onto the target.
 ///
 /// Directories are made on the way down, and one that already exists is not a failure - see
@@ -332,47 +289,58 @@ pub fn upload(
         let source = from.join(&relative);
         match std::fs::read(&source) {
             Ok(bytes) => match session.store(&there, &bytes) {
-                // **A store the server accepted is not yet a file replaced.** The bytes are read
-                // back as a size and compared: a target that has the title mounted, or an overlay
-                // that swallows the write, leaves the old file in place while `STOR` still
-                // completes - and a restore that trusted the reply then reported an `eboot.bin`
-                // written that was untouched, the failure that sent someone chasing the wrong
-                // thing. A mismatch is recorded as not-copied, so the summary is incomplete and
-                // the caller fails rather than claims success.
+                // **A store the server accepted is not yet a file replaced.** The size is read
+                // back and checked: a target that has the title mounted, or an overlay that
+                // swallows the write, leaves the old file in place while `STOR` still completes,
+                // and a restore that trusted the reply then reported a file written that was not.
                 //
-                // Note on fake-signed SELFs: On jailbroken consoles running kstuff, the kernel VFS
-                // hook transparently unwraps fake-signed SELFs on access, so `stat()` / `SIZE` reports
-                // the uncompressed ELF payload size (stated at offset 0x10) rather than the container size.
-                Ok(()) => match session.size(&there) {
-                    Ok(there_bytes)
-                        if there_bytes == bytes.len() as u64
-                            || unwrapped_self_size(&bytes) == Some(there_bytes) =>
-                    {
-                        summary.files += 1;
-                        summary.bytes += bytes.len() as u64;
-                        watch(&Progress {
-                            files: summary.files,
-                            bytes: summary.bytes,
-                            current: there.clone(),
-                        });
+                // **A SELF container does not keep its sent size, and must not be compared to
+                // it.** On a jailbroken console the kernel VFS hook unwraps a fake-signed SELF on
+                // access, so `SIZE` reports the decrypted ELF payload - a legitimately different,
+                // usually larger number - and comparing it to the bytes sent condemns a deploy
+                // that worked (oops-mesa REQ-20260917T1500Z-3e57). That unwrapped size cannot be
+                // recovered from the container here: the kernel presents the whole decrypted
+                // file, not a sum this side can compute from the segment table, and
+                // reimplementing the SELF+ELF layout to guess it is the format-reinvention
+                // principle 6 exists to refuse. So for a container the check is *presence* - a
+                // size came back, so a file is there - which still catches a store that landed
+                // nothing. A plain file is size-checked exactly, and a mismatch is not-copied.
+                Ok(()) => {
+                    let sent = bytes.len() as u64;
+                    // The four bytes at offset zero, asked of SELFish: a SELF container for either
+                    // generation (which the target unwraps), or not (an ELF or anything else,
+                    // which it stores as-is).
+                    let is_container = bytes
+                        .get(..4)
+                        .and_then(|head| <[u8; 4]>::try_from(head).ok())
+                        .and_then(selfish_abi::Generation::from_container_magic)
+                        .is_some();
+                    match session.size(&there) {
+                        Ok(there_bytes) if is_container || there_bytes == sent => {
+                            summary.files += 1;
+                            summary.bytes += sent;
+                            watch(&Progress {
+                                files: summary.files,
+                                bytes: summary.bytes,
+                                current: there.clone(),
+                            });
+                        }
+                        Ok(there_bytes) => summary.skipped.push(Skipped {
+                            why: format!(
+                                "sent {sent} bytes but the target reports {there_bytes} \
+                                 afterwards - it was not replaced (is the title mounted?)"
+                            ),
+                            path: there,
+                        }),
+                        Err(why) => summary.skipped.push(Skipped {
+                            why: format!(
+                                "sent {sent} bytes but the target could not confirm the size \
+                                 afterwards, so it is not known to have landed: {why}"
+                            ),
+                            path: there,
+                        }),
                     }
-                    Ok(there_bytes) => summary.skipped.push(Skipped {
-                        why: format!(
-                            "sent {} bytes but the target reports {there_bytes} afterwards - it \
-                             was not replaced (is the title mounted?)",
-                            bytes.len()
-                        ),
-                        path: there,
-                    }),
-                    Err(why) => summary.skipped.push(Skipped {
-                        why: format!(
-                            "sent {} bytes but the target could not confirm the size afterwards, \
-                             so it is not known to have landed: {why}",
-                            bytes.len()
-                        ),
-                        path: there,
-                    }),
-                },
+                }
                 Err(why) => summary.skipped.push(Skipped {
                     path: there,
                     why: why.to_string(),
@@ -779,6 +747,100 @@ mod tests {
                 .any(|one| one.path.ends_with("eboot.bin") && one.why.contains("not replaced")),
             "the summary should name the file that was not replaced: {:?}",
             summary.skipped
+        );
+        let _ = std::fs::remove_dir_all(&from);
+    }
+
+    /// **A SELF container the target unwraps is not called incomplete.** The console's VFS hook
+    /// unwraps a fake-signed SELF on access, so `SIZE` reports the decrypted payload - a size that
+    /// legitimately differs from the container that was sent. A restore of one must still report
+    /// complete, because the file is there and its prefix says the target will have changed its
+    /// size (oops-mesa REQ-20260917T1500Z-3e57). Modelled with a target that reports a different
+    /// size for the path than was sent, and a sent file carrying the SELF magic SELFish knows.
+    #[test]
+    fn a_self_container_the_target_unwraps_is_not_called_incomplete() {
+        use pros_link::fake::{Behaviour, Fake, Store};
+        use pros_link::files::Session;
+
+        // The target already holds a different-sized file at the path and swallows the write, so
+        // `SIZE` reports that different size afterwards - which is what an unwrap looks like from
+        // here: the bytes on the target are not the bytes that were sent.
+        let contents = Store::new(&[("/data/homebrew/MESA00001/libc.prx", &[0_u8; 200])]);
+        let fake = Fake::start(Behaviour::Files {
+            contents,
+            claims: [127, 0, 0, 1],
+            binary: true,
+            swallows_stores: true,
+        })
+        .expect("the fake binds");
+
+        // A file that begins with the SELF container magic SELFish defines, so the transfer knows
+        // the target will unwrap it and must not compare its size.
+        let mut wrapped = selfish_abi::Generation::Prospero.container_magic().to_vec();
+        wrapped.extend_from_slice(b"a fake-signed SELF, smaller than its unwrapped payload");
+        let from = scratch("self-unwrapped");
+        std::fs::create_dir_all(&from).expect("a source folder");
+        std::fs::write(from.join("libc.prx"), &wrapped).expect("a source file");
+
+        let mut session = Session::open_at(fake.address(), fake.port()).expect("the fake logs in");
+        let summary = upload(
+            &mut session,
+            &from,
+            "/data/homebrew/MESA00001",
+            &mut |_| {},
+            &|| false,
+        )
+        .expect("the upload runs to the end");
+        session.close();
+
+        assert_eq!(summary.files, 1, "the container is present and counted");
+        assert!(
+            summary.is_complete(),
+            "a SELF the target unwraps must not be called incomplete: {:?}",
+            summary.skipped
+        );
+        let _ = std::fs::remove_dir_all(&from);
+    }
+
+    /// **A SELF container that did not land at all is still caught.** Skipping the size *value*
+    /// for a container is not skipping the check: presence is still required. A store the target
+    /// acknowledged and kept nothing - no file at the path afterwards - is not-copied, so the SELF
+    /// exemption cannot be used to wave through a transfer that vanished.
+    #[test]
+    fn a_self_container_that_did_not_land_at_all_is_still_caught() {
+        use pros_link::fake::{Behaviour, Fake, Store};
+        use pros_link::files::Session;
+
+        // Nothing at the path, and the write is swallowed, so `SIZE` finds no file afterwards.
+        let fake = Fake::start(Behaviour::Files {
+            contents: Store::new(&[]),
+            claims: [127, 0, 0, 1],
+            binary: true,
+            swallows_stores: true,
+        })
+        .expect("the fake binds");
+
+        let mut wrapped = selfish_abi::Generation::Prospero.container_magic().to_vec();
+        wrapped.extend_from_slice(b"a container that will not land");
+        let from = scratch("self-vanished");
+        std::fs::create_dir_all(&from).expect("a source folder");
+        std::fs::write(from.join("eboot.bin"), &wrapped).expect("a source file");
+
+        let mut session = Session::open_at(fake.address(), fake.port()).expect("the fake logs in");
+        let summary = upload(
+            &mut session,
+            &from,
+            "/data/homebrew/MESA00001",
+            &mut |_| {},
+            &|| false,
+        )
+        .expect("the upload runs to the end");
+        session.close();
+
+        assert_eq!(summary.files, 0, "nothing landed, so nothing is copied");
+        assert!(
+            !summary.is_complete(),
+            "a container that vanished must still be caught, not waved through as a SELF"
         );
         let _ = std::fs::remove_dir_all(&from);
     }

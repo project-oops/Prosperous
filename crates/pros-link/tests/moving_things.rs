@@ -239,6 +239,21 @@ fn a_stored_files_size_reads_back() {
     session.close();
 }
 
+/// The target answers `MKD` with `226 Directory created`, and that is a made directory, not a
+/// refusal. `pros restore` read the non-standard `226` as an error once and called a clean upload
+/// incomplete over it (oops-apps REQ-20260911T1030Z-c14f); `make_directory` accepts any 2xx.
+#[test]
+fn a_directory_the_target_makes_with_226_is_not_a_refusal() {
+    let contents = Store::new(&[]);
+    let fake = files_fake(&contents, [127, 0, 0, 1], true);
+
+    let mut session = Session::open_at(fake.address(), fake.port()).expect("the fake logs in");
+    session
+        .make_directory("/data/homebrew/MESA00001")
+        .expect("226 is a made directory, not a refusal");
+    session.close();
+}
+
 /// Starts a fake file service over the given contents.
 fn files_fake(contents: &Store, claims: [u8; 4], binary: bool) -> Fake {
     Fake::start(Behaviour::Files {

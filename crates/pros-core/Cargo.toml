@@ -45,6 +45,10 @@ sha2 = "0.10"
 # platform format belongs in SELFish, so the reader lives there and `sfo` here is only the
 # in-place writer and the account rendering built over it. (D028)
 selfish-title = { workspace = true }
+# For `Generation::from_container_magic`: recognising a SELF container from its first four
+# bytes, so a transfer can tell that the target will unwrap it and its size will change. The
+# format is SELFish's; measuring that the target unwraps on store is Prosperous's (principle 6).
+selfish-abi = { workspace = true }
 
 [build-dependencies]
 # The other half of the same crate: `emit` runs at build time, `stamp!` at run time.

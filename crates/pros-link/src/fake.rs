@@ -447,6 +447,11 @@ fn serve_files(
                 Some(bytes) => say(&mut writing, &format!("213 {}", bytes.len())),
                 None => say(&mut writing, "550 no such file"),
             },
+            // The measured target's ftpsrv answers `MKD` with `226 Directory created`, not the
+            // standard `257` - which a client must read as success, not a refusal (oops-apps
+            // REQ-20260911T1030Z-c14f). There is no directory tree here to change, so it only
+            // acks, in this target's own words.
+            "MKD" => say(&mut writing, "226 Directory created"),
             "QUIT" => {
                 say(&mut writing, "221 goodbye");
                 return;

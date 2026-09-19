@@ -1,4 +1,29 @@
 
+## The size check condemned every correct SELF deploy; it now asks presence, not size
+
+D031's post-store size check - "sent N bytes, target reports N, so it landed" - was wrong for the
+files that matter most here. A jailbroken console unwraps a fake-signed SELF on access, so `SIZE`
+returns the decrypted ELF payload, a different (larger) number than the container that was sent.
+The check called every correct SELF restore "incomplete" (oops-mesa REQ-20260917T1500Z-3e57), and
+that false alarm is what made a working `restore` look like it left the old `eboot.bin` in place -
+the very reading that sent last session down the wrong path and got raw ELFs hand-pushed around
+SELFish. My own D031 fix, in other words, manufactured the symptom the session before it chased.
+
+The fix splits on the sent file's first four bytes, asked of SELFish
+(`selfish_abi::Generation::from_container_magic`, zero-dependency, taken directly): a **container**
+is verified by *presence* (a size came back, so a file is there - which still catches a store that
+landed nothing), and only a **plain file** is size-checked exactly. A prior attempt had tried to
+*compute* the unwrapped size by hand-walking the SELF and ELF headers in `transfer.rs`; it was both
+wrong (the kernel presents the whole decrypted file, not the max segment end) and a reimplementation
+of a format that is SELFish's to know - the principle-6 violation removed with it (D032). Tests
+cover all three: a SELF whose target size differs is complete, a SELF that vanished is still caught,
+a plain file that vanished is still caught.
+
+Also resolved in passing: **oops-apps REQ-20260911T1030Z-c14f** - `make_directory` treating the
+target's `226 Directory created` as a refusal. Already fixed by the earlier generalisation from
+`257|521|550` to `succeeded()` (any 2xx); now proven by a test, and the fake answers `MKD` with the
+`226` the real target uses so the path is exercised.
+
 ## Two staging bugs the same restore surfaced: an id rewrite and a store that lied
 
 A restore to `/data/homebrew/MESA00001` landed at `/data/homebrew/PPSA00001`, on top of an

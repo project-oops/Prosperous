@@ -47,6 +47,10 @@ oops-paths = { path = "../oops-libs/crates/oops-paths" }
 # Prosperous reads through it rather than keeping a second copy of the layout. Path while
 # nothing is published, like the `oops-*` crates above. (D028)
 selfish-title = { path = "../selfish/crates/selfish-title" }
+# The ABI constants only - the container magic that tells a SELF from an ELF. Zero-dependency,
+# and taken directly rather than through `selfish-title` because the one thing needed here is
+# "is this a container the target will unwrap", which is a magic-byte question, not a parse.
+selfish-abi = { path = "../selfish/crates/selfish-abi" }
 
 # GUI. Immediate-mode, which suits a panel that is redrawn wholesale every time a check
 # comes back rather than edited field by field.
