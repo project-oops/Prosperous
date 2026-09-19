@@ -3652,7 +3652,7 @@ impl App {
             let amber = egui::Color32::from_rgb(210, 190, 120);
             ui.colored_label(
                 amber,
-                "not copied: title destination is inert or identifier is incompatible",
+                "not copied: the destination is a system path the console silently ignores",
             );
             ui.small(format!("source      {}", refusal.from.display()));
             ui.small(format!("target      {}", refusal.target_path));

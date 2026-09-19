@@ -291,6 +291,7 @@ fn the_target_can_be_asked_for_its_own_repository() {
             // target, not what the target believes about itself.
             claims: [10, 0, 0, 1],
             binary: true,
+            swallows_stores: false,
         },
     )
     .unwrap_or_else(|error| panic!("port {} is already held here: {error}", file_service.port));

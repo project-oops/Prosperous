@@ -1,4 +1,35 @@
 
+## Two staging bugs the same restore surfaced: an id rewrite and a store that lied
+
+A restore to `/data/homebrew/MESA00001` landed at `/data/homebrew/PPSA00001`, on top of an
+existing title, and it reported success while the console's `eboot.bin` kept its old size. One
+click, two independent defects, both in the staging path, both now fixed.
+
+**The guard rewrote a title id it was never asked to (D030).** `guard::check` had grown a second
+job beside catching an inert `/user/app` destination: it judged the title's *prefix*, and any id
+not `PPSA`/`CUSA`/`FAKE` was rewritten to `PPSA<suffix>` - so `MESA00001` became `PPSA00001`, a
+Sony id nobody asked for that collided with a real title, and `-y` accepted the rewritten path. A
+prefix is not a defect and the homebrew folder is where a non-Sony id belongs, so any destination
+that is not inert is now accepted as written, the redirect for an inert one keeps the id verbatim,
+and `sanitize_title_id`/`is_supported_prefix`/`SUPPORTED_PREFIXES` are gone. The prefix rule was
+*reasoned*, not measured - the module asserted a ShadowMountPlus constraint nothing here had
+measured - and a reasoned default that overwrites a title on `-y` is the plausible-wrong-default
+this project exists to refuse.
+
+**A `STOR` the target acked was counted as a file, replaced or not (D031).** `upload` trusted the
+completion code. A mounted title answers `226` and keeps the old bytes, so the restore counted
+seven files and replaced none of them - the size on screen was the earlier `pros push`, not what
+restore claimed. Now each store is followed by a `SIZE` read (`Session::size`, new in `pros-link`)
+and a mismatch is recorded as not-copied, so the summary is incomplete and the caller exits
+non-zero naming the file, instead of printing success. `say::copied` and the window already failed
+on an incomplete summary; the gap was upstream, in believing the reply.
+
+The surprise worth keeping: **the fake already knew.** Its `Store` note says in as many words that
+"a store that worked and a store that reported success are different things, and only the contents
+afterwards tell them apart" - so the fake grew a `swallows_stores` mode that acks a write and keeps
+nothing, and the new test drives exactly the mounted-title failure through it. The transport had
+been trusting the reply its own fake was built to warn about.
+
 ## The oops-apps payloads and titles join the catalogue, by their relative paths
 
 The payloads pane reads the manifest, not the chains file, so a payload named only in `chains.json`

@@ -132,6 +132,15 @@ pub enum Behaviour {
         /// A server that says no is the interesting case: continuing anyway is a transfer
         /// that arrives with its bytes quietly edited.
         binary: bool,
+        /// Whether a `STOR` is acknowledged but kept nothing.
+        ///
+        /// **The fault worth having a fake for**, and the one the [`Store`] note names: a store
+        /// that reports success and a store that happened are different things. A real target
+        /// with the title mounted, or an overlay that swallows the write, answers `226` and
+        /// leaves the old file in place - so a client that trusts the reply reports a file
+        /// replaced that was not. With this set, the fake does exactly that: it drains the data
+        /// connection, says `226`, and does not keep what arrived.
+        swallows_stores: bool,
     },
     /// A web service answering one request.
     ///
@@ -342,7 +351,8 @@ fn handle(mut stream: TcpStream, behaviour: &Behaviour, stop: &Arc<AtomicBool>) 
             contents,
             claims,
             binary,
-        } => serve_files(stream, contents, *claims, *binary, stop),
+            swallows_stores,
+        } => serve_files(stream, contents, *claims, *binary, *swallows_stores, stop),
         Behaviour::Serves {
             status,
             body,
@@ -357,6 +367,7 @@ fn serve_files(
     contents: &Store,
     claims: [u8; 4],
     binary: bool,
+    swallows_stores: bool,
     stop: &Arc<AtomicBool>,
 ) {
     // Long enough that a client thinking between commands is not mistaken for one that
@@ -426,9 +437,16 @@ fn serve_files(
                     &verb,
                     &argument,
                     contents,
+                    swallows_stores,
                     &mut say,
                 );
             }
+            // A control-channel reply, no data connection: the size of what was stored, so a
+            // client can confirm a `STOR` actually landed. `213 <n>`, or 550 when it is not here.
+            "SIZE" => match contents.get(&argument) {
+                Some(bytes) => say(&mut writing, &format!("213 {}", bytes.len())),
+                None => say(&mut writing, "550 no such file"),
+            },
             "QUIT" => {
                 say(&mut writing, "221 goodbye");
                 return;
@@ -445,6 +463,7 @@ fn transfer(
     verb: &str,
     argument: &str,
     contents: &Store,
+    swallows_stores: bool,
     say: &mut impl FnMut(&mut TcpStream, &str),
 ) {
     // A missing file is answered before the transfer starts, because that is when a real
@@ -481,7 +500,11 @@ fn transfer(
         _ => {
             let mut bytes = Vec::new();
             let _ = data.read_to_end(&mut bytes);
-            contents.put(argument, bytes);
+            // A server that swallows the write drains the connection and keeps nothing, so the
+            // old file - or no file - is what a size check finds afterwards.
+            if !swallows_stores {
+                contents.put(argument, bytes);
+            }
         }
     }
     drop(data);

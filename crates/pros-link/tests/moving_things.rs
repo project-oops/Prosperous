@@ -211,12 +211,41 @@ fn a_status_that_is_not_success_carries_the_servers_own_words() {
     }
 }
 
+/// A stored file's size reads back, and a missing one is a refusal.
+///
+/// This is what a copy compares against to know a `STOR` actually landed rather than only being
+/// acknowledged - the check the restore-that-claimed-success bug needed and did not have.
+#[test]
+fn a_stored_files_size_reads_back() {
+    let contents = Store::new(&[]);
+    let fake = files_fake(&contents, [127, 0, 0, 1], true);
+
+    let mut session = Session::open_at(fake.address(), fake.port()).expect("the fake logs in");
+    session
+        .store("sent.bin", b"nineteen bytes here")
+        .expect("the fake accepts it");
+    assert_eq!(
+        session.size("sent.bin").expect("a size comes back"),
+        19,
+        "the size read back is not the size sent"
+    );
+    let missing = session
+        .size("not-here.bin")
+        .expect_err("a file that is not there has no size");
+    assert!(
+        matches!(missing, Error::Rejected { .. }),
+        "a missing size should be a refusal, got {missing:?}"
+    );
+    session.close();
+}
+
 /// Starts a fake file service over the given contents.
 fn files_fake(contents: &Store, claims: [u8; 4], binary: bool) -> Fake {
     Fake::start(Behaviour::Files {
         contents: contents.clone(),
         claims,
         binary,
+        swallows_stores: false,
     })
     .expect("the fake binds")
 }

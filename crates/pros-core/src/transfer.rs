@@ -238,6 +238,49 @@ fn walk(
     Ok(())
 }
 
+/// Returns the uncompressed ELF payload size if `bytes` begins with a SELF container.
+///
+/// On jailbroken consoles running kstuff, the kernel VFS hook transparently unwraps fake-signed
+/// SELFs on file access (`stat()`, `read()`), causing FTP `SIZE` to report the uncompressed ELF
+/// payload size (the max segment end in the embedded ELF program headers) rather than the
+/// container byte count on disk.
+fn unwrapped_self_size(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() < 0x20 {
+        return None;
+    }
+    let magic = &bytes[0..4];
+    // Orbis (\x54\x14\xF5\xEE) or Prospero (\x4F\x15\x3D\x1D) SELF
+    if magic != [0x4F, 0x15, 0x3D, 0x1D] && magic != [0x54, 0x14, 0xF5, 0xEE] {
+        return None;
+    }
+    let count = u16::from_le_bytes(bytes.get(0x18..0x1A)?.try_into().ok()?);
+    let elf_hdr_off = 0x20_usize.checked_add((count as usize).checked_mul(32)?)?;
+    let elf_hdr = bytes.get(elf_hdr_off..)?;
+    if elf_hdr.get(..4)? != b"\x7fELF" {
+        return None;
+    }
+    let e_phoff = usize::try_from(u64::from_le_bytes(elf_hdr.get(0x20..0x28)?.try_into().ok()?)).ok()?;
+    let e_phentsize = usize::from(u16::from_le_bytes(elf_hdr.get(0x36..0x38)?.try_into().ok()?));
+    let e_phnum = usize::from(u16::from_le_bytes(elf_hdr.get(0x38..0x3A)?.try_into().ok()?));
+
+    let mut max_end = 0_u64;
+    for i in 0..e_phnum {
+        let ph_start = elf_hdr_off.checked_add(e_phoff)?.checked_add(i.checked_mul(e_phentsize)?)?;
+        let ph = bytes.get(ph_start..ph_start.checked_add(e_phentsize)?)?;
+        let p_offset = u64::from_le_bytes(ph.get(8..16)?.try_into().ok()?);
+        let p_filesz = u64::from_le_bytes(ph.get(32..40)?.try_into().ok()?);
+        let end = p_offset.checked_add(p_filesz)?;
+        if end > max_end {
+            max_end = end;
+        }
+    }
+    if max_end > 0 {
+        Some(max_end)
+    } else {
+        None
+    }
+}
+
 /// Puts a local folder back onto the target.
 ///
 /// Directories are made on the way down, and one that already exists is not a failure - see
@@ -289,15 +332,47 @@ pub fn upload(
         let source = from.join(&relative);
         match std::fs::read(&source) {
             Ok(bytes) => match session.store(&there, &bytes) {
-                Ok(()) => {
-                    summary.files += 1;
-                    summary.bytes += bytes.len() as u64;
-                    watch(&Progress {
-                        files: summary.files,
-                        bytes: summary.bytes,
-                        current: there.clone(),
-                    });
-                }
+                // **A store the server accepted is not yet a file replaced.** The bytes are read
+                // back as a size and compared: a target that has the title mounted, or an overlay
+                // that swallows the write, leaves the old file in place while `STOR` still
+                // completes - and a restore that trusted the reply then reported an `eboot.bin`
+                // written that was untouched, the failure that sent someone chasing the wrong
+                // thing. A mismatch is recorded as not-copied, so the summary is incomplete and
+                // the caller fails rather than claims success.
+                //
+                // Note on fake-signed SELFs: On jailbroken consoles running kstuff, the kernel VFS
+                // hook transparently unwraps fake-signed SELFs on access, so `stat()` / `SIZE` reports
+                // the uncompressed ELF payload size (stated at offset 0x10) rather than the container size.
+                Ok(()) => match session.size(&there) {
+                    Ok(there_bytes)
+                        if there_bytes == bytes.len() as u64
+                            || unwrapped_self_size(&bytes) == Some(there_bytes) =>
+                    {
+                        summary.files += 1;
+                        summary.bytes += bytes.len() as u64;
+                        watch(&Progress {
+                            files: summary.files,
+                            bytes: summary.bytes,
+                            current: there.clone(),
+                        });
+                    }
+                    Ok(there_bytes) => summary.skipped.push(Skipped {
+                        why: format!(
+                            "sent {} bytes but the target reports {there_bytes} afterwards - it \
+                             was not replaced (is the title mounted?)",
+                            bytes.len()
+                        ),
+                        path: there,
+                    }),
+                    Err(why) => summary.skipped.push(Skipped {
+                        why: format!(
+                            "sent {} bytes but the target could not confirm the size afterwards, \
+                             so it is not known to have landed: {why}",
+                            bytes.len()
+                        ),
+                        path: there,
+                    }),
+                },
                 Err(why) => summary.skipped.push(Skipped {
                     path: there,
                     why: why.to_string(),
@@ -354,7 +429,7 @@ mod tests {
 
     use pros_link::files::{Entry, Kind};
 
-    use super::{DEEPEST, Source, Summary, download};
+    use super::{DEEPEST, Source, Summary, download, upload};
 
     /// A filesystem in memory, so the walk can be checked without a target.
     struct Pretend {
@@ -646,5 +721,65 @@ mod tests {
             "the summary should say it was stopped: {:?}",
             summary.skipped
         );
+    }
+
+    /// **A store the server accepts but does not keep is not a file copied.**
+    ///
+    /// The reported bug: `pros restore` printed success while the on-console `eboot.bin` kept its
+    /// old size. The target acknowledged every `STOR` and replaced nothing - the title was
+    /// mounted - and a restore that trusts the reply reports a backup that is not one. Now the
+    /// size is read back after each store and a mismatch is recorded as not-copied, so the
+    /// summary is incomplete and the caller fails rather than claiming success.
+    #[test]
+    fn a_store_the_target_did_not_keep_is_not_counted_as_copied() {
+        use pros_link::fake::{Behaviour, Fake, Store};
+        use pros_link::files::Session;
+
+        // The target already holds an eboot of a different size and swallows every write, so a
+        // STOR is acknowledged and the old bytes stay - exactly the mounted-title case.
+        let contents = Store::new(&[(
+            "/data/homebrew/MESA00001/eboot.bin",
+            b"the old, larger eboot that will not be replaced",
+        )]);
+        let fake = Fake::start(Behaviour::Files {
+            contents,
+            claims: [127, 0, 0, 1],
+            binary: true,
+            swallows_stores: true,
+        })
+        .expect("the fake binds");
+
+        let from = scratch("not-kept");
+        std::fs::create_dir_all(&from).expect("a source folder");
+        std::fs::write(from.join("eboot.bin"), b"the new eboot").expect("a source file");
+
+        let mut session = Session::open_at(fake.address(), fake.port()).expect("the fake logs in");
+        let summary = upload(
+            &mut session,
+            &from,
+            "/data/homebrew/MESA00001",
+            &mut |_| {},
+            &|| false,
+        )
+        .expect("the upload runs to the end");
+        session.close();
+
+        assert_eq!(
+            summary.files, 0,
+            "nothing actually landed, so nothing is copied"
+        );
+        assert!(
+            !summary.is_complete(),
+            "a restore whose files were not kept must not report itself complete"
+        );
+        assert!(
+            summary
+                .skipped
+                .iter()
+                .any(|one| one.path.ends_with("eboot.bin") && one.why.contains("not replaced")),
+            "the summary should name the file that was not replaced: {:?}",
+            summary.skipped
+        );
+        let _ = std::fs::remove_dir_all(&from);
     }
 }

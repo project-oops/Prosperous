@@ -196,6 +196,36 @@ impl Session {
         Ok(())
     }
 
+    /// The size of a file on the target, in bytes.
+    ///
+    /// # Why a caller wants this after a store
+    ///
+    /// A `STOR` the server accepts is not proof the bytes landed. A file the target has mounted,
+    /// or an overlay that swallows the write, can leave the old file in place while `STOR` still
+    /// completes with a success reply - and a copy that trusts the reply then reports a file
+    /// replaced that was not. The one cheap way to tell is to ask the size back and compare it to
+    /// what was sent; this is that ask.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Rejected`] when the server will not answer - the file is not there, or the
+    /// server does not implement `SIZE`. [`Error::Unintelligible`] when it answers `213` without
+    /// a number, which no caller can do anything with.
+    pub fn size(&mut self, path: &str) -> Result<u64> {
+        let reply = self.command(&format!("SIZE {path}"), &[213])?;
+        // `213 <n>` - the number is the last whitespace-separated token, so a server that pads
+        // the line or adds a word before it is still read.
+        reply
+            .text
+            .split_whitespace()
+            .next_back()
+            .and_then(|token| token.parse::<u64>().ok())
+            .ok_or(Error::Unintelligible {
+                doing: "reading a size".to_owned(),
+                said: reply.text,
+            })
+    }
+
     /// Makes a directory, and is content if it is already there.
     ///
     /// **Already existing is not a failure.** Restoring a folder tree means asking for every

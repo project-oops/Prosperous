@@ -45,6 +45,8 @@ on or after that day and nothing narrower is recoverable. Entries after them car
 | 🟢 | D027 | [Process control is prosperous work, not obSCEne's](decisions/D027-process-control-is-prosperous-work.md) | decided | 2026-09-04 |
 | 🟢 | D028 | [The `param.sfo` reader comes from SELFish; the in-place writer stays](decisions/D028-the-param-sfo-reader-comes-from-selfish.md) | decided | 2026-09-10 |
 | 🟢 | D029 | [A chain carries its files, and which files is data](decisions/D029-a-chain-carries-its-files-and-which.md) | decided | 2026-09-15 |
+| 🟢 | D030 | [The guard routes a location; it never rewrites an identity](decisions/D030-the-guard-routes-a-location-it-never.md) | decided | 2026-09-17 |
+| 🟢 | D031 | [A store the target accepted is not a file copied until its size reads back](decisions/D031-a-store-the-target-accepted-is-not-a.md) | decided | 2026-09-17 |
 
 | | meaning |
 |---|---|
