@@ -153,3 +153,35 @@ whether the pid is gone.
 *ask the target*, a *close* button on each running title, and an *end* button on every other
 process (under "everything else") that ends it by pid. Each leaves the process list showing what
 is running now, because the action reads the target again when it finishes.
+
+## The probe loop in one command
+
+Deploying a homebrew probe, running it, and reading what it prints is one motion done dozens of
+times a session, and it was three commands across two windows: a `restore`, a `launch`, and a
+`logs` in a second terminal. `probe` is the one command:
+
+```bash
+pros probe GLPB00001 ../oops-apps/src/oops-gl/gl1-probe/build/title/GLPB00001
+pros probe GLPB00001 <build dir> --seconds 90     # cap the follow at 90s
+```
+
+It closes the title if it is running, restores the build directory into `/data/homebrew/<id>`
+(overwriting what is there), **waits for the console to register the title** (up to a minute - the
+files land at once, but ShadowMountPlus has to mount and register it before `launch` can resolve
+it), then **attaches the log follower and only then launches** - so nothing the title prints is
+lost in the gap - and **follows its log until the title parks, exits, or a `--seconds` cap
+elapses**, printing each line as it arrives. Two honest limits, both from the platform rather than
+the tool:
+
+- **A finished probe parks rather than exits.** A big-app cannot return from its entry point, so
+  the conforming ending is to print a last line and idle. Such a title never leaves the process
+  list, so the follow ends when the probe prints its park sentinel; failing that, at the
+  `--seconds` cap. A probe that *crashes* is caught at once, because its process is gone.
+- **The close is best-effort.** A parked big-app ignores every signal, so if a previous run is
+  still parked and holding the app slot, the close cannot free it and the launch will say the slot
+  is unavailable. The console's own dashboard Close is what ends a parked title - a signal is the
+  wrong channel for a big-app.
+
+A restore that does not land cleanly stops the loop before the launch, so a half-deployed title is
+never run. This is a command-line verb; the window has the pieces (restore, launch, the log tail)
+as separate actions rather than the one-shot loop.

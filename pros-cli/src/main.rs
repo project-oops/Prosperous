@@ -294,6 +294,28 @@ enum Command {
         #[command(flatten)]
         which: Which,
     },
+    /// Deploy a homebrew title from a local build, launch it, and follow its log until it ends
+    ///
+    /// The probe loop in one command, replacing a hand-run `restore` then `launch` then `logs`:
+    /// close the title if it is running, restore it from a local build into
+    /// `/data/homebrew/<id>` (overwriting what is there), launch it, and stream its log until the
+    /// title leaves the process list - it exited or crashed - or `--seconds` elapses.
+    ///
+    /// A probe that finishes by parking (idling rather than exiting, the conforming ending for a
+    /// big-app) never leaves the process list, so the watch ends at the `--seconds` cap and says
+    /// so. Closing a running title is best-effort: a parked big-app ignores signals, and if it is
+    /// still holding the slot the launch below will say so.
+    Probe {
+        /// Which title. Nine characters, four letters then five digits - `pros titles` lists them
+        id: String,
+        /// The local build directory to restore from - the title tree (`eboot.bin`, `sce_sys`, ...)
+        from: PathBuf,
+        /// Seconds to follow the log before giving up on a title that parks rather than exits
+        #[arg(long, default_value_t = 120)]
+        seconds: u64,
+        #[command(flatten)]
+        which: Which,
+    },
     /// Fetch a payload described by the manifest, and keep it if it is the right one
     Fetch {
         /// Which entry. Omit with --all to fetch everything that can be checked
@@ -419,6 +441,10 @@ impl Command {
             | Self::Backup { .. }
             | Self::Restore { .. }
             | Self::Saves { .. }
+            // Probe needs shsrv (launch/close/ps) and klogsrv (its log) too, but the restore is
+            // its first hard step and the one it cannot begin without - the launch and log
+            // failures surface at their own steps, in their own words.
+            | Self::Probe { .. }
             | Self::Titles { .. } => Some("ftpsrv"),
         }
     }
@@ -547,6 +573,12 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
         Command::RestartUi { which } => restart_ui(which.name.as_deref()),
         Command::Close { id, which } => close(&id, which.name.as_deref()),
         Command::Ps { which } => ps(which.name.as_deref()),
+        Command::Probe {
+            id,
+            from,
+            seconds,
+            which,
+        } => probe(&id, &from, seconds, which.name.as_deref()),
         Command::Kill { pid, which } => kill_pid(&pid, which.name.as_deref()),
         Command::Fetch {
             payload,
@@ -585,13 +617,52 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
 /// A quiet log is reported as a result rather than an error, the same distinction the exit codes
 /// draw: a target that had nothing to say is not a program that failed.
 fn logs(seconds: u64, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    use std::io::Write as _;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     let target = pick(name)?;
     println!("listening to {} for {seconds}s", target.address);
-    let text = pros_link::log::read(&target.link(), Duration::from_secs(seconds))?;
-    if text.trim().is_empty() {
+
+    let (stopper, lines) = pros_link::log::follow(&target.link())?;
+    let stopper = Arc::new(stopper);
+    let stopper_clone = Arc::clone(&stopper);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
+    let done = Arc::new(AtomicBool::new(false));
+    let done_clone = Arc::clone(&done);
+
+    let watcher = std::thread::spawn(move || {
+        while !done_clone.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(200));
+            if done_clone.load(Ordering::Relaxed) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                stopper_clone.stop();
+                break;
+            }
+        }
+    });
+
+    let mut any = false;
+    for line in lines {
+        match line {
+            Ok(l) => {
+                println!("{l}");
+                let _ = std::io::stdout().flush();
+                any = true;
+            }
+            Err(_) => break,
+        }
+    }
+
+    done.store(true, Ordering::Relaxed);
+    stopper.stop();
+    let _ = watcher.join();
+
+    if !any {
         println!("the log was quiet - which is a result, not a failure");
-    } else {
-        print!("{text}");
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -1496,6 +1567,298 @@ fn ps(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
     Ok(ExitCode::SUCCESS)
 }
+
+/// Waits until the target has the title registered so `launch` can resolve it, up to `timeout`.
+///
+/// **The files on disk are not the title being registered.** A restore lands the tree under
+/// `/data/homebrew/<id>` at once, but `ShadowMountPlus` has to mount it and the shell has to register
+/// it before it appears in the appmeta list ([`pros_core::titles::APPMETA`], the same list
+/// `pros titles` reads) and before `launch` will start it. So this polls that list for the id -
+/// which is the very thing that gates the launch - rather than the filesystem, which says yes
+/// immediately and would launch too soon. Returns `true` once the id is listed, `false` if the
+/// timeout elapses first.
+fn wait_for_registration(link: &pros_link::Link, id: &str, timeout: Duration) -> bool {
+    use std::io::Write as _;
+
+    print!("waiting for {id} to register in the title list");
+    let _ = std::io::stdout().flush();
+    let deadline = std::time::Instant::now() + timeout;
+    let listed = loop {
+        // The id is the folder name under appmeta; a listing that fails (the service is not up
+        // yet, say) is simply "not yet", to be retried until the deadline.
+        let there = pros_link::files::list(link, pros_core::titles::APPMETA)
+            .is_ok_and(|entries| entries.iter().any(|e| e.name.eq_ignore_ascii_case(id)));
+        if there {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        print!(".");
+        let _ = std::io::stdout().flush();
+        std::thread::sleep(Duration::from_secs(2));
+    };
+    println!();
+    listed
+}
+
+/// Deploys a homebrew title from a local build, launches it, and follows its log until it ends.
+///
+/// The probe loop in one command. Each step is an existing capability - close, restore, launch,
+/// follow the log - tied together here the way [`logs`] ties its own stream and watcher, because
+/// this is an interactive orchestration and the pieces it stands on are all in `pros-core`. Two
+/// honest limits, stated at the `Probe` variant and again where they bite below: a parked big-app
+/// ignores the close, and a title that parks rather than exits ends the watch at the cap.
+fn probe(
+    id: &str,
+    from: &Path,
+    seconds: u64,
+    name: Option<&str>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    if !pros_core::launch::is_an_app_id(id) {
+        eprintln!("not an application identifier: {id}");
+        eprintln!("nine characters, four letters then five digits, no spaces");
+        return Ok(ExitCode::FAILURE);
+    }
+
+    let target = pick(name)?;
+    let link = target.link();
+    let dest = pros_core::guard::homebrew_path(id);
+
+    // 1. Close it if it is running. **Best-effort.** A parked big-app ignores every signal
+    //    (measured; oops-mesa's b1e4), so this ends a killable process and no more - the launch
+    //    below is what says whether the slot is still held.
+    let listing = pros_link::shell::run(&link, "ps", SETTLE).unwrap_or_default();
+    let running = pros_core::system::processes(&listing);
+    let mine = pros_core::system::of_title(&running, id);
+    if mine.is_empty() {
+        println!("{id} is not running");
+    } else {
+        println!("closing {id} ({} process(es))...", mine.len());
+        for process in &mine {
+            for command in pros_core::system::end(process) {
+                let _ = pros_link::shell::run(&link, &command, SETTLE);
+            }
+        }
+    }
+
+    // 2. Restore the local build into /data/homebrew/<id>, overwriting. A half-landed deploy is
+    //    not launched: `say::copied` prints the count, and its incomplete branch exits non-zero.
+    println!("restoring {} -> {dest}", from.display());
+    let mut session = pros_link::files::Session::open(&link)?;
+    let summary = pros_core::transfer::upload(&mut session, from, &dest, &mut |_| {}, &|| false);
+    session.close();
+    let summary = summary?;
+    let restored = say::copied(&summary, &dest);
+    if !summary.is_complete() {
+        eprintln!("not launching {id} - the deploy did not land cleanly");
+        return Ok(restored);
+    }
+
+    // 3. **Wait for the console to register the title before launching.** The files are on disk
+    //    the moment the restore finishes, but ShadowMountPlus has to mount and register the title
+    //    before it appears in the appmeta list (the one `pros titles` reads) and before `launch`
+    //    will resolve it - and the hand-run recipe only got away with launching straight after a
+    //    restore because typing the second command gave registration a few seconds. This poll is
+    //    that pause made explicit: the appmeta list, up to a minute.
+    if !wait_for_registration(&link, id, Duration::from_secs(60)) {
+        eprintln!(
+            "{id} did not appear in the title list within 60s - not launching. It restored, but \
+             the console has not registered it (ShadowMountPlus may not have mounted it)."
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+    println!("{id} is registered.");
+
+    // 4. **Attach the log follower BEFORE launching.** These probes do their whole job in the
+    //    first second or two and then park silently, so a follower attached *after* the launch
+    //    misses all of it: the output lands in the gap between the launch returning and the stream
+    //    opening, and the run succeeds while its capture is empty (measured, and the reason this
+    //    order matters). The connection is the subscription - `log::follow` returns once it is
+    //    open, and klogsrv buffers what it emits after that - so following first and launching
+    //    second is the fix. `SUBSCRIBE_SETTLE` is a conservative beat so the stream is certainly
+    //    live before the launch it must not miss; it is the same ordering the hand-run recipe got
+    //    with a second window and a sleep.
+    println!("attaching to {id}'s log before launch...");
+    let (stopper, lines) = pros_link::log::follow(&link)?;
+    std::thread::sleep(SUBSCRIBE_SETTLE);
+
+    // 5. Launch it, now that the title is registered and the follower is up to catch it.
+    let said = pros_core::launch::read(&pros_link::shell::run(
+        &link,
+        &pros_core::launch::command(id),
+        SETTLE,
+    )?);
+    println!("launching {id}: {}", said.describe());
+    if !matches!(said, pros_core::launch::Said::Asked(_)) {
+        stopper.stop();
+        eprintln!(
+            "the launch was refused - if a parked title is holding the slot it cannot be closed \
+             by signal (see `pros close`); the console's own dashboard Close ends it"
+        );
+        return Ok(ExitCode::FAILURE);
+    }
+
+    // 6. Follow the attached stream until the title parks, exits, or the cap elapses.
+    println!("following {id} (until it parks, exits, or {seconds}s)...");
+    match follow_stream(stopper, lines, &target, id, seconds) {
+        FollowEnd::Finished => println!(
+            "{id} finished its work and parked - a payload cannot exit, so it idles until the \
+             dashboard Close ends it."
+        ),
+        FollowEnd::Exited => println!("{id} left the process list - it exited or crashed."),
+        FollowEnd::Parked => println!(
+            "reached the {seconds}s cap - {id} is still running (a probe that finished may have \
+             parked; the dashboard Close ends it)."
+        ),
+        FollowEnd::NeverSeen => println!(
+            "reached the {seconds}s cap - {id} was never seen in the process list, so it exited \
+             at once or did not start."
+        ),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// A beat between attaching the log follower and issuing the launch.
+///
+/// **The connection is the subscription** - [`pros_link::log::follow`] returns once the socket to
+/// klogsrv is open, and everything klogsrv emits after that is buffered until it is read, so the
+/// ordering (follow, then launch) is what prevents the loss. This settle is insurance on top of
+/// the ordering, not the mechanism: a conservative margin so the stream is certainly live before a
+/// launch whose output arrives and parks within a second or two, where missing the subscription
+/// loses the whole run. Measured need is sub-second; this is deliberately more.
+const SUBSCRIBE_SETTLE: Duration = Duration::from_secs(3);
+
+/// How a `follow_title` watch ended.
+enum FollowEnd {
+    /// The payload printed its park sentinel - it finished its work and is now idling. The
+    /// only ending that distinguishes "done" from "still going" for a title that cannot exit.
+    Finished,
+    /// The title was seen and then left the process list - it exited or crashed.
+    Exited,
+    /// The cap elapsed with the title still present - a finished probe that parked rather than
+    /// exiting looks exactly like this.
+    Parked,
+    /// The cap elapsed without the title ever appearing - it exited at once or never started.
+    NeverSeen,
+}
+
+/// Streams an already-attached log until the title parks, leaves the process list, or `seconds`
+/// elapse.
+///
+/// **The follower is attached by the caller, before the launch** - see the ordering note in
+/// `probe`. This takes the open stream (`stopper`, `lines`) rather than opening it, so the
+/// subscription is already live by the time the title prints anything.
+///
+/// **Two connections, two services, on purpose.** The stream is klogsrv and the poll is shsrv, so
+/// they do not contend: a background watcher runs `ps` once a second while the foreground drains
+/// the log to stdout, and stopping the stream is what ends the drain. The watcher waits for the
+/// title to *appear* before treating its absence as an exit, so the gap between a launch and the
+/// process showing is never read as a crash.
+fn follow_stream<I>(
+    stopper: pros_link::log::Stopper,
+    lines: I,
+    target: &Target,
+    id: &str,
+    seconds: u64,
+) -> FollowEnd
+where
+    I: Iterator<Item = pros_link::log::Line>,
+{
+    use std::io::Write as _;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let stopper = Arc::new(stopper);
+    let done = Arc::new(AtomicBool::new(false));
+    let exited = Arc::new(AtomicBool::new(false));
+    let seen = Arc::new(AtomicBool::new(false));
+    let (stopper_w, done_w, exited_w, seen_w) = (
+        Arc::clone(&stopper),
+        Arc::clone(&done),
+        Arc::clone(&exited),
+        Arc::clone(&seen),
+    );
+    let target_w = target.clone();
+    let id_w = id.to_owned();
+    let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
+
+    let watcher = std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            if done_w.load(Ordering::Relaxed) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                stopper_w.stop();
+                break;
+            }
+            let ps = pros_link::shell::run(&target_w.link(), "ps", SETTLE).unwrap_or_default();
+            let present =
+                !pros_core::system::of_title(&pros_core::system::processes(&ps), &id_w).is_empty();
+            if present {
+                seen_w.store(true, Ordering::Relaxed);
+            } else if seen_w.load(Ordering::Relaxed) {
+                exited_w.store(true, Ordering::Relaxed);
+                stopper_w.stop();
+                break;
+            }
+        }
+    });
+
+    let mut any = false;
+    let mut finished = false;
+    for line in lines {
+        match line {
+            Ok(l) => {
+                println!("{l}");
+                let _ = std::io::stdout().flush();
+                any = true;
+                // **The payload saying it is done.** A homebrew title cannot exit - `exit`,
+                // `_Exit` and `sceKernelExit` are absent, `_exit` raises `SIGSYS` under a
+                // big-app's credentials, and returning from the entry point faults at zero -
+                // so the conforming ending is to park, and a finished probe is indistinguish-
+                // able from a working one by the process list alone. oops-sdk's
+                // `oops_system_park_until_closed` prints this line once, immediately before it
+                // starts idling, so that a watcher does not have to wait out its whole cap
+                // after a run that is already over. Matched on the tail, not the whole line,
+                // because the log prefixes it with the title and the app id.
+                if l.contains(PARK_SENTINEL) {
+                    finished = true;
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    done.store(true, Ordering::Relaxed);
+    stopper.stop();
+    let _ = watcher.join();
+
+    if !any {
+        println!("the log was quiet while {id} ran - which is a result, not a failure");
+    }
+    if finished {
+        FollowEnd::Finished
+    } else if exited.load(Ordering::Relaxed) {
+        FollowEnd::Exited
+    } else if seen.load(Ordering::Relaxed) {
+        FollowEnd::Parked
+    } else {
+        FollowEnd::NeverSeen
+    }
+}
+
+/// What a payload prints immediately before it parks, from oops-sdk's
+/// `oops_system_park_until_closed`.
+///
+/// **The tag goes inside the brackets, not before the message.** oops-sdk's klog renders
+/// `[<app id>:<tag>] <message>`, so the line on the wire is `[GLPB00001:park] work done` and a
+/// payload with no app id set prints `[park] work done`. This matched `park: work done` when it
+/// first shipped and therefore matched nothing: the sentinel was printed on 2026-09-21 at
+/// 11:47Z and the watch ran to its cap anyway. Matching from the closing bracket covers both
+/// spellings and cannot collide with a title whose own log says "work done".
+const PARK_SENTINEL: &str = "park] work done";
 
 /// Fetches payloads and keeps the ones that are what they claim to be.
 fn fetch(

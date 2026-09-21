@@ -48,6 +48,7 @@ on or after that day and nothing narrower is recoverable. Entries after them car
 | 🟢 | D030 | [The guard routes a location; it never rewrites an identity](decisions/D030-the-guard-routes-a-location-it-never.md) | decided | 2026-09-17 |
 | 🟢 | D031 | [A store the target accepted is not a file copied until its size reads back](decisions/D031-a-store-the-target-accepted-is-not-a.md) | decided | 2026-09-17 |
 | 🟢 | D032 | [A SELF container is verified present, not by size, because the target unwraps it](decisions/D032-a-self-container-is-verified-present.md) | decided | 2026-09-19 |
+| 🟢 | D033 | [The probe loop is one verb, in the CLI, that ends on exit or a cap](decisions/D033-the-probe-loop-is-one-verb-that-ends.md) | decided | 2026-09-21 |
 
 | | meaning |
 |---|---|

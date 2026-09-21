@@ -75,6 +75,17 @@ pub struct Refusal {
     pub remedy: String,
 }
 
+/// Where a homebrew title with this id lives on the target: `/data/homebrew/<id>`.
+///
+/// The one place `ShadowMountPlus` scans, composed with the title's own id and nothing else - so a
+/// caller with a title id need not spell the path, and the spelling lives with the root it is
+/// built from rather than in each caller. The id is used verbatim; this validates nothing, which
+/// is [`check`]'s job.
+#[must_use]
+pub fn homebrew_path(id: &str) -> String {
+    format!("{CANONICAL_HOMEBREW_ROOT}/{id}")
+}
+
 /// Whether a destination path points into an inert system directory.
 #[must_use]
 pub fn is_inert_target_path(path: &str) -> bool {
@@ -214,6 +225,12 @@ mod tests {
     use super::*;
     use std::fs::{File, create_dir_all};
     use std::io::Write;
+
+    #[test]
+    fn a_homebrew_title_path_is_the_scan_root_and_the_id() {
+        assert_eq!(homebrew_path("GLPB00001"), "/data/homebrew/GLPB00001");
+        assert_eq!(homebrew_path("MESA00001"), "/data/homebrew/MESA00001");
+    }
 
     #[test]
     fn inert_path_detection() {

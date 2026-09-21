@@ -1,4 +1,31 @@
 
+## `pros probe`: the deploy-run-watch loop in one command
+
+The probe iteration - `restore` a build, `launch` it, watch `logs` in a second window - was three
+commands across two terminals, run dozens of times a session. `pros probe <id> <build-dir>` is the
+one command: close the title if running, restore into `/data/homebrew/<id>` overwriting, **wait for
+the console to register the title** (poll the `/user/appmeta` list up to a minute - the files land
+at once but ShadowMountPlus has to mount and register it before `launch` resolves it), **attach the
+log follower, then launch**, and follow until the title parks, leaves the process list, or a
+`--seconds` cap elapses. The order matters and the first cut got it wrong - launch then follow -
+which lost everything for a Mesa probe, because it does its whole job in the first second or two
+and parks silently, all inside the gap before the follower attached (measured, oops-mesa,
+2026-09-21). The connection is the subscription, so following first is the fix; a short settle is
+insurance on top of it. Every step is an existing pros-core capability; what is new is the
+interactive tie-together - a background `ps` poll on shsrv while the foreground drains klogsrv -
+which lives in the CLI the way `logs` already keeps its own stream-and-watcher, not in `pros-core`
+(D033). The one pure, shared piece added is `guard::homebrew_path(id)`, so a future GUI "deploy and
+watch" reuses the destination.
+
+Two platform facts shaped the watch, and both are stated in the output rather than hidden. A
+finished big-app **parks** (idles rather than exiting - it cannot return from its entry point), so
+"return when it exits" would wait forever; the watcher waits for the title to appear, stops the
+moment it vanishes (an exit or crash, caught at once), and otherwise ends at the cap saying the
+title is still running - probably parked. And the close is best-effort: a parked big-app ignores
+signals (oops-mesa's b1e4), so if a prior run still holds the slot, the launch reports it unavailable
+rather than the verb pretending. A restore that does not land cleanly stops the loop before the
+launch. CLI-first, like `supervise`/`moonlight`; the GUI has the pieces separately, not the loop.
+
 ## The size check condemned every correct SELF deploy; it now asks presence, not size
 
 D031's post-store size check - "sent N bytes, target reports N, so it landed" - was wrong for the
