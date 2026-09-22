@@ -1115,6 +1115,12 @@ pub(crate) struct State {
     /// the box shows them all again - a filter that discarded what it hid would quietly turn
     /// a diagnostic tool into a lossy one.
     pub(crate) log_filter: String,
+    /// Whether the log filter box is read as a regular expression rather than plain text.
+    ///
+    /// **A view choice, off by default.** Plain substring is what the box has always done and what
+    /// most filtering wants; regex is there for the times a substring cannot say it. Like the
+    /// filter text, it changes the view and never the record.
+    pub(crate) log_regex: bool,
     /// A doctor's plan that has been shown to somebody and not yet agreed to.
     ///
     /// **Nothing here is carried out until this is emptied by a press.** It is the whole of the
@@ -1200,14 +1206,6 @@ impl State {
     #[must_use]
     pub(crate) fn target(&self) -> Option<&Target> {
         self.chosen.and_then(|which| self.targets.get(which))
-    }
-
-    /// The log lines the filter keeps, in order.
-    pub(crate) fn kept_lines(&self) -> impl Iterator<Item = &String> {
-        let wanted = self.log_filter.trim().to_lowercase();
-        self.lines
-            .iter()
-            .filter(move |line| wanted.is_empty() || line.to_lowercase().contains(&wanted))
     }
 
     /// The startup list currently being shown.
@@ -1403,9 +1401,14 @@ impl State {
                 Ending::Stopped
             }
             Done::Copied(summary, into) => Ending::Done(format!(
-                "{} files, {} bytes to {into}{}",
+                "{} files, {} bytes to {into}{}{}",
                 summary.files,
                 summary.bytes,
+                if summary.unchanged > 0 {
+                    format!(", {} unchanged", summary.unchanged)
+                } else {
+                    String::new()
+                },
                 if summary.is_complete() {
                     String::new()
                 } else {
@@ -1515,8 +1518,14 @@ impl State {
                 // a file is trusted at the moment it matters, so it goes where failures go
                 // and says how many.
                 self.said = format!(
-                    "{} files, {} bytes -> {where_to}",
-                    summary.files, summary.bytes
+                    "{} files, {} bytes -> {where_to}{}",
+                    summary.files,
+                    summary.bytes,
+                    if summary.unchanged > 0 {
+                        format!(" ({} unchanged, not re-sent)", summary.unchanged)
+                    } else {
+                        String::new()
+                    }
                 );
                 if !summary.is_complete() {
                     self.trouble = Some(format!(

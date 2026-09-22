@@ -63,7 +63,7 @@ pub fn run_at(address: &str, port: u16, command: &str, settle: Duration) -> Resu
     wire::drain_banner(&mut stream, BANNER);
 
     stream.write_all(command.as_bytes())?;
-    stream.write_all(b"\n")?;
+    stream.write_all(b"\r\n")?;
     stream.flush()?;
 
     wire::read_until_quiet(&mut stream, settle)

@@ -49,6 +49,9 @@ on or after that day and nothing narrower is recoverable. Entries after them car
 | 🟢 | D031 | [A store the target accepted is not a file copied until its size reads back](decisions/D031-a-store-the-target-accepted-is-not-a.md) | decided | 2026-09-17 |
 | 🟢 | D032 | [A SELF container is verified present, not by size, because the target unwraps it](decisions/D032-a-self-container-is-verified-present.md) | decided | 2026-09-19 |
 | 🟢 | D033 | [The probe loop is one verb, in the CLI, that ends on exit or a cap](decisions/D033-the-probe-loop-is-one-verb-that-ends.md) | decided | 2026-09-21 |
+| 🟢 | D034 | [A restore skips a file it already put there unchanged, on a record it keeps itself](decisions/D034-a-restore-does-not-resend-an-unchanged-file.md) | decided | 2026-09-22 |
+| 🟢 | D035 | [The task manager is the panel that already exists, plus a live `pros top`](decisions/D035-the-task-manager-is-the-panel-and-a-live-top.md) | decided | 2026-09-22 |
+| 🟢 | D036 | [The log view is virtualized, its buffer is large, and its filter can be a regex](decisions/D036-the-log-view-is-virtualized-and-filters-by-regex.md) | decided | 2026-09-22 |
 
 | | meaning |
 |---|---|

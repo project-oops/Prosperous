@@ -33,6 +33,8 @@ pub mod chain;
 pub mod check;
 /// Proving bytes are the bytes that were described.
 pub mod checksum;
+/// What was verified landing on a target, so a restore does not re-send an unchanged file.
+pub mod deployed;
 /// Health checks that say what is wrong and exactly what would put it right.
 pub mod doctor;
 /// Getting a payload, by asking something that already knows how.

@@ -29,11 +29,14 @@
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread;
 
-/// How many lines are kept.
+/// How many lines are kept on screen.
 ///
-/// **A bound rather than a belief.** A log left running all afternoon would otherwise grow
-/// without limit, and the oldest lines are the ones nobody is scrolled to.
-const KEPT: usize = 2000;
+/// **Scrollback, not the record.** Every line is also appended to the kept file (below), which
+/// holds the full history and rolls at its own size; this only bounds how far back the *window* can
+/// scroll. The view is virtualized - only the rows on screen are laid out - so a larger buffer
+/// costs the per-line filter pass, not the render, which is why this can be generous where the old
+/// single-text-box view had to stay at two thousand. The oldest lines are dropped first.
+const KEPT: usize = 20_000;
 
 /// A log being followed.
 pub(crate) struct Tail {

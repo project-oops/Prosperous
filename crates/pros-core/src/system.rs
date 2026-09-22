@@ -72,6 +72,27 @@ impl Filesystem {
     }
 }
 
+/// The memory a process is using and the most it has used, in MiB, as `ps` prints them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Memory {
+    /// In use now, MiB, as the target printed it.
+    pub current: String,
+    /// The most it has used, MiB.
+    pub peak: String,
+}
+
+impl Memory {
+    /// The current figure as a number, for sorting a listing by it.
+    ///
+    /// `None` when what the target printed was not a plain number, so a row that cannot be
+    /// ordered sorts as absent rather than as zero - the same reason a missing fact is absent
+    /// rather than blank.
+    #[must_use]
+    pub fn current_mib(&self) -> Option<f64> {
+        self.current.parse().ok()
+    }
+}
+
 /// A running process, as `ps` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Process {
@@ -87,6 +108,12 @@ pub struct Process {
     pub title: String,
     /// What it is called.
     pub command: String,
+    /// How much memory it is using, when the listing carried the figure.
+    ///
+    /// **`None` rather than zero for a row without it.** The measured `ps` prints `current / peak`
+    /// MiB; a listing shaped some other way says nothing about memory, and a plausible zero would
+    /// be indistinguishable from a process that is genuinely using none.
+    pub memory: Option<Memory>,
 }
 
 impl Process {
@@ -251,9 +278,34 @@ pub fn processes(output: &str) -> Vec<Process> {
             state: columns[5].to_owned(),
             title: title.to_owned(),
             command: (*columns.last().unwrap_or(&"")).to_owned(),
+            memory: memory_in(&columns),
         });
     }
     found
+}
+
+/// The memory figure at the end of a `ps` row, when it has the measured `current / peak` shape.
+///
+/// **Read from the end, not by column number.** The title column is present for a game and blank
+/// for everything else, which shifts every fixed index - but the command is always the last token
+/// and the memory always the three just before it (`current / peak`). Both figures must parse as
+/// numbers, so a command or a column that happens to carry a slash is not mistaken for a memory
+/// reading; a row without the shape is `None` rather than a guess.
+#[must_use]
+fn memory_in(columns: &[&str]) -> Option<Memory> {
+    let n = columns.len();
+    // ... <current> "/" <peak> <command>
+    if n >= 4 && columns[n - 3] == "/" {
+        let current = columns[n - 4];
+        let peak = columns[n - 2];
+        if current.parse::<f64>().is_ok() && peak.parse::<f64>().is_ok() {
+            return Some(Memory {
+                current: current.to_owned(),
+                peak: peak.to_owned(),
+            });
+        }
+    }
+    None
 }
 
 /// Everything the target said, ready to show.
@@ -402,8 +454,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        Process, Report, SHELL_UI, Signal, by_pid, end, is_a_title_id, kill, number_in, of_title,
-        processes, shell_ui, storage, value_in,
+        Memory, Process, Report, SHELL_UI, Signal, by_pid, end, is_a_title_id, kill, number_in,
+        of_title, processes, shell_ui, storage, value_in,
     };
 
     /// Exactly what a target printed for `sysctl kern.version`.
@@ -516,6 +568,60 @@ mod tests {
         assert!(!is_a_title_id("4.7"));
         assert!(!is_a_title_id("eboot.bin"));
         assert!(!is_a_title_id("PPSA0266"));
+    }
+
+    /// **The memory figure `ps` prints is captured, read from the end** so the title column - which
+    /// a game fills and a payload leaves blank - cannot shift it. Both rows end
+    /// `current / peak command` and are read the same way.
+    #[test]
+    fn the_memory_figure_is_read_for_titles_and_payloads_alike() {
+        let ps = "     PID      PPID     PGID      SID      UID      State  AppId    TitleId     Memory (MiB)  Command\n\
+                       182        54       54       54        1      SLEEP   4018  PPSA02664   833.0 /  867.9  eboot.bin\n\
+                       171       168      168      168        0      SLEEP   0000                4.2 /   18.8  ftpsrv.elf\n";
+        let found = processes(ps);
+        let title = found
+            .iter()
+            .find(|p| p.title == "PPSA02664")
+            .expect("the game");
+        assert_eq!(
+            title.memory,
+            Some(Memory {
+                current: "833.0".to_owned(),
+                peak: "867.9".to_owned()
+            })
+        );
+        assert_eq!(
+            title.memory.as_ref().and_then(Memory::current_mib),
+            Some(833.0),
+            "the current figure is a number for sorting"
+        );
+
+        let payload = found
+            .iter()
+            .find(|p| p.command == "ftpsrv.elf")
+            .expect("the payload");
+        assert_eq!(
+            payload.memory,
+            Some(Memory {
+                current: "4.2".to_owned(),
+                peak: "18.8".to_owned()
+            }),
+            "a payload's memory is read the same way, with no title id in front of it"
+        );
+    }
+
+    /// A listing shape without the measured `current / peak` figure says nothing about memory
+    /// rather than guessing a zero.
+    #[test]
+    fn a_row_without_the_memory_shape_reports_none() {
+        let ps = "PID PPID PGID SID UID STATE APPID TITLEID MEM COMMAND\n\
+                  100 1 100 100 0 S - - 1M SceShellUI\n";
+        let found = processes(ps);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].memory, None,
+            "a single-token memory column is not the measured shape"
+        );
     }
 
     /// A target that answers some keys and not others reports what it answered.

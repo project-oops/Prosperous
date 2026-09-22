@@ -30,6 +30,15 @@ egui = { workspace = true }
 # is what a modern desktop answers with anyway.
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 
+# Regular-expression matching for the log filter, when the box is switched to regex.
+#
+# **`regex-lite`, not `regex`, and argued the same way as `rfd` above.** The full engine pulls in
+# `aho-corasick`, `memchr` and two `regex-*` crates for throughput this does not need - the filter
+# runs over a few thousand short lines a person is reading, not a corpus. `regex-lite` is the same
+# team's cut-down engine with **no dependencies of its own** and the same `Regex::new` / `is_match`
+# surface, which is the whole of what the filter uses.
+regex-lite = "0.1"
+
 oops-log = { workspace = true }
 oops-docs = { workspace = true }
 

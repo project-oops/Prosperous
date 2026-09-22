@@ -78,7 +78,15 @@ pros restore build/title/GLCB00001 /data/homebrew/GLCB00001
 
 # Copy a single package file into /data/pkg/
 pros restore build/game.pkg /data/pkg/game.pkg
+
+# Force every file across, ignoring what was sent last time
+pros restore build/title/GLCB00001 /data/homebrew/GLCB00001 --all
 ```
+
+`restore` skips a file it already put there unchanged - it records what it verified landing on each
+target and re-sends only what differs, so a rebuild that changed one file uploads one file. It never
+skips a changed file, and `--all` forces the whole tree across. See
+[D034](decisions/D034-a-restore-does-not-resend-an-unchanged-file.md).
 
 ---
 
@@ -157,7 +165,7 @@ Stream, filter, and search real-time system logs with zero buffering:
 +-------------------------------------------------------------------------------+
 |  Console Kernel Log (living-room)                                [_][O][X]    |
 +-------------------------------------------------------------------------------+
-| Filter: [ sceAgc                             ]  [Auto-Scroll: ON] [Clear]     |
+| follow/stop  clear   filter: [ sceAgc          ] [ ] regex   copy  save  folder |
 |-------------------------------------------------------------------------------|
 | 118: <118>[SceSystemStateMgr] Power Mode Change: BIG_APP                      |
 | 119: <118>[SceLncService] SetControllerFocus(0x00006018)                      |
@@ -167,12 +175,16 @@ Stream, filter, and search real-time system logs with zero buffering:
 | 123: [OOPS-GL] hardware AGC RDNA2 pipeline initialized successfully           |
 | 124: [OOPS-GL] flush-words: 0x39b submit-rc: 0x0 fence-hit: 0x1              |
 +-------------------------------------------------------------------------------+
-| [Pause Stream]  [Save Log to File...]  [Export Filtered View]                 |
-+-------------------------------------------------------------------------------+
 ```
 
 ![Prosperous Kernel Log Streamer UI](screenshots/pros_gui_logs.png)
 *(Screenshot placeholder: Live Kernel Telemetry Streamer)*
+
+The **filter** matches plain text (case-insensitive) or, with the **regex** box ticked, a regular
+expression; an invalid pattern shows every line and says so. **save** writes what is shown (filter
+and all) to a `.log` you choose, and **folder** opens the always-on per-target capture. The view
+holds up to 20,000 lines and draws only the rows on screen, so a long watch stays smooth; the full
+history is the kept file.
 
 ---
 
@@ -227,6 +239,11 @@ View currently running applications, active PIDs, and kill or restart titles wit
 
 ![Prosperous Title Supervisor UI](screenshots/pros_gui_titles.png)
 *(Screenshot placeholder: Title Supervisor UI)*
+
+The system panel lists every process with its memory (the figure the target's own `ps` reports; no
+CPU column, because it reports none), a *close* on each title and an *end*-by-pid on everything
+else, plus *sort* and an opt-in *auto-refresh*. On the command line the same lives in `pros ps`,
+`pros top` (the live, refreshing view), `pros close` and `pros kill`.
 
 ---
 

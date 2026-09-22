@@ -50,7 +50,19 @@ downloads:
 # Upload a complete game folder to the target
 pros restore build/title/GLCB00001 /data/homebrew/GLCB00001
 
+# Re-deploy after a rebuild: only the files that changed are sent
+pros restore build/title/GLCB00001 /data/homebrew/GLCB00001
+
+# Force every file across, ignoring what was sent before
+pros restore build/title/GLCB00001 /data/homebrew/GLCB00001 --all
+
 # Retrieve a directory from the console to your PC
 pros backup /data/homebrew/GLCB00001 --into local_backup/
 ```
+
+**`restore` does not re-send a file it already put there unchanged.** It records what it verified
+landing on each target and skips a file whose local bytes have not changed and which the target
+still reports present, so re-deploying a large title after a one-file rebuild sends one file. It
+never skips a changed file, and a file the target has lost is sent again; `--all` forces the whole
+tree across. See [D034](../decisions/D034-a-restore-does-not-resend-an-unchanged-file.md).
 

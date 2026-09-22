@@ -43,6 +43,52 @@ enum ProcAction {
     EndPid(String),
 }
 
+/// How the system panel orders its process list.
+///
+/// A view choice, applied within each section (titles, then everything else) so the titles-first
+/// grouping - the thing a person is usually looking for - survives the sort.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ProcSort {
+    /// As `ps` listed them.
+    #[default]
+    Listed,
+    /// Most memory in use first. A row with no memory figure sorts last, not as zero.
+    Memory,
+    /// Grouped by state, so the stopped and the running sit together.
+    State,
+}
+
+impl ProcSort {
+    /// Orders a list of processes in place by this choice.
+    fn arrange(self, processes: &mut [&pros_core::system::Process]) {
+        match self {
+            Self::Listed => {}
+            // Descending, and a row with no figure sorts after every one that has one - the same
+            // "absent is not zero" rule the figure itself follows.
+            Self::Memory => processes.sort_by(|a, b| {
+                let key = |p: &pros_core::system::Process| {
+                    p.memory
+                        .as_ref()
+                        .and_then(pros_core::system::Memory::current_mib)
+                };
+                key(b)
+                    .partial_cmp(&key(a))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+            Self::State => processes.sort_by(|a, b| a.state.cmp(&b.state)),
+        }
+    }
+
+    /// What to call this in a chooser.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Listed => "as listed",
+            Self::Memory => "memory",
+            Self::State => "state",
+        }
+    }
+}
+
 /// One row of a listing: a tick, a name, and what that side knows about it.
 ///
 /// Returns `true` when the row was clicked. **No action buttons.** What can be done depends on
@@ -647,6 +693,18 @@ fn choose_files(from: &str) -> Option<Vec<PathBuf>> {
         .pick_files()
 }
 
+/// Asks where to save a file, suggesting a name.
+///
+/// `None` when the dialog was dismissed without choosing, which is an answer and not a failure -
+/// the same as the pickers above.
+fn choose_where_to_save(suggested: &str) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("save the log")
+        .add_filter("log", &["log"])
+        .set_file_name(suggested)
+        .save_file()
+}
+
 /// Where the manager keeps the payload files it loads.
 ///
 /// Measured: one folder per payload, with the file inside it.
@@ -654,6 +712,12 @@ const PAYLOADS: &str = "/data/pldmgr/payloads";
 
 /// What the separator between two panes costs, with its padding.
 const GAP: f32 = 24.0;
+
+/// How often the system panel re-reads the target when auto-refresh is on.
+///
+/// A few seconds, not sub-second: this is a person watching a task list, and each tick is a shell
+/// round trip. The command line's `pros top` defaults to the same rhythm.
+const SYSTEM_REFRESH: Duration = Duration::from_secs(3);
 
 /// The window.
 pub(crate) struct App {
@@ -696,6 +760,17 @@ pub(crate) struct App {
     /// out and waiting out refusals - and a queue that runs one thing at a time would be
     /// entirely blocked for as long as it took, including at launch.
     sweep: Option<crate::sweep::Sweep>,
+    /// How the system panel's process list is ordered. A view choice, not a fact about the
+    /// target, so it lives here rather than in the report.
+    system_sort: ProcSort,
+    /// Whether the system panel re-reads the target on its own, and when it last asked.
+    ///
+    /// **A view choice with a guard.** With it on, the panel re-runs `ReadSystem` when it is idle
+    /// and enough time has passed - the timestamp is what stops that becoming a request every
+    /// frame. Off by default: reading the target is a round trip, not something to do unasked.
+    system_auto: bool,
+    /// When the panel last asked the target, for the auto-refresh interval.
+    system_asked_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -731,6 +806,9 @@ impl App {
             // Defaults when no file exists, which is the normal case - see `pros_core::catalogue`.
             catalogue: pros_core::catalogue::load()
                 .unwrap_or_else(|_| pros_core::catalogue::Catalogue::builtin()),
+            system_sort: ProcSort::default(),
+            system_auto: false,
+            system_asked_at: None,
         }
     }
 
@@ -1824,6 +1902,8 @@ impl App {
                 && let Some(target) = self.state.target().cloned()
             {
                 self.state.begin(Job::ReadSystem(target));
+                // So auto-refresh does not fire again immediately after a manual read.
+                self.system_asked_at = Some(std::time::Instant::now());
             }
             // Restart the interface to clear a softlock. Kept beside the reading rather than
             // on a process row, because it is not one of the listed processes a person picks -
@@ -1838,7 +1918,42 @@ impl App {
                 self.state.begin(Job::RestartUi(target));
             }
         });
+        ui.horizontal(|ui| {
+            ui.label("sort:");
+            // A local Copy, so the combo's inner closure captures it rather than `self` - two
+            // closures each capturing `self` would not borrow-check.
+            let mut chosen = self.system_sort;
+            egui::ComboBox::from_id_salt("proc-sort")
+                .selected_text(chosen.label())
+                .show_ui(ui, |ui| {
+                    for option in [ProcSort::Listed, ProcSort::Memory, ProcSort::State] {
+                        ui.selectable_value(&mut chosen, option, option.label());
+                    }
+                });
+            self.system_sort = chosen;
+            ui.separator();
+            ui.checkbox(&mut self.system_auto, "auto-refresh")
+                .on_hover_text(format!(
+                    "re-read the target every {}s while this panel is open",
+                    SYSTEM_REFRESH.as_secs()
+                ));
+        });
         ui.add_space(8.0);
+
+        // **Auto-refresh, guarded by a timestamp.** With it on, re-read the target when the worker
+        // is idle and the interval has passed - the timestamp is what stops this becoming a request
+        // every frame, and `request_repaint_after` is what wakes the window to check when nothing
+        // else is happening. It never stacks a read on a running one, because `idle` gates it.
+        if self.system_auto && idle && connected {
+            let due = self
+                .system_asked_at
+                .is_none_or(|when| when.elapsed() >= SYSTEM_REFRESH);
+            if due && let Some(target) = self.state.target().cloned() {
+                self.state.begin(Job::ReadSystem(target));
+                self.system_asked_at = Some(std::time::Instant::now());
+            }
+            ui.ctx().request_repaint_after(SYSTEM_REFRESH);
+        }
 
         let Some(report) = self.state.system.clone() else {
             ui.weak(if self.state.is_idle() {
@@ -1863,7 +1978,7 @@ impl App {
         }
 
         Self::storage_table(ui, &report);
-        if let Some(act) = Self::process_list(ui, &report, idle)
+        if let Some(act) = Self::process_list(ui, &report, idle, self.system_sort)
             && let Some(target) = self.state.target().cloned()
         {
             match act {
@@ -1927,13 +2042,15 @@ impl App {
         ui: &mut egui::Ui,
         report: &pros_core::system::Report,
         idle: bool,
+        sort: ProcSort,
     ) -> Option<ProcAction> {
         let mut act: Option<ProcAction> = None;
-        let titles: Vec<&pros_core::system::Process> = report
+        let mut titles: Vec<&pros_core::system::Process> = report
             .processes
             .iter()
             .filter(|one| one.is_a_title())
             .collect();
+        sort.arrange(&mut titles);
         if !report.processes.is_empty() {
             ui.add_space(10.0);
             ui.strong(format!(
@@ -1955,16 +2072,20 @@ impl App {
                     }
                     ui.monospace(&one.title);
                     ui.label(&one.command);
+                    Self::memory_label(ui, one);
                     ui.weak(&one.state);
                 });
             }
             egui::CollapsingHeader::new("everything else")
                 .default_open(false)
                 .show(ui, |ui| {
-                    for one in &report.processes {
-                        if one.is_a_title() {
-                            continue;
-                        }
+                    let mut others: Vec<&pros_core::system::Process> = report
+                        .processes
+                        .iter()
+                        .filter(|one| !one.is_a_title())
+                        .collect();
+                    sort.arrange(&mut others);
+                    for one in &others {
                         ui.horizontal(|ui| {
                             // A payload or system process has no title to close, so it is ended
                             // by pid - the case `pros kill` answers, and the reason a raw shell
@@ -1981,12 +2102,24 @@ impl App {
                             }
                             ui.weak(&one.pid);
                             ui.label(&one.command);
+                            Self::memory_label(ui, one);
                             ui.weak(&one.state);
                         });
                     }
                 });
         }
         act
+    }
+
+    /// The memory figure for a process row, current MiB with the peak on hover.
+    ///
+    /// Nothing at all for a row the listing gave no figure for - the same "absent is not zero" the
+    /// parser keeps, drawn as a blank rather than a `0` a reader would take for a measurement.
+    fn memory_label(ui: &mut egui::Ui, process: &pros_core::system::Process) {
+        if let Some(memory) = &process.memory {
+            ui.weak(format!("{} MiB", memory.current))
+                .on_hover_text(format!("peak {} MiB", memory.peak));
+        }
     }
 
     /// What the target loads at startup, and the manager's settings.
@@ -5941,20 +6074,17 @@ impl App {
         }
     }
 
-    /// The target's log, as plain scrollable text.
+    /// The target's log, virtualized so the buffer can be large without the view paying for it.
     ///
-    /// # Why it scrolls to a measured rect instead of `stick_to_bottom`
+    /// # Why a scroll area of rows rather than one big text box
     ///
-    /// `stick_to_bottom` scrolls to the bottom of the content size the scroll area recorded on
-    /// the **previous** frame. That is fine for content that does not change. A log grows
-    /// while it is being watched, so every frame the widget is taller than the number being
-    /// scrolled against - and the view lands short of the end, with a band of nothing and the
-    /// last line clipped at the edge. Which is exactly what it did, through six attempts at
-    /// fixing everything except this.
-    ///
-    /// So the text is added first, its response gives its real rect **this** frame, and the
-    /// view is scrolled to the bottom of that. Nothing is computed, nothing is remembered
-    /// between frames, and there is no number that can be a frame out of date.
+    /// The log view was a single `TextEdit` over every kept line joined into one string, laid out
+    /// in full every frame - so the buffer had to stay small (2000 lines) or a busy target made
+    /// the window stutter, and the cost was in the *layout*, not the memory. A
+    /// [`egui::ScrollArea::show_rows`] lays out only the rows actually on screen, so a full log
+    /// costs what a screenful costs and the buffer can be tens of thousands of lines. It is one
+    /// surface filling the panel, so the two-boxes-both-claiming-the-height bug the old view fought
+    /// (a `ScrollArea` wrapped around a `TextEdit`) cannot return: there is no second box.
     fn log_panel(&mut self, ui: &mut egui::Ui) {
         if self.state.target().is_none() {
             section_heading(ui, Section::Log);
@@ -5963,19 +6093,20 @@ impl App {
         }
 
         let following = self.tail.is_some();
-        self.log_toolbar(ui, following);
+        // Built once, here, and used for the toolbar's count and buttons and for the rows below,
+        // so the compile - and the verdict on a pattern that will not - happens in one place.
+        let matcher = LogMatch::build(&self.state.log_filter, self.state.log_regex);
+        self.log_toolbar(ui, following, &matcher);
 
-        let text = self
+        let shown: Vec<&str> = self
             .state
-            .kept_lines()
+            .lines
+            .iter()
+            .filter(|line| matcher.keeps(line))
             .map(String::as_str)
-            .collect::<Vec<_>>()
-            .join(
-                "
-",
-            );
-        if text.is_empty() {
-            ui.weak(if self.state.log_filter.trim().is_empty() {
+            .collect();
+        if shown.is_empty() {
+            ui.weak(if self.state.lines.is_empty() {
                 if following {
                     "nothing yet - a quiet log is a fact about the target, not a fault"
                 } else {
@@ -5987,21 +6118,18 @@ impl App {
             return;
         }
 
-        // **One widget. No scroll area, no nesting, no second surface.**
-        //
-        // A `TextEdit` given a size scrolls itself, which is the whole of what a log view
-        // needs. Wrapping one in a `ScrollArea` made two things that both believed they owned
-        // the height, and the picture showed it: the panel's rect ended above the status bar
-        // while the scroll area's viewport sat below it, so text was painted into both and one
-        // of them was a sliver behind the status bar.
-        //
-        // Seven attempts were spent adjusting the relationship between those two boxes. There
-        // is no relationship to get right once there is only one box.
-        let _ = following;
-        ui.add_sized(
-            ui.available_size(),
-            egui::TextEdit::multiline(&mut text.as_str()).font(egui::TextStyle::Monospace),
-        );
+        // Only the rows in `range` are built, so this is flat in the buffer size. Pinned to the
+        // bottom while following, because the newest line is the one being waited for.
+        let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+        egui::ScrollArea::vertical()
+            .id_salt("log")
+            .auto_shrink([false, false])
+            .stick_to_bottom(following)
+            .show_rows(ui, row_height, shown.len(), |ui, range| {
+                for row in range {
+                    ui.monospace(shown[row]);
+                }
+            });
     }
 
     /// The log screen controls: following, filtering, copying, and where it is kept.
@@ -6010,7 +6138,7 @@ impl App {
         reason = "one toolbar row, and splitting it would put half the controls in a \
                   different function from the state they all read"
     )]
-    fn log_toolbar(&mut self, ui: &mut egui::Ui, following: bool) {
+    fn log_toolbar(&mut self, ui: &mut egui::Ui, following: bool, matcher: &LogMatch) {
         // Re-read here rather than passed in: the panel above it has already established
         // there is one, and threading it through a closure that also borrows `self` is what
         // the rest of this window avoids by re-asking.
@@ -6063,12 +6191,33 @@ impl App {
             ui.add(
                 egui::TextEdit::singleline(&mut self.state.log_filter)
                     .desired_width(160.0)
-                    .hint_text("text to keep"),
+                    .hint_text(if self.state.log_regex {
+                        "regex to keep"
+                    } else {
+                        "text to keep"
+                    }),
             )
-            .on_hover_text("only lines containing this, ignoring case - the log keeps arriving");
+            .on_hover_text(
+                "keep only the lines this matches - plain text ignoring case, or a regular \
+                 expression with the box ticked. The log keeps arriving either way.",
+            );
+            ui.checkbox(&mut self.state.log_regex, "regex")
+                .on_hover_text("match the filter as a regular expression instead of plain text");
+            // **Said, not left to look like an empty result.** An unfinished pattern does not
+            // compile, and while it does not the filter is not applied - so the view shows every
+            // line rather than blanking on each keystroke, and this says why.
+            if matcher.is_invalid() {
+                ui.colored_label(egui::Color32::from_rgb(220, 170, 90), "invalid regex")
+                    .on_hover_text("the pattern does not compile yet, so every line is shown");
+            }
             // **Counted after filtering, and both numbers shown.** A filter that hid ninety
             // lines and then said `10 lines` would be describing a target that is quiet.
-            let kept = self.state.kept_lines().count();
+            let kept = self
+                .state
+                .lines
+                .iter()
+                .filter(|line| matcher.keeps(line))
+                .count();
             let all = self.state.lines.len();
             if self.state.log_filter.trim().is_empty() {
                 ui.weak(format!("{all} lines"));
@@ -6102,37 +6251,51 @@ every line is appended here as it arrives, and the previous file is kept beside 
             {
                 let text: String = self
                     .state
-                    .kept_lines()
+                    .lines
+                    .iter()
+                    .filter(|line| matcher.keeps(line))
                     .cloned()
                     .collect::<Vec<_>>()
                     .join("\n");
                 ui.output_mut(|out| out.copied_text = text);
             }
+            // **Save what is shown to a file the person picks.** The kept file above is this
+            // project's own, beside the registry and named for the target; this is the log going
+            // somewhere they chose - to attach to a report, to keep past a target change. It saves
+            // exactly what is on screen, filter and all, like `copy`, so the two mean the same
+            // thing about the same lines.
+            if ui
+                .add_enabled(kept > 0, egui::Button::new("save"))
+                .on_hover_text("write what is shown to a .log file you choose, filter and all")
+                .on_disabled_hover_text("nothing to save")
+                .clicked()
+            {
+                let suggested = known
+                    .as_ref()
+                    .map_or_else(|| "log".to_owned(), |target| format!("{}.log", target.name));
+                if let Some(path) = choose_where_to_save(&suggested) {
+                    let mut text: String = self
+                        .state
+                        .lines
+                        .iter()
+                        .filter(|line| matcher.keeps(line))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    // A trailing newline, so the file ends the way a log does and a later append
+                    // does not run onto the last line.
+                    text.push('\n');
+                    match std::fs::write(&path, text) {
+                        Ok(()) => {
+                            self.state.said = format!("saved {kept} lines to {}", path.display());
+                        }
+                        Err(why) => {
+                            self.state.trouble = Some(format!("could not save the log: {why}"));
+                        }
+                    }
+                }
+            }
         });
-
-        egui::ScrollArea::vertical()
-            .id_salt("log")
-            .auto_shrink([false, false])
-            // **Pinned to the bottom while following.** A log somebody is watching is one
-            // where the newest line is the interesting one, and a view that stayed where it
-            // was would show the moment before the thing they are waiting for.
-            .stick_to_bottom(following)
-            .show(ui, |ui| {
-                let mut shown = 0;
-                for line in self.state.kept_lines() {
-                    ui.monospace(line);
-                    shown += 1;
-                }
-                if shown == 0 && !self.state.log_filter.trim().is_empty() {
-                    ui.weak("nothing matches that filter - the lines are still arriving");
-                } else if self.state.lines.is_empty() {
-                    ui.weak(if following {
-                        "nothing yet - a quiet log is a fact about the target, not a fault"
-                    } else {
-                        "not following"
-                    });
-                }
-            });
     }
 
     /// A command, and what it printed.

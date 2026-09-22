@@ -26,6 +26,9 @@ use std::path::{Path, PathBuf};
 
 use pros_link::files::{Entry, Kind, Session};
 
+use crate::checksum::Checksum;
+use crate::deployed::Ledger;
+
 /// How deep a walk may go before it stops.
 ///
 /// A bound rather than a belief. Save folders are shallow, and something that is not one
@@ -94,6 +97,13 @@ pub struct Summary {
     pub files: usize,
     /// How many bytes those were.
     pub bytes: u64,
+    /// How many files were already on the target, unchanged, and so were not sent again.
+    ///
+    /// **Not a skip and not a copy.** A skip is a file the copy failed to move and the summary is
+    /// incomplete without it; an unchanged file is one that did not need moving. Kept apart so a
+    /// restore that sent nothing because nothing changed reads as the success it is, not as a
+    /// backup that copied nothing. See [`upload`] and [`crate::deployed`].
+    pub unchanged: usize,
     /// Everything that was not copied, and why.
     ///
     /// **The field that makes the rest of it mean anything.** A backup is only as good as
@@ -238,10 +248,30 @@ fn walk(
     Ok(())
 }
 
+/// Whether a restore may skip files it has already put on this target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resend {
+    /// Send every file, whatever was sent before. What `restore --all` asks for, and the safe
+    /// choice when the record cannot be trusted - a target reimaged behind the same name, say.
+    Everything,
+    /// Skip a file whose bytes are already recorded landed at its path and which is still present.
+    /// The default, and on a large title the reason most of a restore becomes a set of cheap size
+    /// checks rather than the whole tree sent again. See [`crate::deployed`].
+    OnlyChanged,
+}
+
 /// Puts a local folder back onto the target.
 ///
 /// Directories are made on the way down, and one that already exists is not a failure - see
 /// [`Session::make_directory`].
+///
+/// **A file already verified landed here is not sent again** unless [`Resend::Everything`] is
+/// asked for: its local bytes are hashed, and if that digest is what `known` records at its path
+/// and the target still reports the file present, the store is skipped and the file counted as
+/// [`Summary::unchanged`]. Every verified store updates `known`, so the next restore can skip it;
+/// a store that does not verify forgets it, so a failed landing is never skipped. Why the record
+/// is kept this side rather than asked of the target - the SELF unwrap - is in [`crate::deployed`]
+/// and at `land`.
 ///
 /// # Errors
 ///
@@ -252,6 +282,8 @@ pub fn upload(
     session: &mut Session,
     from: &Path,
     to: &str,
+    known: &mut Ledger,
+    resend: Resend,
     watch: &mut dyn FnMut(&Progress),
     stop: &dyn Fn() -> bool,
 ) -> Result<Summary, String> {
@@ -270,89 +302,140 @@ pub fn upload(
             continue;
         }
         let there = format!("{root}/{}", relative.to_string_lossy().replace('\\', "/"));
-        // Every directory on the way, in order, because a server will not make a parent for
-        // you and the second file in a folder should not pay for the first one's work.
-        if let Some(parent) = relative.parent() {
-            let mut here = root.to_owned();
-            for part in parent.components() {
-                here.push('/');
-                here.push_str(&part.as_os_str().to_string_lossy());
-                if let Err(why) = session.make_directory(&here) {
-                    summary.skipped.push(Skipped {
-                        path: here.clone(),
-                        why: why.to_string(),
-                    });
-                }
-            }
-        }
+        make_parents(session, root, &relative, &mut summary);
 
         let source = from.join(&relative);
-        match std::fs::read(&source) {
-            Ok(bytes) => match session.store(&there, &bytes) {
-                // **A store the server accepted is not yet a file replaced.** The size is read
-                // back and checked: a target that has the title mounted, or an overlay that
-                // swallows the write, leaves the old file in place while `STOR` still completes,
-                // and a restore that trusted the reply then reported a file written that was not.
-                //
-                // **A SELF container does not keep its sent size, and must not be compared to
-                // it.** On a jailbroken console the kernel VFS hook unwraps a fake-signed SELF on
-                // access, so `SIZE` reports the decrypted ELF payload - a legitimately different,
-                // usually larger number - and comparing it to the bytes sent condemns a deploy
-                // that worked (oops-mesa REQ-20260917T1500Z-3e57). That unwrapped size cannot be
-                // recovered from the container here: the kernel presents the whole decrypted
-                // file, not a sum this side can compute from the segment table, and
-                // reimplementing the SELF+ELF layout to guess it is the format-reinvention
-                // principle 6 exists to refuse. So for a container the check is *presence* - a
-                // size came back, so a file is there - which still catches a store that landed
-                // nothing. A plain file is size-checked exactly, and a mismatch is not-copied.
-                Ok(()) => {
-                    let sent = bytes.len() as u64;
-                    // The four bytes at offset zero, asked of SELFish: a SELF container for either
-                    // generation (which the target unwraps), or not (an ELF or anything else,
-                    // which it stores as-is).
-                    let is_container = bytes
-                        .get(..4)
-                        .and_then(|head| <[u8; 4]>::try_from(head).ok())
-                        .and_then(selfish_abi::Generation::from_container_magic)
-                        .is_some();
-                    match session.size(&there) {
-                        Ok(there_bytes) if is_container || there_bytes == sent => {
-                            summary.files += 1;
-                            summary.bytes += sent;
-                            watch(&Progress {
-                                files: summary.files,
-                                bytes: summary.bytes,
-                                current: there.clone(),
-                            });
-                        }
-                        Ok(there_bytes) => summary.skipped.push(Skipped {
-                            why: format!(
-                                "sent {sent} bytes but the target reports {there_bytes} \
-                                 afterwards - it was not replaced (is the title mounted?)"
-                            ),
-                            path: there,
-                        }),
-                        Err(why) => summary.skipped.push(Skipped {
-                            why: format!(
-                                "sent {sent} bytes but the target could not confirm the size \
-                                 afterwards, so it is not known to have landed: {why}"
-                            ),
-                            path: there,
-                        }),
-                    }
-                }
-                Err(why) => summary.skipped.push(Skipped {
-                    path: there,
+        let bytes = match std::fs::read(&source) {
+            Ok(bytes) => bytes,
+            Err(why) => {
+                summary.skipped.push(Skipped {
+                    path: source.display().to_string(),
                     why: why.to_string(),
-                }),
-            },
-            Err(why) => summary.skipped.push(Skipped {
-                path: source.display().to_string(),
-                why: why.to_string(),
-            }),
+                });
+                continue;
+            }
+        };
+
+        // **An unchanged file already on the target is not sent again.** The digest is of the
+        // local bytes - the side that can be hashed truthfully, because the target unwraps a SELF
+        // on access (`crate::deployed`, and `land` below). The presence check is not optional: a
+        // record is not a promise the file is still there, and skipping one a crash had removed
+        // would be the quiet miss this module exists to refuse. `--all` is `Resend::Everything`
+        // and passes both by.
+        let digest = Checksum::of(&bytes).to_string();
+        if resend == Resend::OnlyChanged
+            && known.records(&there, &digest)
+            && session.size(&there).is_ok()
+        {
+            summary.unchanged += 1;
+            continue;
         }
+
+        land(session, there, &bytes, &digest, known, &mut summary, watch);
     }
     Ok(summary)
+}
+
+/// Makes every directory on the way to a file, in order.
+///
+/// A server will not make a parent for you, and the second file in a folder should not pay for the
+/// first one's work. A directory that will not be made is recorded and the walk goes on - the
+/// store into it will fail and be recorded too, so nothing is lost by not stopping here.
+fn make_parents(session: &mut Session, root: &str, relative: &Path, summary: &mut Summary) {
+    let Some(parent) = relative.parent() else {
+        return;
+    };
+    let mut here = root.to_owned();
+    for part in parent.components() {
+        here.push('/');
+        here.push_str(&part.as_os_str().to_string_lossy());
+        if let Err(why) = session.make_directory(&here) {
+            summary.skipped.push(Skipped {
+                path: here.clone(),
+                why: why.to_string(),
+            });
+        }
+    }
+}
+
+/// Stores one file, then records the outcome: counted and remembered if it verifies, skipped and
+/// forgotten if it does not.
+///
+/// **A store the server accepted is not yet a file replaced.** The size is read back and checked:
+/// a target that has the title mounted, or an overlay that swallows the write, leaves the old file
+/// in place while `STOR` still completes, and a restore that trusted the reply then reported a
+/// file written that was not.
+///
+/// **A SELF container does not keep its sent size, and must not be compared to it.** On a
+/// jailbroken console the kernel VFS hook unwraps a fake-signed SELF on access, so `SIZE` reports
+/// the decrypted ELF payload - a legitimately different, usually larger number - and comparing it
+/// to the bytes sent condemns a deploy that worked (oops-mesa REQ-20260917T1500Z-3e57). That
+/// unwrapped size cannot be recovered from the container here: the kernel presents the whole
+/// decrypted file, not a sum this side can compute from the segment table, and reimplementing the
+/// SELF+ELF layout to guess it is the format-reinvention principle 6 exists to refuse. So for a
+/// container the check is *presence* - a size came back, so a file is there - which still catches
+/// a store that landed nothing. A plain file is size-checked exactly, and a mismatch is not-copied.
+///
+/// **What lands is remembered, what does not is forgotten.** A verified store records `digest`
+/// against the path in `known`, so the next restore can skip it; every failure forgets any record
+/// there, so a file that did not land is sent again next time rather than skipped on a stale one.
+fn land(
+    session: &mut Session,
+    there: String,
+    bytes: &[u8],
+    digest: &str,
+    known: &mut Ledger,
+    summary: &mut Summary,
+    watch: &mut dyn FnMut(&Progress),
+) {
+    let sent = bytes.len() as u64;
+    if let Err(why) = session.store(&there, bytes) {
+        known.forget(&there);
+        summary.skipped.push(Skipped {
+            path: there,
+            why: why.to_string(),
+        });
+        return;
+    }
+    // The four bytes at offset zero, asked of SELFish: a SELF container for either generation
+    // (which the target unwraps), or not (an ELF or anything else, which it stores as-is).
+    let is_container = bytes
+        .get(..4)
+        .and_then(|head| <[u8; 4]>::try_from(head).ok())
+        .and_then(selfish_abi::Generation::from_container_magic)
+        .is_some();
+    match session.size(&there) {
+        Ok(there_bytes) if is_container || there_bytes == sent => {
+            known.record(&there, digest);
+            summary.files += 1;
+            summary.bytes += sent;
+            watch(&Progress {
+                files: summary.files,
+                bytes: summary.bytes,
+                current: there,
+            });
+        }
+        Ok(there_bytes) => {
+            known.forget(&there);
+            summary.skipped.push(Skipped {
+                why: format!(
+                    "sent {sent} bytes but the target reports {there_bytes} afterwards - it was \
+                     not replaced (is the title mounted?)"
+                ),
+                path: there,
+            });
+        }
+        Err(why) => {
+            known.forget(&there);
+            summary.skipped.push(Skipped {
+                why: format!(
+                    "sent {sent} bytes but the target could not confirm the size afterwards, so \
+                     it is not known to have landed: {why}"
+                ),
+                path: there,
+            });
+        }
+    }
 }
 
 /// Everything under a local folder, as paths relative to it.
@@ -397,7 +480,9 @@ mod tests {
 
     use pros_link::files::{Entry, Kind};
 
-    use super::{DEEPEST, Source, Summary, download, upload};
+    use super::{DEEPEST, Resend, Source, Summary, download, upload};
+    use crate::checksum::Checksum;
+    use crate::deployed::Ledger;
 
     /// A filesystem in memory, so the walk can be checked without a target.
     struct Pretend {
@@ -726,6 +811,8 @@ mod tests {
             &mut session,
             &from,
             "/data/homebrew/MESA00001",
+            &mut Ledger::default(),
+            Resend::Everything,
             &mut |_| {},
             &|| false,
         )
@@ -787,6 +874,8 @@ mod tests {
             &mut session,
             &from,
             "/data/homebrew/MESA00001",
+            &mut Ledger::default(),
+            Resend::Everything,
             &mut |_| {},
             &|| false,
         )
@@ -831,6 +920,8 @@ mod tests {
             &mut session,
             &from,
             "/data/homebrew/MESA00001",
+            &mut Ledger::default(),
+            Resend::Everything,
             &mut |_| {},
             &|| false,
         )
@@ -841,6 +932,202 @@ mod tests {
         assert!(
             !summary.is_complete(),
             "a container that vanished must still be caught, not waved through as a SELF"
+        );
+        let _ = std::fs::remove_dir_all(&from);
+    }
+
+    /// A file service holding these files, that keeps what it is sent.
+    fn a_target(files: &[(&str, &[u8])]) -> (pros_link::fake::Fake, pros_link::fake::Store) {
+        use pros_link::fake::{Behaviour, Fake, Store};
+        let contents = Store::new(files);
+        let fake = Fake::start(Behaviour::Files {
+            contents: contents.clone(),
+            claims: [127, 0, 0, 1],
+            binary: true,
+            swallows_stores: false,
+        })
+        .expect("the fake binds");
+        (fake, contents)
+    }
+
+    /// A one-file source folder, returning where it is.
+    fn a_source(what: &str, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let from = scratch(what);
+        std::fs::create_dir_all(&from).expect("a source folder");
+        std::fs::write(from.join(name), bytes).expect("a source file");
+        from
+    }
+
+    /// **An unchanged file already on the target is not sent again.**
+    ///
+    /// The reported cost: restoring a large title re-sent every file even where nothing had
+    /// changed. With a record of what verified landing and the file still present, the store is
+    /// skipped - proven here by leaving different bytes on the target and showing they are
+    /// untouched, so the skip is the ledger's decision and not a store that happened to match.
+    #[test]
+    fn an_unchanged_file_is_not_resent() {
+        use pros_link::files::Session;
+
+        let path = "/data/homebrew/MESA00001/thing.bin";
+        // Different bytes on the target on purpose: a skip must not overwrite them.
+        let (fake, contents) = a_target(&[(path, b"what is already on the target")]);
+        let local = b"the local bytes, already verified landed last time";
+        let from = a_source("unchanged", "thing.bin", local);
+
+        // The ledger already records exactly these local bytes landed at the path.
+        let mut known = Ledger::default();
+        known.record(path, &Checksum::of(local).to_string());
+
+        let mut session = Session::open_at(fake.address(), fake.port()).expect("the fake logs in");
+        let summary = upload(
+            &mut session,
+            &from,
+            "/data/homebrew/MESA00001",
+            &mut known,
+            Resend::OnlyChanged,
+            &mut |_| {},
+            &|| false,
+        )
+        .expect("the upload runs");
+        session.close();
+
+        assert_eq!(summary.files, 0, "nothing was sent");
+        assert_eq!(
+            summary.unchanged, 1,
+            "the file was counted as already there"
+        );
+        assert!(summary.is_complete(), "an unchanged file is not a skip");
+        assert_eq!(
+            contents.get(path).as_deref(),
+            Some(&b"what is already on the target"[..]),
+            "the target's file was not touched, so no store happened"
+        );
+        let _ = std::fs::remove_dir_all(&from);
+    }
+
+    /// **A changed local file is sent even where the ledger knows the path.** The digest is of the
+    /// bytes, so a record from a previous build does not match a rebuilt file, and it goes across.
+    #[test]
+    fn a_changed_local_file_is_resent() {
+        use pros_link::files::Session;
+
+        let path = "/data/homebrew/MESA00001/eboot.bin";
+        let (fake, contents) = a_target(&[(path, b"the previous build")]);
+        let now = b"the rebuilt eboot, different bytes";
+        let from = a_source("changed", "eboot.bin", now);
+
+        // The ledger records an older build's digest at the path.
+        let mut known = Ledger::default();
+        known.record(path, &Checksum::of(b"the previous build").to_string());
+
+        let mut session = Session::open_at(fake.address(), fake.port()).expect("the fake logs in");
+        let summary = upload(
+            &mut session,
+            &from,
+            "/data/homebrew/MESA00001",
+            &mut known,
+            Resend::OnlyChanged,
+            &mut |_| {},
+            &|| false,
+        )
+        .expect("the upload runs");
+        session.close();
+
+        assert_eq!(summary.files, 1, "the changed file was sent");
+        assert_eq!(summary.unchanged, 0);
+        assert_eq!(
+            contents.get(path).as_deref(),
+            Some(&now[..]),
+            "the target holds the new bytes"
+        );
+        assert!(
+            known.records(path, &Checksum::of(now).to_string()),
+            "the ledger now records what actually landed"
+        );
+        let _ = std::fs::remove_dir_all(&from);
+    }
+
+    /// **A file the ledger knows but the target no longer has is sent again.**
+    ///
+    /// The presence half of the check. A record is not a promise the file is still there - a crash
+    /// or a wipe can remove it while the local source is unchanged - so a matching digest alone
+    /// does not skip; the target must still report it present.
+    #[test]
+    fn a_recorded_file_the_target_no_longer_has_is_resent() {
+        use pros_link::files::Session;
+
+        let path = "/data/homebrew/MESA00001/eboot.bin";
+        // The target holds nothing, so SIZE finds no file.
+        let (fake, contents) = a_target(&[]);
+        let local = b"back again after a wipe";
+        let from = a_source("lost", "eboot.bin", local);
+
+        // The ledger records exactly the current local bytes - the digest matches - but the file
+        // is gone from the target.
+        let mut known = Ledger::default();
+        known.record(path, &Checksum::of(local).to_string());
+
+        let mut session = Session::open_at(fake.address(), fake.port()).expect("the fake logs in");
+        let summary = upload(
+            &mut session,
+            &from,
+            "/data/homebrew/MESA00001",
+            &mut known,
+            Resend::OnlyChanged,
+            &mut |_| {},
+            &|| false,
+        )
+        .expect("the upload runs");
+        session.close();
+
+        assert_eq!(
+            summary.files, 1,
+            "a matching digest does not skip a missing file"
+        );
+        assert_eq!(summary.unchanged, 0);
+        assert_eq!(
+            contents.get(path).as_deref(),
+            Some(&local[..]),
+            "the file was put back"
+        );
+        let _ = std::fs::remove_dir_all(&from);
+    }
+
+    /// **`--all` ignores the ledger and sends everything.** The escape hatch for when the record
+    /// cannot be trusted: even a file recorded landed and still present goes across again.
+    #[test]
+    fn everything_mode_sends_even_an_unchanged_file() {
+        use pros_link::files::Session;
+
+        let path = "/data/homebrew/MESA00001/thing.bin";
+        let (fake, contents) = a_target(&[(path, b"stale on target")]);
+        let local = b"send me regardless";
+        let from = a_source("forced", "thing.bin", local);
+
+        // The ledger records exactly these local bytes, and the file is present - OnlyChanged
+        // would skip it. Everything must not.
+        let mut known = Ledger::default();
+        known.record(path, &Checksum::of(local).to_string());
+
+        let mut session = Session::open_at(fake.address(), fake.port()).expect("the fake logs in");
+        let summary = upload(
+            &mut session,
+            &from,
+            "/data/homebrew/MESA00001",
+            &mut known,
+            Resend::Everything,
+            &mut |_| {},
+            &|| false,
+        )
+        .expect("the upload runs");
+        session.close();
+
+        assert_eq!(summary.files, 1, "--all sends even an unchanged file");
+        assert_eq!(summary.unchanged, 0);
+        assert_eq!(
+            contents.get(path).as_deref(),
+            Some(&local[..]),
+            "the store actually ran"
         );
         let _ = std::fs::remove_dir_all(&from);
     }

@@ -238,6 +238,15 @@ pub(crate) fn copied(
         if summary.files == 1 { "file" } else { "files" },
         size(summary.bytes)
     );
+    // Not a copy and not a skip: files already on the target, unchanged, so not sent again. Said
+    // so a restore that moved little because little changed does not read as one that did nothing.
+    if summary.unchanged > 0 {
+        println!(
+            "{} {} already there, unchanged - not re-sent",
+            summary.unchanged,
+            things(summary.unchanged)
+        );
+    }
     if summary.is_complete() {
         return std::process::ExitCode::SUCCESS;
     }
@@ -254,4 +263,42 @@ pub(crate) fn copied(
     println!();
     println!("this copy is incomplete - do not treat it as a backup");
     std::process::ExitCode::FAILURE
+}
+
+/// Prints a process listing as a table: pid, state, memory, title, command.
+///
+/// **Shared by `ps` and `top`** so the two cannot drift - a column shown by one and not the other
+/// is exactly the split the shims are meant not to have. Memory is the current figure in MiB; a row
+/// the listing gave no memory for shows `-` rather than a zero it did not measure. Columns are
+/// sized to the widest value present so they line up without assuming how many digits a pid or a
+/// figure happens to have.
+pub(crate) fn processes(processes: &[pros_core::system::Process]) {
+    let pid_w = processes
+        .iter()
+        .map(|p| p.pid.len())
+        .max()
+        .unwrap_or(3)
+        .max(3);
+    let mem_w = processes
+        .iter()
+        .map(|p| p.memory.as_ref().map_or(1, |m| m.current.len()))
+        .max()
+        .unwrap_or(3)
+        .max(3);
+    println!(
+        "{:>pid_w$}  {:6}  {:>mem_w$}  {:9}  COMMAND",
+        "PID", "STATE", "MEM", "TITLE"
+    );
+    for one in processes {
+        let mem = one.memory.as_ref().map_or("-", |m| m.current.as_str());
+        let title = if one.title.is_empty() {
+            "-"
+        } else {
+            &one.title
+        };
+        println!(
+            "{:>pid_w$}  {:6}  {:>mem_w$}  {:9}  {}",
+            one.pid, one.state, mem, title, one.command
+        );
+    }
 }

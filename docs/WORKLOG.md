@@ -1,4 +1,86 @@
 
+## The log view is virtualized, holds 20k lines, and filters by regex
+
+Asked why the log kept only 2000 lines and what a reasonable max is. The answer was that 2000 was
+never a memory bound - 2000 lines is a few hundred KB - it was the render: the view was one
+`TextEdit` over every kept line joined into a string, laid out in full every frame, so a bigger
+buffer stuttered on a busy target. The fix is virtualization: `ScrollArea::show_rows` lays out only
+the rows on screen, so the render is flat in the buffer size and the cap could go to 20,000. It is
+scrollback only - the full history is already in the per-target kept file - so the number bounds how
+far the window scrolls, nothing more. What is left O(N) is the per-frame filter pass, so the old
+`to_lowercase().contains` (a String per line per frame) became an allocation-free ASCII scan. Doing
+this also removed a latent double render - the panel drew a `TextEdit` and the toolbar it called
+drew a second `ScrollArea` of the same lines; there is one surface now.
+
+The filter box also gained a *regex* checkbox. The dependency is `regex-lite`, not `regex` - the
+same team's cut-down engine with no transitive deps, argued in `Cargo.toml` beside `rfd`; the full
+engine's throughput is for corpora, not a few thousand short lines a person is reading. An invalid
+pattern shows every line and says *invalid regex* rather than blanking on each keystroke (D036).
+Gate green.
+
+## A save button on the log screen
+
+The log screen already kept every line to a file on its own - beside the registry, named for the
+target, rolling at 4MB - and had a *copy* button and an *open folder* button. What it did not have
+was a way to put the log somewhere the person chose: a file to attach to a report, or to keep past
+a target change without hunting for this project's own directory. So a *save* button, beside *copy*,
+opens a save dialog (a new `choose_where_to_save`, the `save_file` sibling of the existing pickers)
+and writes what is on screen to the `.log` they name. It saves exactly what *copy* copies - the
+shown lines, filter and all - so the two mean the same thing about the same lines, and it says where
+it landed (or why it could not) rather than saving in silence. GUI-only, small; gate green.
+
+## A task manager, which turned out to be mostly already here
+
+The ask was a task manager over the `ps`/`kill` logic. That logic was already in
+`pros_core::system` (find a process, signal it, list what runs), and the window already had a system
+panel that lists every process with close/end/restart-UI buttons - a task manager in all but name.
+So nothing new was built beside what exists; the two gaps in the existing views were filled instead.
+
+First gap: the memory `ps` measures was thrown away. The listing prints `Memory (MiB)` as
+`current / peak`, and the parser read past it. It is now on `Process`, read *from the end* of the
+row rather than by column index - the title column is present for a game and blank otherwise, which
+shifts every fixed position, but the command is always last and the memory the three tokens before
+it. Shown in `pros ps`, in the new `pros top`, and on each GUI row (peak on hover). CPU is not
+shown: this target's `ps` has no CPU column, and inventing one is what principle 2 refuses - memory
+is the only resource figure the platform gives.
+
+Second gap: the CLI had only a one-shot `ps`. `pros top` is the live form - the same table redrawn
+on an interval until Ctrl-C or `--seconds`, CLI-first like `logs`/`probe`, a shim tie-together over
+pros-core pieces. Non-interactive on purpose: it redraws and reads, but ending something is still
+`pros close`/`pros kill`, because an interactive kill wants terminal raw-mode handling and a
+dependency the CLI does not carry. A shared `say::processes` prints the table for both `ps` and
+`top` so the two cannot drift. The GUI panel got the same memory column, a sort chooser (as
+listed / memory / state, applied within the titles and everything-else groups so titles stay
+first), and an opt-in auto-refresh guarded by a timestamp and gated on idle so it never stacks a
+read on a running one - off by default, because a round trip is not something to do unasked (D035).
+Foundation in `pros_core::system` (`Memory`, `Process.memory`); 379 pros-core tests, gate green.
+
+## `restore` skips a file it already put there unchanged
+
+Restoring a large title re-sent every file, every time - minutes to leave most of it byte-for-byte
+as it was, and the `probe` deploy loop pays it dozens of times a session. The instinct was to hash,
+but the hashing has to be *local*, not against the target: the console unwraps a fake-signed SELF on
+read, so any size or hash it reports is of the decrypted payload, not the container that was sent -
+D032 again - and that is exactly the large file (`eboot.bin`, `.prx`, `.sprx`) a title is mostly
+made of. A remote comparison would re-send the big files and skip the small ones. So the record is
+the one this side can keep truthfully: what this program *verified* landing. After a store passes
+the presence/size check, the digest of the bytes sent is recorded in `deployed.json` (beside the
+registry, keyed by target name over remote path) via `pros_core::checksum` - no new dependency. A
+later restore hashes each local file and skips the transfer when that digest is what the record
+holds **and** a cheap `SIZE` still finds the file present. The presence half is not optional: a
+record is not a promise the file is still there, so a wipe or crash re-sends it even when the local
+source is unchanged (D034).
+
+It is a cache and it only errs toward re-sending: a verified store records, any failure forgets (so
+a store that did not land is never skipped on a stale note), `--all` ignores it, a fresh target has
+none. The default is skip-unchanged with `restore --all` / `probe --all` to force. `pros-gui`'s
+restore skips unchanged too (parity - a capability in one shim drifts); the force toggle is CLI-only
+for now. An unchanged file is reported as its own outcome, neither copied nor skipped, so a restore
+that moved little because little changed reads as the success it is. New `pros_core::deployed`
+module; `transfer::upload` grew a `Ledger` and a `Resend`, and its store-and-verify body moved into
+a `land` helper (which also kept the dispatch and `upload` under clippy's line cap). 385 tests
+(pros-core 377), gate green.
+
 ## `pros probe`: the deploy-run-watch loop in one command
 
 The probe iteration - `restore` a build, `launch` it, watch `logs` in a second window - was three

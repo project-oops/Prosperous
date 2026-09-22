@@ -332,8 +332,26 @@ fn restoring(
         Ok(session) => session,
         Err(why) => return Done::Failed(why.to_string()),
     };
-    let done = pros_core::transfer::upload(&mut session, from, to, watch, stop);
-    session.close();
+    // Skip files already verified landed on this target and unchanged, the same as `pros restore`:
+    // a restore of a large title should not re-send what has not changed. The window has no
+    // force-all toggle yet - the CLI's `--all` is the escape hatch. See `pros_core::deployed`.
+    let mut deployed = pros_core::deployed::load();
+    let done = {
+        let ledger = deployed.for_target(&target.name);
+        let done = pros_core::transfer::upload(
+            &mut session,
+            from,
+            to,
+            ledger,
+            pros_core::transfer::Resend::OnlyChanged,
+            watch,
+            stop,
+        );
+        session.close();
+        done
+    };
+    // A cache: if it will not write, the cost is a full re-send next time, not a failed restore.
+    let _ = pros_core::deployed::save(&deployed);
     match done {
         Ok(summary) => Done::Copied(Box::new(summary), to.to_owned()),
         Err(why) => Done::Failed(why),

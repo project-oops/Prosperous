@@ -106,6 +106,16 @@ anything lists every one, says *do not treat this as a backup*, and exits non-ze
 unreadable file does not end the walk. Links are not followed - one can point at its own
 parent - and they appear in the skipped list like everything else.
 
+**A restore does not re-send a file it already put there unchanged.** Restoring a large title
+used to push every file every time; now it hashes each local file and, if that is what it last
+verified landing at that path and the target still has the file, it skips the transfer and counts
+it as *unchanged, not re-sent* - so a rebuild that changed one `eboot.bin` sends one file. It never
+skips a changed file: the digest is of the local bytes, a file the target has lost is sent again,
+and a file that will not verify is re-sent next time. `restore --all` forces every file across, for
+when the record cannot be trusted (a target reimaged behind the same name). Why the record is kept
+here rather than asked of the target - the console unwraps a signed container on read, so its size
+and any hash are of the decrypted payload, not what was sent - is [D034](decisions/D034-a-restore-does-not-resend-an-unchanged-file.md).
+
 Installing a package **is** built, and the note that used to sit here saying it was not was
 left behind by the measurement that settled it. There is no service and no port: the shell has
 a builtin, `pkg_install URL`, and it means URL - a bare path and a `file://` both return an
@@ -126,7 +136,9 @@ shell, and both live here rather than in a consumer that happened to need them f
 ```bash
 pros restart-ui                    # kill SceShellUI; the system respawns it, no reboot
 pros close PPSA00001               # end every process the title owns
-pros ps                            # list what is running, with pids
+pros ps                            # list what is running: pid, state, memory, title, command
+pros top                           # the same list, redrawn every 2s until Ctrl-C
+pros top --every 5 --seconds 60    # every 5s, stop after a minute
 pros kill 274                      # end one process by pid
 ```
 
@@ -140,7 +152,15 @@ locked files behind. Afterwards it reads the target again and says whether the t
 still listed - a measured answer rather than an assumed one.
 
 **`ps`** lists the running processes - the same `ps` the window's system panel reads, parsed the
-same way - so a pid for `kill` comes from here rather than from a raw shell.
+same way - so a pid for `kill` comes from here rather than from a raw shell. The columns are pid,
+state, memory and title, then the command; **memory is the figure the target itself prints** (MiB
+in use), and a process the listing gave no figure for shows `-` rather than a zero it did not
+measure. There is no CPU column because this target's `ps` does not report one.
+
+**`top`** is `ps` as a live view: the same table, redrawn on an interval (`--every`, default two
+seconds) until Ctrl-C or a `--seconds` cap. It is read-only, like `ps` - to end something it lists,
+`pros close` or `pros kill` - so it needs no special terminal handling. On a terminal it clears
+between draws; piped to a file it prints one table after another so the capture stays readable.
 
 **`kill`** ends one process by its pid, for what `close` cannot name: a payload, a stuck process,
 anything with no title of its own. It is the native form of what a hand-typed `sh kill …`
@@ -152,7 +172,11 @@ whether the pid is gone.
 **The window does all of these too.** `pros-gui`'s system panel has a *restart UI* button beside
 *ask the target*, a *close* button on each running title, and an *end* button on every other
 process (under "everything else") that ends it by pid. Each leaves the process list showing what
-is running now, because the action reads the target again when it finishes.
+is running now, because the action reads the target again when it finishes. The panel shows each
+process's memory (peak on hover), a *sort* chooser (as listed, by memory, or by state - applied
+within the titles and the everything-else groups so titles stay first), and an *auto-refresh*
+toggle that re-reads the target every few seconds. Auto-refresh is off by default: a read is a
+round trip, and doing it unasked is not the default anywhere else here either.
 
 ## The probe loop in one command
 
@@ -163,10 +187,13 @@ times a session, and it was three commands across two windows: a `restore`, a `l
 ```bash
 pros probe GLPB00001 ../oops-apps/src/oops-gl/gl1-probe/build/title/GLPB00001
 pros probe GLPB00001 <build dir> --seconds 90     # cap the follow at 90s
+pros probe GLPB00001 <build dir> --all            # redeploy every file, not just changed ones
 ```
 
 It closes the title if it is running, restores the build directory into `/data/homebrew/<id>`
-(overwriting what is there), **waits for the console to register the title** (up to a minute - the
+(overwriting what changed there - only files that differ from the last deploy are sent, `--all`
+forces all of them; see [D034](decisions/D034-a-restore-does-not-resend-an-unchanged-file.md)),
+**waits for the console to register the title** (up to a minute - the
 files land at once, but ShadowMountPlus has to mount and register it before `launch` can resolve
 it), then **attaches the log follower and only then launches** - so nothing the title prints is
 lost in the gap - and **follows its log until the title parks, exits, or a `--seconds` cap

@@ -226,6 +226,9 @@ enum Command {
         /// Force transfer to requested destination without guard checks
         #[arg(long)]
         force: bool,
+        /// Send every file, even ones already on the target and unchanged since last restore
+        #[arg(long)]
+        all: bool,
         #[command(flatten)]
         which: Which,
     },
@@ -294,6 +297,21 @@ enum Command {
         #[command(flatten)]
         which: Which,
     },
+    /// Watch the running processes, redrawn on an interval until stopped
+    ///
+    /// The live form of `ps`: the same table - pid, state, memory, title, command - re-read every
+    /// few seconds. Ctrl-C stops it, or `--seconds` caps it. Read-only, like `ps`: to end
+    /// something use `pros close` or `pros kill`.
+    Top {
+        /// Stop after this many seconds (default: keep going until Ctrl-C)
+        #[arg(long)]
+        seconds: Option<u64>,
+        /// Seconds between refreshes
+        #[arg(long, default_value_t = 2)]
+        every: u64,
+        #[command(flatten)]
+        which: Which,
+    },
     /// Deploy a homebrew title from a local build, launch it, and follow its log until it ends
     ///
     /// The probe loop in one command, replacing a hand-run `restore` then `launch` then `logs`:
@@ -313,6 +331,9 @@ enum Command {
         /// Seconds to follow the log before giving up on a title that parks rather than exits
         #[arg(long, default_value_t = 120)]
         seconds: u64,
+        /// Redeploy every file, even ones unchanged since the last probe
+        #[arg(long)]
+        all: bool,
         #[command(flatten)]
         which: Which,
     },
@@ -429,7 +450,8 @@ impl Command {
             | Self::RestartUi { .. }
             | Self::Close { .. }
             | Self::Kill { .. }
-            | Self::Ps { .. } => Some("shsrv"),
+            | Self::Ps { .. }
+            | Self::Top { .. } => Some("shsrv"),
             // Running a payload, and re-running one that died.
             Self::Send { .. } | Self::Supervise { .. } => Some("elfldr"),
             // Everything that reads or moves a file.
@@ -517,16 +539,7 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
         Command::Forget { name } => registry(&Registry::Remove(name)),
         Command::Check { fix, which } => check(fix, which.name.as_deref()),
         Command::Logs { seconds, which } => logs(seconds, which.name.as_deref()),
-        Command::Sh { command, which } => {
-            let target = pick(which.name.as_deref())?;
-            let out = pros_link::shell::run(&target.link(), &command, SETTLE)?;
-            if out.trim().is_empty() {
-                println!("no output - is the shell loaded? `pros check` will say");
-            } else {
-                print!("{out}");
-            }
-            Ok(ExitCode::SUCCESS)
-        }
+        Command::Sh { command, which } => sh(&command, which.name.as_deref()),
         Command::Send {
             path,
             seconds,
@@ -565,20 +578,27 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
             to,
             yes,
             force,
+            all,
             which,
-        } => restore(&from, &to, yes, force, which.name.as_deref()),
+        } => restore(&from, &to, yes, force, all, which.name.as_deref()),
         Command::Saves { which } => saves(which.name.as_deref()),
         Command::Titles { appmeta, which } => titles(&appmeta, which.name.as_deref()),
         Command::Launch { id, which } => launch(&id, which.name.as_deref()),
         Command::RestartUi { which } => restart_ui(which.name.as_deref()),
         Command::Close { id, which } => close(&id, which.name.as_deref()),
         Command::Ps { which } => ps(which.name.as_deref()),
+        Command::Top {
+            seconds,
+            every,
+            which,
+        } => top(seconds, every, which.name.as_deref()),
         Command::Probe {
             id,
             from,
             seconds,
+            all,
             which,
-        } => probe(&id, &from, seconds, which.name.as_deref()),
+        } => probe(&id, &from, seconds, all, which.name.as_deref()),
         Command::Kill { pid, which } => kill_pid(&pid, which.name.as_deref()),
         Command::Fetch {
             payload,
@@ -610,6 +630,21 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
         } => fake_target(&clip, video_port, input_port),
         Command::Moonlight { hostname, ip } => moonlight(hostname, ip),
     }
+}
+
+/// Runs one shell command on the target and prints what it said.
+///
+/// An empty reply is said out loud rather than shown as nothing, because a shell that is not
+/// loaded and a command that printed nothing look identical otherwise - the check knows which.
+fn sh(command: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let target = pick(name)?;
+    let out = pros_link::shell::run(&target.link(), command, SETTLE)?;
+    if out.trim().is_empty() {
+        println!("no output - is the shell loaded? `pros check` will say");
+    } else {
+        print!("{out}");
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Listens to the target's system log for a while and prints it.
@@ -996,12 +1031,26 @@ fn backup(
     Ok(say::copied(&summary?, &into.display().to_string()))
 }
 
+/// Which files a transfer may skip, from the `--all` flag.
+///
+/// **Skip-unchanged is the default**, because re-sending a whole title where one file changed is
+/// the cost worth removing; `--all` forces every file across, for when the record cannot be
+/// trusted. See `pros_core::deployed`.
+fn resend(all: bool) -> pros_core::transfer::Resend {
+    if all {
+        pros_core::transfer::Resend::Everything
+    } else {
+        pros_core::transfer::Resend::OnlyChanged
+    }
+}
+
 /// Puts a folder back onto the target.
 fn restore(
     from: &Path,
     to: &str,
     yes: bool,
     force: bool,
+    all: bool,
     name: Option<&str>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let mut target_dest = to.to_string();
@@ -1045,17 +1094,30 @@ fn restore(
     }
     let target = pick(name)?;
     let mut session = pros_link::files::Session::open(&target.link())?;
-    let summary = pros_core::transfer::upload(
-        &mut session,
-        from,
-        &target_dest,
-        &mut |progress| {
-            println!("  {}", progress.current);
-        },
-        &|| false,
-    );
-    session.close();
-    Ok(say::copied(&summary?, &target_dest))
+    let mut deployed = pros_core::deployed::load();
+    let summary = {
+        let ledger = deployed.for_target(&target.name);
+        let done = pros_core::transfer::upload(
+            &mut session,
+            from,
+            &target_dest,
+            ledger,
+            resend(all),
+            &mut |progress| {
+                println!("  {}", progress.current);
+            },
+            &|| false,
+        );
+        session.close();
+        done
+    }?;
+    // A record of what landed, so the next restore can skip what did not change. A cache: if it
+    // will not write, the only cost is a full re-send next time, so it is a note rather than a
+    // failure.
+    if let Err(why) = pros_core::deployed::save(&deployed) {
+        eprintln!("note: could not record what landed for next time: {why}");
+    }
+    Ok(say::copied(&summary, &target_dest))
 }
 
 /// What a registry command is asking for.
@@ -1548,22 +1610,56 @@ fn ps(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
         println!("no processes listed - is the shell loaded? `pros check` will say");
         return Ok(ExitCode::SUCCESS);
     }
-    // Wide enough for the widest pid in this listing, so the columns line up without a dependency
-    // on how many digits a pid happens to have.
-    let width = processes.iter().map(|p| p.pid.len()).max().unwrap_or(3);
-    println!("{:>width$}  {:5}  {:10}  COMMAND", "PID", "STATE", "TITLE");
-    for process in &processes {
-        println!(
-            "{:>width$}  {:5}  {:10}  {}",
-            process.pid,
-            process.state,
-            if process.title.is_empty() {
-                "-"
-            } else {
-                &process.title
-            },
-            process.command
-        );
+    say::processes(&processes);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Watches the running processes, redrawing on an interval until stopped.
+///
+/// The live form of [`ps`]: the same table, re-read every `every` seconds until Ctrl-C or the
+/// `--seconds` cap. Read-only, like `ps` - to end something, `pros close` / `pros kill` - so it
+/// needs no interactive key handling and no terminal raw mode. On a terminal it clears between
+/// draws; piped, it prints successive tables so the output stays readable in a file. A target that
+/// blips is reported and the watch goes on, because a monitor that quits on one missed read is one
+/// that is never running when it is wanted.
+fn top(
+    seconds: Option<u64>,
+    every: u64,
+    name: Option<&str>,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let target = pick(name)?;
+    let every = every.max(1);
+    let clears = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let deadline = seconds.map(|s| std::time::Instant::now() + Duration::from_secs(s));
+    loop {
+        match pros_link::shell::run(&target.link(), "ps", SETTLE) {
+            Ok(listing) => {
+                let processes = pros_core::system::processes(&listing);
+                let titles = processes.iter().filter(|p| p.is_a_title()).count();
+                if clears {
+                    // Clear the screen and home the cursor, so each draw replaces the last rather
+                    // than scrolling. No raw mode, so nothing to restore on Ctrl-C.
+                    print!("\x1b[2J\x1b[H");
+                }
+                println!(
+                    "{}  -  {} processes, {titles} titles  -  every {every}s, Ctrl-C to stop  -  MEM = MiB in use",
+                    target.address,
+                    processes.len()
+                );
+                if processes.is_empty() {
+                    println!("no processes listed - is the shell loaded? `pros check` will say");
+                } else {
+                    say::processes(&processes);
+                }
+            }
+            Err(why) => eprintln!("could not read the target: {why}"),
+        }
+        if let Some(deadline) = deadline
+            && std::time::Instant::now() >= deadline
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(every));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -1613,6 +1709,7 @@ fn probe(
     id: &str,
     from: &Path,
     seconds: u64,
+    all: bool,
     name: Option<&str>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     if !pros_core::launch::is_an_app_id(id) {
@@ -1644,11 +1741,29 @@ fn probe(
 
     // 2. Restore the local build into /data/homebrew/<id>, overwriting. A half-landed deploy is
     //    not launched: `say::copied` prints the count, and its incomplete branch exits non-zero.
+    //    Skip-unchanged by default (the whole point of the deploy loop is that most files are the
+    //    same build to build); `--all` forces every file across. What landed is remembered for
+    //    next time, and a cache that will not write is a note, not a failure.
     println!("restoring {} -> {dest}", from.display());
     let mut session = pros_link::files::Session::open(&link)?;
-    let summary = pros_core::transfer::upload(&mut session, from, &dest, &mut |_| {}, &|| false);
-    session.close();
-    let summary = summary?;
+    let mut deployed = pros_core::deployed::load();
+    let summary = {
+        let ledger = deployed.for_target(&target.name);
+        let done = pros_core::transfer::upload(
+            &mut session,
+            from,
+            &dest,
+            ledger,
+            resend(all),
+            &mut |_| {},
+            &|| false,
+        );
+        session.close();
+        done
+    }?;
+    if let Err(why) = pros_core::deployed::save(&deployed) {
+        eprintln!("note: could not record what landed for next time: {why}");
+    }
     let restored = say::copied(&summary, &dest);
     if !summary.is_complete() {
         eprintln!("not launching {id} - the deploy did not land cleanly");

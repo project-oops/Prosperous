@@ -24,7 +24,7 @@ Open the **Logs** tab from the main navigation panel.
 | 123: [OOPS-GL] hardware AGC RDNA2 pipeline initialized successfully           |
 | 124: [OOPS-GL] flush-words: 0x39b submit-rc: 0x0 fence-hit: 0x1              |
 +-------------------------------------------------------------------------------+
-| [Pause Stream]  [Save Log to File...]  [Export Filtered View]                 |
+| [follow / stop]  [clear]  filter: [____] [x]regex  [copy] [save] [open folder] |
 +-------------------------------------------------------------------------------+
 ```
 
@@ -32,10 +32,12 @@ Open the **Logs** tab from the main navigation panel.
 *(Screenshot placeholder: Live Kernel Telemetry Streamer)*
 
 ### GUI Controls:
-- **Filter Box**: Real-time regex and substring search. Filters lines instantly without dropping unseen messages from the background buffer.
-- **Auto-Scroll Toggle**: Locks viewport to the bottom of the log stream as new lines arrive.
-- **Pause Stream**: Freezes rendering to allow careful inspection of high-frequency debug bursts.
-- **Save Log to File**: Dumps the complete session buffer to a timestamped `.log` file in `%APPDATA%\OOPS\prosperous\downloads\`.
+- **follow / stop**: Open the log connection and show lines as they arrive, or close it. The view is pinned to the newest line while following. A log that has ended and one that has gone quiet look identical, so the end is said in words rather than left to a lack of lines.
+- **Filter Box (+ regex)**: Live match without dropping the rest from the buffer - plain substring, case-insensitive, or a **regular expression** when the *regex* box is ticked. A pattern that does not compile shows every line and says *invalid regex* rather than blanking. The count shows both numbers (`10 of 90 lines`) so a filter cannot make a busy target look quiet.
+- **Scrollback**: The view holds up to 20,000 lines and is virtualized (only the rows on screen are drawn), so a long watch does not slow it down. This is scrollback only; the full history is the kept file below.
+- **clear / copy**: Forget the shown lines (the log keeps arriving), or copy them - filter and all - to the clipboard.
+- **save**: Write what is shown (filter and all) to a `.log` file you choose, for attaching to a report or keeping past a target change.
+- **Always kept anyway**: Separately from *save*, every line is appended as it arrives to a per-target file under the shared OOPS data root (`…/logs/<target>.log`, the previous one rolled beside it at 4 MB). **open folder** reveals it. This is captured whether or not anyone is watching, so the answer to *why did it fail* survives a restart.
 
 ---
 
