@@ -89,6 +89,72 @@ impl ProcSort {
     }
 }
 
+/// How the log filter box is being read: plain text, or a regular expression.
+///
+/// Built once per frame from the box and its regex toggle, so the compile - and the decision about
+/// a pattern that will not compile - happens in one place rather than per line.
+enum LogMatch {
+    /// An empty box: every line is kept.
+    All,
+    /// Plain text, matched without regard to ASCII case, the way the box has always worked.
+    Text(String),
+    /// A compiled regular expression.
+    Regex(regex_lite::Regex),
+    /// The box holds a regular expression that does not compile.
+    ///
+    /// **Its own case, and it keeps every line.** Blanking the log on each keystroke of a
+    /// half-typed pattern is worse than showing it unfiltered while the toolbar says the pattern is
+    /// not yet valid.
+    Invalid,
+}
+
+impl LogMatch {
+    /// Reads the filter box into a matcher.
+    fn build(filter: &str, as_regex: bool) -> Self {
+        let text = filter.trim();
+        if text.is_empty() {
+            return Self::All;
+        }
+        if as_regex {
+            regex_lite::Regex::new(text).map_or(Self::Invalid, Self::Regex)
+        } else {
+            Self::Text(text.to_owned())
+        }
+    }
+
+    /// Whether a line is kept by the current filter.
+    fn keeps(&self, line: &str) -> bool {
+        match self {
+            Self::All | Self::Invalid => true,
+            Self::Text(needle) => contains_ignore_ascii_case(line, needle),
+            Self::Regex(regex) => regex.is_match(line),
+        }
+    }
+
+    /// Whether the box holds a regex that will not compile.
+    const fn is_invalid(&self) -> bool {
+        matches!(self, Self::Invalid)
+    }
+}
+
+/// An ASCII-case-insensitive substring test that allocates nothing.
+///
+/// The filter runs over every kept line on the frames one arrives, so the previous
+/// `line.to_lowercase().contains(..)` - a fresh `String` per line per frame - is the cost a larger
+/// buffer could not carry. Logs are ASCII, so folding only the ASCII range is enough.
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let (haystack, needle) = (haystack.as_bytes(), needle.as_bytes());
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
 /// One row of a listing: a tick, a name, and what that side knows about it.
 ///
 /// Returns `true` when the row was clicked. **No action buttons.** What can be done depends on
