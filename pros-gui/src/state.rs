@@ -1164,6 +1164,12 @@ pub(crate) struct State {
     pub(crate) address: String,
     /// What a person has typed into the name box.
     pub(crate) name: String,
+    /// The target whose address is being edited, when the register dialog is in edit mode.
+    ///
+    /// `None` is a fresh registration; `Some(name)` edits that target in place - the name is fixed
+    /// (re-registering under it replaces it, keeping its ports and chain) and only the address
+    /// changes, which is the thing that actually moves when a target's IP does.
+    pub(crate) editing: Option<String>,
 }
 
 impl State {

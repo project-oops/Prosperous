@@ -966,10 +966,29 @@ impl App {
                 // Everything about *which machine* lives here rather than on the main form.
                 ui.menu_button("target", |ui| {
                     if ui.button("register...").clicked() {
+                        // A fresh registration, not an edit of the selected one.
+                        self.state.editing = None;
                         self.state.showing.registering = true;
                         ui.close_menu();
                     }
                     let chosen = self.state.target().cloned();
+                    if ui
+                        .add_enabled(chosen.is_some(), egui::Button::new("edit this target..."))
+                        .on_hover_text("change this target's address - its name and ports are kept")
+                        .on_disabled_hover_text("nothing is selected")
+                        .clicked()
+                    {
+                        if let Some(target) = &chosen {
+                            // Pre-fill the dialog with what is registered, so changing the address
+                            // is one edit rather than retyping the name (and risking a typo that
+                            // would register a second target instead of changing this one).
+                            self.state.name.clone_from(&target.name);
+                            self.state.address.clone_from(&target.address);
+                            self.state.editing = Some(target.name.clone());
+                            self.state.showing.registering = true;
+                        }
+                        ui.close_menu();
+                    }
                     if ui
                         .add_enabled(chosen.is_some(), egui::Button::new("forget this target"))
                         .on_disabled_hover_text("nothing is selected")
@@ -1030,42 +1049,80 @@ impl App {
         self.state.showing.about = open;
     }
 
-    /// The registration dialog.
+    /// The registration dialog, in one of two modes.
     ///
-    /// A window rather than a panel, because it is a thing somebody does once. **A
-    /// registration is a name and an address and nothing else**, so this form cannot grow a
-    /// third field without somebody first changing what a registration means.
+    /// A window rather than a panel, because it is a thing somebody does once. **A registration is
+    /// a name and an address and nothing else** - so registering takes both, and *editing* changes
+    /// only the address: the name is fixed there, because re-registering under it is what replaces
+    /// the entry (keeping the ports and chain it carries), and letting the name change would either
+    /// lose those or leave a second entry behind. Renaming is a bigger thing than this form, and it
+    /// does not pretend otherwise.
     fn register_dialog(&mut self, ctx: &egui::Context) {
+        let editing = self.state.editing.clone();
         let mut open = self.state.showing.registering;
-        egui::Window::new("register a target")
+        let title = if editing.is_some() {
+            "edit target"
+        } else {
+            "register a target"
+        };
+        egui::Window::new(title)
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("name");
-                    ui.text_edit_singleline(&mut self.state.name);
-                });
+                if let Some(name) = &editing {
+                    ui.horizontal(|ui| {
+                        ui.label("name");
+                        ui.monospace(name);
+                    });
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label("name");
+                        ui.text_edit_singleline(&mut self.state.name);
+                    });
+                }
                 ui.horizontal(|ui| {
                     ui.label("address");
                     ui.text_edit_singleline(&mut self.state.address);
                 });
-                ui.small("an address and a name. What it can do is asked every time,");
-                ui.small("because a jailbreak does not survive a power cycle");
+                ui.small(if editing.is_some() {
+                    "the address is what moves when a target's IP changes; the name stays"
+                } else {
+                    "an address and a name. What it can do is asked every time,"
+                });
+                if editing.is_none() {
+                    ui.small("because a jailbreak does not survive a power cycle");
+                }
                 ui.separator();
-                let can =
-                    !self.state.name.trim().is_empty() && !self.state.address.trim().is_empty();
+                // In edit mode the name is fixed to the target being edited; otherwise it is what
+                // was typed. Re-registering under the same name replaces it, keeping its ports and
+                // chain (`pros_core::target::register`).
+                let name = editing
+                    .clone()
+                    .unwrap_or_else(|| self.state.name.trim().to_owned());
+                let can = !name.trim().is_empty() && !self.state.address.trim().is_empty();
+                let (label, hint) = if editing.is_some() {
+                    ("save", "save the new address for this target")
+                } else {
+                    ("register", "remember this target under that name")
+                };
                 if ui
-                    .add_enabled(can, egui::Button::new("register"))
-                    .on_hover_text("remember this target under that name")
+                    .add_enabled(can, egui::Button::new(label))
+                    .on_hover_text(hint)
                     .on_disabled_hover_text("a name and an address are both needed")
                     .clicked()
                 {
-                    match target::register(self.state.name.trim(), self.state.address.trim()) {
+                    match target::register(name.trim(), self.state.address.trim()) {
                         Ok(_) => {
                             self.state.targets = target::load().unwrap_or_default();
-                            self.state.chosen = (!self.state.targets.is_empty()).then_some(0);
+                            // Keep the just-saved target selected rather than jumping to the first.
+                            self.state.chosen = self
+                                .state
+                                .targets
+                                .iter()
+                                .position(|one| one.name == name.trim());
                             self.state.address.clear();
+                            self.state.editing = None;
                             self.state.showing.registering = false;
                         }
                         Err(why) => self.state.trouble = Some(why.to_string()),
@@ -1078,6 +1135,10 @@ impl App {
             open = false;
         }
         self.state.showing.registering = open;
+        // Closing the window (its X) leaves edit mode too, so the next "register..." is fresh.
+        if !self.state.showing.registering {
+            self.state.editing = None;
+        }
     }
 
     /// Re-reads the manifest the same way startup does.
@@ -4870,6 +4931,7 @@ impl App {
                 // discover the one they want is not in it.
                 ui.separator();
                 if ui.button("register...").clicked() {
+                    self.state.editing = None;
                     self.state.showing.registering = true;
                 }
             });
