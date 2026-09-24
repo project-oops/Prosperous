@@ -4,7 +4,7 @@ Welcome to the **Prosperous** user manual.
 
 This guide provides complete, step-by-step operational instructions for both the **`pros` command-line interface** and the **`pros-gui` desktop application**, designed for homebrew operators, game testers, and developers managing physical console hardware.
 
-If you are an AI coding agent or systems architect seeking the low-level socket protocol state machines, internal transport crates, or decision records, see the **[Technical Reference](README.md)** and **[DECISIONS.md](DECISIONS.md)** instead.
+For the socket protocols, the transport crates and the decision records, see the **[Technical Reference](README.md)** and **[DECISIONS.md](DECISIONS.md)**.
 
 ---
 
