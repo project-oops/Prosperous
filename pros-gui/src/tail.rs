@@ -36,7 +36,7 @@ use std::thread;
 /// scroll. The view is virtualized - only the rows on screen are laid out - so a larger buffer
 /// costs the per-line filter pass, not the render, which is why this can be generous where the old
 /// single-text-box view had to stay at two thousand. The oldest lines are dropped first.
-const KEPT: usize = 20_000;
+pub(crate) const KEPT: usize = 20_000;
 
 /// A log being followed.
 pub(crate) struct Tail {

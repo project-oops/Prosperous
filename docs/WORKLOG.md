@@ -1,4 +1,22 @@
 
+## Two regressions from the concurrent squash: shell CRLF, and a SIZE-based presence check
+
+`pros probe` (and every shell verb) stopped launching anything. A concurrent commit had changed the
+shell command terminator from `\n` to `\r\n` in `shell::run_at` - the one path `launch`, `close`,
+`ps`, `sh` and `probe` all use. shsrv is raw TCP (not FTP, where CRLF is right) and does not strip
+the carriage return, so it saw `launch <id>\r` and resolved no title: nothing ran. Reverted to a
+bare `\n`, with a comment so it is not "fixed" back.
+
+With that undone, probe still stalled at *restore*. The D034 skip-unchanged check confirmed presence
+with a `SIZE` per known file - a round trip each, over the network, for a many-file title with a
+large ledger, so restore looked hung and probe never reached the launch. Worse, `SIZE` was not even
+truthful: it answered a size for a title deleted by hand (the reported bug), so the skip kept files
+that were gone. Both are fixed by reading presence from a **directory listing** instead: one listing
+per folder rather than a `SIZE` per file (fast), and the same truth `pros ls` shows (correct - a
+deleted title's folder lists empty, so everything re-sends). The shared fake's `LIST` was flat
+(full paths); it is now directory-aware (basenames under the requested folder), which also closes
+the gap that let this ship untested (D034 updated).
+
 ## The log view is virtualized, holds 20k lines, and filters by regex
 
 Asked why the log kept only 2000 lines and what a reasonable max is. The answer was that 2000 was

@@ -67,6 +67,8 @@ pub(crate) enum Job {
     Install(Target, Box<pros_core::manifest::Payload>, PathBuf, String),
     /// Ask the target what each of these titles is called.
     Names(Target, Vec<String>),
+    /// List what is installed, by name - the probe screen's choice of titles.
+    Titles(Target),
     /// Ask the target where its saves are.
     FindSaves(Target),
     /// Ask the target which of these directories it actually has.
@@ -183,6 +185,7 @@ impl Job {
                 format!("asking what {} has released, and checking it", payload.name)
             }
             Self::Names(_, ids) => format!("reading {} title names", ids.len()),
+            Self::Titles(_) => "listing installed titles".to_owned(),
             Self::FindSaves(_) => "looking for saves".to_owned(),
             Self::Locate(_, where_) => format!("looking in {} places", where_.len()),
             Self::Launch(_, id) => format!("starting {id}"),
@@ -249,6 +252,7 @@ impl Job {
             Self::Check(..)
             | Self::Browse(..)
             | Self::Names(..)
+            | Self::Titles(..)
             | Self::FindSaves(..)
             | Self::Locate(..)
             | Self::ReadList(..)
@@ -277,6 +281,7 @@ impl Job {
             | Self::EndProcess(..) => &[Section::System],
             Self::FindPayloads(..) => &[Section::Payloads],
             Self::FindSaves(_) => &[Section::Saves],
+            Self::Titles(_) => &[Section::Probe],
             // One listing, five views over it - see the section dispatcher.
             Self::Browse(..) => &[
                 Section::Filesystem,
@@ -330,6 +335,7 @@ impl Job {
             | Self::Relist(..)
             | Self::Fetch(..)
             | Self::Names(..)
+            | Self::Titles(..)
             | Self::FindSaves(..)
             | Self::Locate(..)
             | Self::ReadAutoload(..)
@@ -438,6 +444,8 @@ pub(crate) enum Done {
     /// Carries only what was read. **A title that did not answer is absent from this**,
     /// rather than present with an empty name - the identifier stands for it, which is true.
     Named(Vec<pros_core::titles::Metadata>),
+    /// What is installed, by name, for the probe screen to choose from.
+    Titles(Vec<pros_core::titles::Metadata>),
     /// A folder was copied, in one direction or the other.
     Copied(Box<pros_core::transfer::Summary>, String),
     /// Every payload file the manager holds, once looked for.
@@ -508,6 +516,8 @@ pub(crate) enum Section {
     Filesystem,
     /// The system log.
     Log,
+    /// An installed title, launched with its log captured.
+    Probe,
     /// A command and what it printed.
     Shell,
 }
@@ -560,7 +570,7 @@ impl Section {
                 Self::Filesystem,
             ],
         ),
-        ("diagnose", &[Self::Log, Self::Shell]),
+        ("diagnose", &[Self::Log, Self::Probe, Self::Shell]),
     ];
 
     /// What it is called in the sidebar.
@@ -578,6 +588,7 @@ impl Section {
             Self::Cheats => "cheats",
             Self::Filesystem => "filesystem",
             Self::Log => "log",
+            Self::Probe => "probe",
             Self::Shell => "shell",
         }
     }
@@ -609,6 +620,9 @@ impl Section {
             Self::Cheats => "cheat files, on either side",
             Self::Filesystem => "anywhere on the target's storage",
             Self::Log => "the target's system log, as it arrives",
+            Self::Probe => {
+                "launch an installed title with the log already attached, and keep what it said"
+            }
             Self::Shell => "one command on the target, and what it printed",
         }
     }
@@ -639,6 +653,7 @@ impl Section {
             | Self::Cheats
             | Self::Filesystem
             | Self::Log
+            | Self::Probe
             | Self::Shell => true,
             Self::Check | Self::Stream | Self::Autoload | Self::System | Self::Controllers => false,
         }
@@ -673,7 +688,10 @@ impl Section {
             // Nothing: it *is* the asking.
             Self::Check | Self::Stream | Self::Controllers => None,
 
-            Self::Log => Some("klogsrv"),
+            // A probe needs the shell to launch and the file service to list titles too, but a
+            // capture with no log is not a probe at all - and the other two say so themselves,
+            // in the panel, when they will not answer.
+            Self::Log | Self::Probe => Some("klogsrv"),
             // Both are the shell: one runs a command somebody typed, the other runs the
             // handful this asks on their behalf.
             Self::Shell | Self::System => Some("shsrv"),
@@ -729,6 +747,7 @@ impl Section {
             | Self::System
             | Self::Controllers
             | Self::Log
+            | Self::Probe
             | Self::Shell => Looking::Anything,
         }
     }
@@ -873,6 +892,33 @@ impl Waiting {
     pub(crate) fn elapsed(&self) -> Duration {
         self.since.elapsed()
     }
+}
+
+/// The probe screen: what it can launch, and what the last run captured.
+///
+/// **Grouped because it is one screen's worth.** The run itself - the thread and its channel -
+/// lives beside the worker in the window, like the log; this is only what is drawn.
+#[derive(Debug, Default)]
+pub(crate) struct Probing {
+    /// What is installed, to choose from. `None` until asked.
+    pub(crate) titles: Option<Vec<pros_core::titles::Metadata>>,
+    /// Which target the titles were last asked of, so a refusal is not retried every frame.
+    pub(crate) titles_for: Option<String>,
+    /// Which title will be launched.
+    pub(crate) id: Option<String>,
+    /// How long a run follows the log before it stops on its own, in seconds.
+    pub(crate) seconds: u64,
+    /// What the last run captured - its steps, marked `--`, and the log lines between them.
+    ///
+    /// **Kept apart from [`State::lines`]**, because the log screen is the whole target talking
+    /// and this is one run of one title: mixing them loses the run's edges, which are the point.
+    pub(crate) lines: Vec<String>,
+    /// The step the run is on, or how it ended.
+    pub(crate) status: String,
+    /// What to keep on screen - the log screen's filter, separately held.
+    pub(crate) filter: String,
+    /// Whether the filter is a regular expression.
+    pub(crate) regex: bool,
 }
 
 /// Which windows are open.
@@ -1121,6 +1167,8 @@ pub(crate) struct State {
     /// most filtering wants; regex is there for the times a substring cannot say it. Like the
     /// filter text, it changes the view and never the record.
     pub(crate) log_regex: bool,
+    /// The probe screen: what it can launch, and what the last run captured.
+    pub(crate) probing: Probing,
     /// A doctor's plan that has been shown to somebody and not yet agreed to.
     ///
     /// **Nothing here is carried out until this is emptied by a press.** It is the whole of the
@@ -1204,6 +1252,11 @@ impl State {
             // Even, until somebody drags it.
             split: 0.5,
             watch_port: pros_core::watch::PORT.to_string(),
+            // The command line's own default for `pros probe --seconds`.
+            probing: Probing {
+                seconds: 120,
+                ..Probing::default()
+            },
             ..Self::default()
         }
     }
@@ -1313,6 +1366,8 @@ impl State {
             // A log, a shell, a stream and the controllers have nothing to fetch before they
             // can be used: they are all things somebody starts.
             Section::Log | Section::Shell | Section::Stream | Section::Controllers => false,
+            // The list of titles to choose from is the one thing it cannot be drawn without.
+            Section::Probe => self.probing.titles.is_none(),
         }
     }
 
@@ -1360,6 +1415,7 @@ impl State {
             | Job::Restore(target, ..)
             | Job::Send(target, ..)
             | Job::Names(target, _)
+            | Job::Titles(target)
             | Job::FindSaves(target)
             | Job::Locate(target, _)
             | Job::Launch(target, _)
@@ -1439,6 +1495,7 @@ impl State {
             Done::Checked(report, _) => Ending::Done(format!("{:?}", report.verdict())),
             Done::Browsed(items) => Ending::Done(format!("{} entries", items.len())),
             Done::Named(found) => Ending::Done(format!("{} names", found.len())),
+            Done::Titles(found) => Ending::Done(format!("{} titles", found.len())),
             Done::Pulled { into, bytes } => {
                 Ending::Done(format!("{bytes} bytes to {}", into.display()))
             }
@@ -1519,6 +1576,7 @@ impl State {
                     }
                 }
             }
+            Done::Titles(found) => self.carry_titles(found),
             Done::Copied(summary, where_to) => {
                 // **An incomplete copy is trouble, not news.** A backup that quietly missed
                 // a file is trusted at the moment it matters, so it goes where failures go
@@ -1600,6 +1658,27 @@ impl State {
             }
         }
         self.next_in_line();
+    }
+
+    /// What is installed, for the probe screen to choose from.
+    fn carry_titles(&mut self, found: Vec<pros_core::titles::Metadata>) {
+        // The names are worth keeping beyond this screen: every other one that shows an
+        // identifier would rather show what it is called.
+        for about in &found {
+            if let Some(name) = &about.name {
+                self.names.insert(about.id.clone(), name.clone());
+            }
+        }
+        // Keep the choice when it is still installed; otherwise start on the first.
+        if self
+            .probing
+            .id
+            .as_ref()
+            .is_none_or(|id| !found.iter().any(|about| &about.id == id))
+        {
+            self.probing.id = found.first().map(|about| about.id.clone());
+        }
+        self.probing.titles = Some(found);
     }
 
     /// Where the target said its saves are, or why it could not say.

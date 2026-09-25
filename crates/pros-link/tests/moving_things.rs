@@ -90,7 +90,9 @@ fn a_missing_file_is_a_refusal_rather_than_a_failure() {
 /// line it does not understand.
 #[test]
 fn a_listing_keeps_what_it_could_not_read() {
-    let contents = Store::new(&[("one.txt", b"1"), ("two.txt", b"22")]);
+    // Absolute keys, as a real client stores them - the fake lists a directory by its members'
+    // basenames, so a listing of `/` shows these two files.
+    let contents = Store::new(&[("/one.txt", b"1"), ("/two.txt", b"22")]);
     let fake = files_fake(&contents, [127, 0, 0, 1], true);
 
     let mut session = Session::open_at(fake.address(), fake.port()).expect("the fake logs in");

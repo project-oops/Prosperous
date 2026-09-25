@@ -63,7 +63,12 @@ pub fn run_at(address: &str, port: u16, command: &str, settle: Duration) -> Resu
     wire::drain_banner(&mut stream, BANNER);
 
     stream.write_all(command.as_bytes())?;
-    stream.write_all(b"\r\n")?;
+    // **A bare `\n`, not `\r\n`.** This service is raw TCP, not FTP, and it was measured to take a
+    // single newline; it does not strip a carriage return, so a `\r\n` leaves the `\r` on the line
+    // and the command stops resolving - `launch <id>\r` finds no such title, and nothing runs. That
+    // regression shipped once (a CRLF "fix" borrowed from the FTP control channel, where CRLF is
+    // right); the terminator here is one `\n`, on purpose.
+    stream.write_all(b"\n")?;
     stream.flush()?;
 
     wire::read_until_quiet(&mut stream, settle)

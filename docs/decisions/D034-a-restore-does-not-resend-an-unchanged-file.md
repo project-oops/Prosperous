@@ -28,10 +28,17 @@ the way - so it is `pros_core::checksum` doing the hashing, not a second copy of
 dependency (principle 6: the measurement about a running target stays here; the format work stays
 in the crate that owns it).
 
-**The presence half is not optional.** A record is not a promise the file is still there - a crash,
-a wipe or a hand-edit can remove it while the local source is unchanged - so a matching digest
-alone does not skip; a cheap `SIZE` must still find the file. This is the same `SIZE` the store
-verification already leans on, so it degrades identically if a target ever lacked it.
+**The presence half is not optional, and it reads a listing, not a size.** A record is not a
+promise the file is still there - a delete, a wipe or a hand-edit can remove it while the local
+source is unchanged - so a matching digest alone does not skip; the target must still show the file.
+Presence is read from a **directory listing**, not `SIZE`: `SIZE` proved an unreliable existence
+signal on a real target - it answered a size for a title that had been deleted by hand, so the skip
+wrongly kept and *nothing* re-sent - whereas a listing is the same truth `pros ls` shows and the
+name in it does not change when the target unwraps a SELF. It is also cheaper at scale: each folder
+is listed once and remembered, so a title costs a listing per folder rather than a `SIZE` round trip
+per file, which on a many-file title over the network is the difference between a quick restore and
+one that looks hung. A folder that will not list (it was removed) reads as empty, so everything in
+it is sent again.
 
 **It is a cache, and it only ever errs toward re-sending.** Nothing is skipped that was not both
 recorded from a verified landing and confirmed present. Every verified store updates the record;

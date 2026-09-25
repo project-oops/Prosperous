@@ -62,6 +62,8 @@ pub mod origin;
 pub mod payloads;
 /// Where things live on a target, per storage device.
 pub mod places;
+/// Launching a title and following what it says: the probe loop's steps.
+pub mod probe;
 /// Watching the target, by starting something that already knows how.
 pub mod recovery;
 pub mod remove;

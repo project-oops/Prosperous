@@ -487,11 +487,22 @@ fn transfer(
             // A header, which is part of the format, and a line that is genuinely not an
             // entry - so a client can be tested on telling those two apart.
             let mut listing = String::from("total 2\nthis line is not a listing entry\n");
+            // Directory-aware, like a real server: only the files directly in the requested folder,
+            // named by their basename. The store is keyed by full path, so a folder's children are
+            // the keys under `<argument>/` with no further slash - which is what lets a client tell
+            // a file that is there from one that is not.
+            let prefix = format!("{}/", argument.trim_end_matches('/'));
             for name in contents.names() {
+                let Some(base) = name
+                    .strip_prefix(&prefix)
+                    .filter(|rest| !rest.contains('/'))
+                else {
+                    continue;
+                };
                 let size = contents.get(&name).map_or(0, |bytes| bytes.len());
                 let _ = writeln!(
                     listing,
-                    "-rw-r--r--   1 root root {size:>8} Aug 25 12:00 {name}"
+                    "-rw-r--r--   1 root root {size:>8} Aug 25 12:00 {base}"
                 );
             }
             listing.push_str("drwxr-xr-x   2 root root        0 Aug 25 12:00 a directory\n");

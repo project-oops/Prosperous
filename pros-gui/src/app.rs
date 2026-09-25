@@ -771,6 +771,117 @@ fn choose_where_to_save(suggested: &str) -> Option<PathBuf> {
         .save_file()
 }
 
+/// The filter, copy and save controls a captured log carries - the log screen's, and the probe
+/// screen's, which is the same view over a different capture.
+///
+/// **One function, so the two cannot drift.** Returns what happened that the caller has to say:
+/// `Ok` for news, `Err` for trouble.
+fn filter_controls(
+    ui: &mut egui::Ui,
+    lines: &[String],
+    filter: &mut String,
+    regex: &mut bool,
+    matcher: &LogMatch,
+    save_as: &str,
+) -> Option<Result<String, String>> {
+    ui.label("filter");
+    ui.add(
+        egui::TextEdit::singleline(filter)
+            .desired_width(160.0)
+            .hint_text(if *regex {
+                "regex to keep"
+            } else {
+                "text to keep"
+            }),
+    )
+    .on_hover_text(
+        "keep only the lines this matches - plain text ignoring case, or a regular expression \
+         with the box ticked. What is hidden is still kept.",
+    );
+    ui.checkbox(regex, "regex")
+        .on_hover_text("match the filter as a regular expression instead of plain text");
+    // **Said, not left to look like an empty result.** An unfinished pattern does not compile,
+    // and while it does not the filter is not applied - so the view shows every line rather than
+    // blanking on each keystroke, and this says why.
+    if matcher.is_invalid() {
+        ui.colored_label(egui::Color32::from_rgb(220, 170, 90), "invalid regex")
+            .on_hover_text("the pattern does not compile yet, so every line is shown");
+    }
+    // **Counted after filtering, and both numbers shown.** A filter that hid ninety lines and
+    // then said `10 lines` would be describing a target that is quiet.
+    let kept = lines.iter().filter(|line| matcher.keeps(line)).count();
+    if filter.trim().is_empty() {
+        ui.weak(format!("{} lines", lines.len()));
+    } else {
+        ui.weak(format!("{kept} of {} lines", lines.len()));
+    }
+    let shown = || {
+        lines
+            .iter()
+            .filter(|line| matcher.keeps(line))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    if ui
+        .add_enabled(kept > 0, egui::Button::new("copy"))
+        .on_hover_text("copy what is shown to the clipboard, filter and all")
+        .on_disabled_hover_text("nothing to copy")
+        .clicked()
+    {
+        let text = shown();
+        ui.output_mut(|out| out.copied_text = text);
+    }
+    // **Save what is shown to a file the person picks** - to attach to a report, to keep past a
+    // target change. Exactly what is on screen, filter and all, like `copy`, so the two mean the
+    // same thing about the same lines.
+    if ui
+        .add_enabled(kept > 0, egui::Button::new("save"))
+        .on_hover_text("write what is shown to a .log file you choose, filter and all")
+        .on_disabled_hover_text("nothing to save")
+        .clicked()
+        && let Some(path) = choose_where_to_save(save_as)
+    {
+        // A trailing newline, so the file ends the way a log does and a later append does not
+        // run onto the last line.
+        let mut text = shown();
+        text.push('\n');
+        return Some(match std::fs::write(&path, text) {
+            Ok(()) => Ok(format!("saved {kept} lines to {}", path.display())),
+            Err(why) => Err(format!("could not save the log: {why}")),
+        });
+    }
+    None
+}
+
+/// A captured log's lines, filtered, in a view that lays out only the rows on screen.
+///
+/// **Virtualized** - see the log panel for why - and pinned to the bottom while `live`, because
+/// the newest line is the one being waited for.
+fn filtered_rows(ui: &mut egui::Ui, salt: &str, lines: &[String], matcher: &LogMatch, live: bool) {
+    let shown: Vec<&str> = lines
+        .iter()
+        .filter(|line| matcher.keeps(line))
+        .map(String::as_str)
+        .collect();
+    if shown.is_empty() {
+        if !lines.is_empty() {
+            ui.weak("nothing matches that filter - the lines are still kept");
+        }
+        return;
+    }
+    let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+    egui::ScrollArea::vertical()
+        .id_salt(salt)
+        .auto_shrink([false, false])
+        .stick_to_bottom(live)
+        .show_rows(ui, row_height, shown.len(), |ui, range| {
+            for row in range {
+                ui.monospace(shown[row]);
+            }
+        });
+}
+
 /// Where the manager keeps the payload files it loads.
 ///
 /// Measured: one folder per payload, with the file inside it.
@@ -808,6 +919,12 @@ pub(crate) struct App {
     /// every other thing the window can do, including sending the payload whose failure
     /// somebody is reading about.
     tail: Option<crate::tail::Tail>,
+    /// The probe running, or the last one, when there is one.
+    ///
+    /// **Beside the worker for the same reason as the log**: a probe is a launch followed by a
+    /// subscription lasting up to its cap, and through the one-job rule it would shut the window
+    /// for that long.
+    probe: Option<crate::probe::Run>,
     /// What each payload's own project has released, as far as anything has asked.
     ///
     /// **Read from disk at start and written back as answers arrive.** The point of keeping
@@ -865,6 +982,7 @@ impl App {
             stamp: pros_core::build::line(),
             docs: oops_docs::DocsWindow::default(),
             tail: None,
+            probe: None,
             sweep: None,
             asked_at_launch: false,
             sources: pros_core::sources::load(),
@@ -5735,6 +5853,9 @@ impl App {
         // in the panel that decides what to recommend.
         self.state.payloads_there = None;
         self.state.names.clear();
+        // Another machine has other titles installed.
+        self.state.probing.titles = None;
+        self.state.probing.id = None;
     }
 
     fn survey_on_arrival(&mut self) {
@@ -5841,6 +5962,51 @@ impl App {
             // service that is not loaded is a normal state the check already reports.
             Err(why) => self.state.trouble = Some(why),
         }
+    }
+
+    /// The probe's steps and lines since the last frame, the way the log's are taken.
+    ///
+    /// **Polled while it runs**, not only when a line arrives: a title that says nothing still
+    /// ends, and the ending has to be drawn.
+    fn take_probe(&mut self, ctx: &egui::Context) {
+        let Some(run) = &mut self.probe else {
+            return;
+        };
+        if run.drain(
+            &mut self.state.probing.lines,
+            &mut self.state.probing.status,
+        ) {
+            ctx.request_repaint();
+        }
+        if run.is_running() {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+        // A probe belongs to the target it launched on, like the log.
+        if self.state.target().is_none_or(|now| now.name != run.target) {
+            self.probe = None;
+        }
+    }
+
+    /// Lists what is installed when somebody opens the probe screen, which cannot offer a choice
+    /// of titles without it.
+    ///
+    /// Asked once per target, like the log: a target that will not list its titles has said so,
+    /// and the refresh button is how to ask again.
+    fn titles_on_arrival(&mut self) {
+        if self.state.section != Section::Probe
+            || self.state.probing.titles.is_some()
+            || !self.state.is_idle()
+        {
+            return;
+        }
+        let Some(target) = self.state.target().cloned() else {
+            return;
+        };
+        if self.state.probing.titles_for.as_deref() == Some(target.name.as_str()) {
+            return;
+        }
+        self.state.probing.titles_for = Some(target.name.clone());
+        self.state.begin(Job::Titles(target));
     }
 
     fn locate_on_arrival(&mut self) {
@@ -6226,38 +6392,16 @@ impl App {
         let matcher = LogMatch::build(&self.state.log_filter, self.state.log_regex);
         self.log_toolbar(ui, following, &matcher);
 
-        let shown: Vec<&str> = self
-            .state
-            .lines
-            .iter()
-            .filter(|line| matcher.keeps(line))
-            .map(String::as_str)
-            .collect();
-        if shown.is_empty() {
-            ui.weak(if self.state.lines.is_empty() {
-                if following {
-                    "nothing yet - a quiet log is a fact about the target, not a fault"
-                } else {
-                    "not following"
-                }
+        if self.state.lines.is_empty() {
+            ui.weak(if following {
+                "nothing yet - a quiet log is a fact about the target, not a fault"
             } else {
-                "nothing matches that filter - the lines are still arriving"
+                "not following"
             });
             return;
         }
-
-        // Only the rows in `range` are built, so this is flat in the buffer size. Pinned to the
-        // bottom while following, because the newest line is the one being waited for.
-        let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
-        egui::ScrollArea::vertical()
-            .id_salt("log")
-            .auto_shrink([false, false])
-            .stick_to_bottom(following)
-            .show_rows(ui, row_height, shown.len(), |ui, range| {
-                for row in range {
-                    ui.monospace(shown[row]);
-                }
-            });
+        // Only the rows on screen are built, so this is flat in the buffer size.
+        filtered_rows(ui, "log", &self.state.lines, &matcher, following);
     }
 
     /// The log screen controls: following, filtering, copying, and where it is kept.
@@ -6315,43 +6459,6 @@ impl App {
                     "the target closed the connection",
                 );
             }
-            ui.label("filter");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.state.log_filter)
-                    .desired_width(160.0)
-                    .hint_text(if self.state.log_regex {
-                        "regex to keep"
-                    } else {
-                        "text to keep"
-                    }),
-            )
-            .on_hover_text(
-                "keep only the lines this matches - plain text ignoring case, or a regular \
-                 expression with the box ticked. The log keeps arriving either way.",
-            );
-            ui.checkbox(&mut self.state.log_regex, "regex")
-                .on_hover_text("match the filter as a regular expression instead of plain text");
-            // **Said, not left to look like an empty result.** An unfinished pattern does not
-            // compile, and while it does not the filter is not applied - so the view shows every
-            // line rather than blanking on each keystroke, and this says why.
-            if matcher.is_invalid() {
-                ui.colored_label(egui::Color32::from_rgb(220, 170, 90), "invalid regex")
-                    .on_hover_text("the pattern does not compile yet, so every line is shown");
-            }
-            // **Counted after filtering, and both numbers shown.** A filter that hid ninety
-            // lines and then said `10 lines` would be describing a target that is quiet.
-            let kept = self
-                .state
-                .lines
-                .iter()
-                .filter(|line| matcher.keeps(line))
-                .count();
-            let all = self.state.lines.len();
-            if self.state.log_filter.trim().is_empty() {
-                ui.weak(format!("{all} lines"));
-            } else {
-                ui.weak(format!("{kept} of {all} lines"));
-            }
             // **Said, not just done.** A log kept somewhere nobody is told about is a log
             // nobody reads afterwards, which is the whole reason for keeping it.
             if let Some(target) = known.as_ref()
@@ -6371,59 +6478,195 @@ every line is appended here as it arrives, and the previous file is kept beside 
                     self.reveal(at);
                 }
             }
-            if ui
-                .add_enabled(kept > 0, egui::Button::new("copy"))
-                .on_hover_text("copy what is shown to the clipboard, filter and all")
-                .on_disabled_hover_text("nothing to copy")
-                .clicked()
-            {
-                let text: String = self
-                    .state
-                    .lines
-                    .iter()
-                    .filter(|line| matcher.keeps(line))
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                ui.output_mut(|out| out.copied_text = text);
-            }
-            // **Save what is shown to a file the person picks.** The kept file above is this
-            // project's own, beside the registry and named for the target; this is the log going
-            // somewhere they chose - to attach to a report, to keep past a target change. It saves
-            // exactly what is on screen, filter and all, like `copy`, so the two mean the same
-            // thing about the same lines.
-            if ui
-                .add_enabled(kept > 0, egui::Button::new("save"))
-                .on_hover_text("write what is shown to a .log file you choose, filter and all")
-                .on_disabled_hover_text("nothing to save")
-                .clicked()
-            {
-                let suggested = known
-                    .as_ref()
-                    .map_or_else(|| "log".to_owned(), |target| format!("{}.log", target.name));
-                if let Some(path) = choose_where_to_save(&suggested) {
-                    let mut text: String = self
-                        .state
-                        .lines
-                        .iter()
-                        .filter(|line| matcher.keeps(line))
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    // A trailing newline, so the file ends the way a log does and a later append
-                    // does not run onto the last line.
-                    text.push('\n');
-                    match std::fs::write(&path, text) {
-                        Ok(()) => {
-                            self.state.said = format!("saved {kept} lines to {}", path.display());
-                        }
-                        Err(why) => {
-                            self.state.trouble = Some(format!("could not save the log: {why}"));
-                        }
-                    }
-                }
+            // The filter, copy and save are the probe screen's too - one function, so the two
+            // views of a captured log cannot drift.
+            let suggested = known
+                .as_ref()
+                .map_or_else(|| "log".to_owned(), |target| format!("{}.log", target.name));
+            match filter_controls(
+                ui,
+                &self.state.lines,
+                &mut self.state.log_filter,
+                &mut self.state.log_regex,
+                matcher,
+                &suggested,
+            ) {
+                Some(Ok(said)) => self.state.said = said,
+                Some(Err(why)) => self.state.trouble = Some(why),
+                None => {}
             }
         });
+    }
+
+    /// An installed title, launched with the log already attached, and what it said.
+    ///
+    /// **The probe loop without the restore.** `pros probe` deploys a local build first; a title
+    /// picked off the target is already there, so this closes whatever it left running, attaches
+    /// to the log, launches, and follows until it parks, exits or the cap passes - the same
+    /// `pros_core::probe` steps. What it captured is shown the way the log screen shows its
+    /// lines, with the same filter, copy and save.
+    fn probe_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(target) = self.state.target().cloned() else {
+            section_heading(ui, Section::Probe);
+            ui.label("no target selected");
+            return;
+        };
+        let running = self
+            .probe
+            .as_ref()
+            .is_some_and(crate::probe::Run::is_running);
+        self.probe_toolbar(ui, &target, running);
+        self.probe_capture(ui, &target, running);
+    }
+
+    /// The probe screen's heading: which title, for how long, and the button that starts it.
+    fn probe_toolbar(&mut self, ui: &mut egui::Ui, target: &target::Target, running: bool) {
+        let titles = self.state.probing.titles.clone().unwrap_or_default();
+        section_heading_with(ui, Section::Probe, |ui| {
+            let label = |about: &pros_core::titles::Metadata| match &about.name {
+                Some(name) => format!("{}  {name}", about.id),
+                None => about.id.clone(),
+            };
+            let chosen = self
+                .state
+                .probing
+                .id
+                .as_ref()
+                .and_then(|id| titles.iter().find(|about| &about.id == id))
+                .map_or_else(|| "choose a title".to_owned(), label);
+            ui.add_enabled_ui(!running, |ui| {
+                egui::ComboBox::from_id_salt("probe-title")
+                    .selected_text(chosen)
+                    .width(260.0)
+                    .show_ui(ui, |ui| {
+                        for about in &titles {
+                            ui.selectable_value(
+                                &mut self.state.probing.id,
+                                Some(about.id.clone()),
+                                label(about),
+                            );
+                        }
+                    });
+            });
+            if ui
+                .add_enabled(
+                    self.state.is_idle() && !running,
+                    egui::Button::new("refresh"),
+                )
+                .on_hover_text("ask the target what is installed again")
+                .clicked()
+            {
+                self.state.probing.titles_for = Some(target.name.clone());
+                self.state.begin(Job::Titles(target.clone()));
+            }
+            ui.label("for");
+            ui.add_enabled(
+                !running,
+                egui::DragValue::new(&mut self.state.probing.seconds)
+                    .range(5..=3600)
+                    .suffix("s"),
+            )
+            .on_hover_text(
+                "the longest it follows the log - it stops sooner if the title parks or exits",
+            );
+            if running {
+                if ui
+                    .button("stop")
+                    .on_hover_text(
+                        "stop following - the title is left running; the dashboard Close, or \
+                         the system screen, ends it",
+                    )
+                    .clicked()
+                    && let Some(run) = &self.probe
+                {
+                    run.stop();
+                }
+                ui.spinner();
+            } else if ui
+                .add_enabled(
+                    self.state.probing.id.is_some(),
+                    egui::Button::new("launch and capture"),
+                )
+                .on_hover_text(
+                    "close it if it is running, attach to the log, launch it, and keep what it \
+                     says until it parks, exits, or the time is up",
+                )
+                .on_disabled_hover_text("choose a title first")
+                .clicked()
+                && let Some(id) = self.state.probing.id.clone()
+            {
+                self.state.probing.lines.clear();
+                self.state.probing.status = format!("starting {id}");
+                self.probe = Some(crate::probe::Run::start(
+                    target,
+                    &id,
+                    self.state.probing.seconds,
+                ));
+            }
+        });
+    }
+
+    /// What the last probe captured, drawn the way the log screen draws its lines.
+    fn probe_capture(&mut self, ui: &mut egui::Ui, target: &target::Target, running: bool) {
+        let matcher = LogMatch::build(&self.state.probing.filter, self.state.probing.regex);
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    !running && !self.state.probing.lines.is_empty(),
+                    egui::Button::new("clear"),
+                )
+                .on_hover_text("forget the last capture")
+                .clicked()
+            {
+                self.state.probing.lines.clear();
+                self.state.probing.status.clear();
+            }
+            let suggested = self.probe.as_ref().map_or_else(
+                || "probe.log".to_owned(),
+                |run| format!("{}-{}.log", target.name, run.id),
+            );
+            match filter_controls(
+                ui,
+                &self.state.probing.lines,
+                &mut self.state.probing.filter,
+                &mut self.state.probing.regex,
+                &matcher,
+                &suggested,
+            ) {
+                Some(Ok(said)) => self.state.said = said,
+                Some(Err(why)) => self.state.trouble = Some(why),
+                None => {}
+            }
+        });
+        // **Where it has got to, or how it ended, said in words.** A capture that stopped and one
+        // still waiting for the title's first line look the same as a list of lines.
+        if !self.state.probing.status.is_empty() {
+            ui.label(&self.state.probing.status);
+        }
+        ui.separator();
+
+        if self
+            .state
+            .probing
+            .titles
+            .as_ref()
+            .is_some_and(Vec::is_empty)
+        {
+            ui.weak(format!(
+                "nothing under {} looks like an installed title",
+                pros_core::titles::APPMETA
+            ));
+            return;
+        }
+        if self.state.probing.lines.is_empty() {
+            ui.weak(if running {
+                "waiting for the title to say something"
+            } else {
+                "choose a title and launch it - its log is captured here, from before it starts"
+            });
+            return;
+        }
+        filtered_rows(ui, "probe", &self.state.probing.lines, &matcher, running);
     }
 
     /// A command, and what it printed.
@@ -6532,6 +6775,7 @@ every line is appended here as it arrives, and the previous file is kept beside 
                 self.payloads_body(ui);
             }
             Section::Log => self.log_panel(ui),
+            Section::Probe => self.probe_panel(ui),
             Section::Shell => self.shell_panel(ui),
             // Five views over one thing. They differ in where each side starts and in
             // nothing else, and pretending otherwise would be five copies of one view.
@@ -6756,6 +7000,7 @@ impl eframe::App for App {
                 self.tail = None;
             }
         }
+        self.take_probe(ctx);
         // **Whatever the last job disturbed is read again.** Not a list of special cases
         // here: the job said what it touched, and this does what it was told.
         for what in std::mem::take(&mut self.state.disturbed) {
@@ -6813,6 +7058,7 @@ impl eframe::App for App {
         self.system_on_arrival();
         self.autoload_on_arrival();
         self.follow_on_arrival();
+        self.titles_on_arrival();
         self.take_dropped(ctx);
         self.menu_bar(ctx);
         self.register_dialog(ctx);

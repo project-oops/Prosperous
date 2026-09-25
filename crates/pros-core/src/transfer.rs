@@ -22,6 +22,7 @@
 //! So that the recursion, the link rule and the skipped list can be tested without a
 //! target. The protocol underneath is one implementation of two methods.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use pros_link::files::{Entry, Kind, Session};
@@ -260,7 +261,57 @@ pub enum Resend {
     OnlyChanged,
 }
 
-/// Puts a local folder back onto the target.
+/// A restore, finished.
+#[derive(Debug)]
+pub struct Restored {
+    /// What moved, what was skipped as unchanged, and what would not go.
+    pub summary: Summary,
+    /// Why the record of what landed could not be written, when it could not. **A note, not a
+    /// failure**: the record is a cache, and the only cost is a full re-send next time.
+    pub unrecorded: Option<String>,
+}
+
+/// Puts a local folder onto a target - **the one restore**, which `pros restore`, `pros probe` and
+/// the window's restore all call.
+///
+/// Opens the file service, loads the record of what already landed on this target, runs
+/// [`upload`] against it, and writes the record back. It was three copies of those four steps,
+/// one per caller, and a change to one - progress, the record - reached the others only if
+/// somebody remembered; a probe whose copy printed nothing looked hung for as long as it took.
+///
+/// # Errors
+///
+/// When the file service will not open, or as [`upload`].
+pub fn restore(
+    target: &crate::target::Target,
+    from: &Path,
+    to: &str,
+    resend: Resend,
+    watch: &mut dyn FnMut(&Progress),
+    stop: &dyn Fn() -> bool,
+) -> Result<Restored, String> {
+    let mut session = Session::open(&target.link()).map_err(|why| why.to_string())?;
+    let mut deployed = crate::deployed::load();
+    let done = upload(
+        &mut session,
+        from,
+        to,
+        deployed.for_target(&target.name),
+        resend,
+        watch,
+        stop,
+    );
+    session.close();
+    // Saved whatever the outcome: a restore that failed part way still landed files, and the
+    // record of the ones that verified is as true as it was.
+    let unrecorded = crate::deployed::save(&deployed).err();
+    Ok(Restored {
+        summary: done?,
+        unrecorded,
+    })
+}
+
+/// Puts a local folder back onto the target, over a session already open.
 ///
 /// Directories are made on the way down, and one that already exists is not a failure - see
 /// [`Session::make_directory`].
@@ -290,6 +341,9 @@ pub fn upload(
     let mut summary = Summary::default();
     let root = to.trim_end_matches('/');
     let _ = session.make_directory(root);
+    // Directory listings, kept as they are read, so an unchanged file costs a listing of its folder
+    // once rather than a round trip of its own. See [`present`].
+    let mut listings: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     for relative in contents(from)? {
         // The same reason as a backup: a restore is a walk of unknown size started by one
@@ -319,13 +373,16 @@ pub fn upload(
         // **An unchanged file already on the target is not sent again.** The digest is of the
         // local bytes - the side that can be hashed truthfully, because the target unwraps a SELF
         // on access (`crate::deployed`, and `land` below). The presence check is not optional: a
-        // record is not a promise the file is still there, and skipping one a crash had removed
+        // record is not a promise the file is still there, and skipping one a delete had removed
         // would be the quiet miss this module exists to refuse. `--all` is `Resend::Everything`
-        // and passes both by.
+        // and passes both by. Presence is read from a directory *listing* rather than a `SIZE`:
+        // `SIZE` is not a reliable existence signal on every target - one measured ftpsrv answered
+        // a size for a path that had been deleted - and a listing both tells the truth and costs
+        // one round trip per folder rather than one per file (`present`).
         let digest = Checksum::of(&bytes).to_string();
         if resend == Resend::OnlyChanged
             && known.records(&there, &digest)
-            && session.size(&there).is_ok()
+            && present(session, &there, &mut listings)
         {
             summary.unchanged += 1;
             continue;
@@ -356,6 +413,32 @@ fn make_parents(session: &mut Session, root: &str, relative: &Path, summary: &mu
             });
         }
     }
+}
+
+/// Whether the target still holds a file, read from a directory listing.
+///
+/// **A listing, not a `SIZE`.** The question is only *existence* - a restore must re-send a file the
+/// target no longer has, however the ledger remembers it, which is the case of a title deleted out
+/// from under the cache. A file's size is not a reliable existence signal on every target (a
+/// measured ftpsrv answered a size for a deleted path), whereas a listing is the same truth
+/// `pros ls` shows, and the name in it does not change when the target unwraps a SELF. Each folder
+/// is listed once and remembered in `listings`, so a whole title costs a listing per folder rather
+/// than a round trip per file - and a folder that cannot be listed (it was removed) reads as empty,
+/// so everything in it is sent again.
+fn present(
+    session: &mut Session,
+    there: &str,
+    listings: &mut BTreeMap<String, BTreeSet<String>>,
+) -> bool {
+    let (dir, name) = there.rsplit_once('/').unwrap_or(("", there));
+    if !listings.contains_key(dir) {
+        let names = session
+            .list(dir)
+            .map(|entries| entries.into_iter().map(|entry| entry.name).collect())
+            .unwrap_or_default();
+        listings.insert(dir.to_owned(), names);
+    }
+    listings.get(dir).is_some_and(|names| names.contains(name))
 }
 
 /// Stores one file, then records the outcome: counted and remembered if it verifies, skipped and

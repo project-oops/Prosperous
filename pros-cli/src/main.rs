@@ -1093,31 +1093,33 @@ fn restore(
         }
     }
     let target = pick(name)?;
-    let mut session = pros_link::files::Session::open(&target.link())?;
-    let mut deployed = pros_core::deployed::load();
-    let summary = {
-        let ledger = deployed.for_target(&target.name);
-        let done = pros_core::transfer::upload(
-            &mut session,
-            from,
-            &target_dest,
-            ledger,
-            resend(all),
-            &mut |progress| {
-                println!("  {}", progress.current);
-            },
-            &|| false,
-        );
-        session.close();
-        done
-    }?;
-    // A record of what landed, so the next restore can skip what did not change. A cache: if it
-    // will not write, the only cost is a full re-send next time, so it is a note rather than a
-    // failure.
-    if let Err(why) = pros_core::deployed::save(&deployed) {
+    let summary = deploy(&target, from, &target_dest, all)?;
+    Ok(say::copied(&summary, &target_dest))
+}
+
+/// The restore both `restore` and `probe` do: [`pros_core::transfer::restore`], each file said as
+/// it goes, and the record's note said if it would not write.
+fn deploy(
+    target: &Target,
+    from: &Path,
+    to: &str,
+    all: bool,
+) -> Result<pros_core::transfer::Summary, Box<dyn std::error::Error>> {
+    let restored = pros_core::transfer::restore(
+        target,
+        from,
+        to,
+        resend(all),
+        &mut |progress| {
+            println!("  {}", progress.current);
+        },
+        &|| false,
+    )?;
+    // A cache: if it will not write, the only cost is a full re-send next time.
+    if let Some(why) = restored.unrecorded {
         eprintln!("note: could not record what landed for next time: {why}");
     }
-    Ok(say::copied(&summary, &target_dest))
+    Ok(restored.summary)
 }
 
 /// What a registry command is asking for.
@@ -1725,18 +1727,9 @@ fn probe(
     // 1. Close it if it is running. **Best-effort.** A parked big-app ignores every signal
     //    (measured; oops-mesa's b1e4), so this ends a killable process and no more - the launch
     //    below is what says whether the slot is still held.
-    let listing = pros_link::shell::run(&link, "ps", SETTLE).unwrap_or_default();
-    let running = pros_core::system::processes(&listing);
-    let mine = pros_core::system::of_title(&running, id);
-    if mine.is_empty() {
-        println!("{id} is not running");
-    } else {
-        println!("closing {id} ({} process(es))...", mine.len());
-        for process in &mine {
-            for command in pros_core::system::end(process) {
-                let _ = pros_link::shell::run(&link, &command, SETTLE);
-            }
-        }
+    match pros_core::probe::close(&link, id) {
+        0 => println!("{id} is not running"),
+        closed => println!("closed {id} ({closed} process(es))"),
     }
 
     // 2. Restore the local build into /data/homebrew/<id>, overwriting. A half-landed deploy is
@@ -1745,25 +1738,7 @@ fn probe(
     //    same build to build); `--all` forces every file across. What landed is remembered for
     //    next time, and a cache that will not write is a note, not a failure.
     println!("restoring {} -> {dest}", from.display());
-    let mut session = pros_link::files::Session::open(&link)?;
-    let mut deployed = pros_core::deployed::load();
-    let summary = {
-        let ledger = deployed.for_target(&target.name);
-        let done = pros_core::transfer::upload(
-            &mut session,
-            from,
-            &dest,
-            ledger,
-            resend(all),
-            &mut |_| {},
-            &|| false,
-        );
-        session.close();
-        done
-    }?;
-    if let Err(why) = pros_core::deployed::save(&deployed) {
-        eprintln!("note: could not record what landed for next time: {why}");
-    }
+    let summary = deploy(&target, from, &dest, all)?;
     let restored = say::copied(&summary, &dest);
     if !summary.is_complete() {
         eprintln!("not launching {id} - the deploy did not land cleanly");
@@ -1796,14 +1771,10 @@ fn probe(
     //    with a second window and a sleep.
     println!("attaching to {id}'s log before launch...");
     let (stopper, lines) = pros_link::log::follow(&link)?;
-    std::thread::sleep(SUBSCRIBE_SETTLE);
+    std::thread::sleep(pros_core::probe::SUBSCRIBE_SETTLE);
 
     // 5. Launch it, now that the title is registered and the follower is up to catch it.
-    let said = pros_core::launch::read(&pros_link::shell::run(
-        &link,
-        &pros_core::launch::command(id),
-        SETTLE,
-    )?);
+    let said = pros_core::probe::launch(&link, id)?;
     println!("launching {id}: {}", said.describe());
     if !matches!(said, pros_core::launch::Said::Asked(_)) {
         stopper.stop();
@@ -1814,166 +1785,31 @@ fn probe(
         return Ok(ExitCode::FAILURE);
     }
 
-    // 6. Follow the attached stream until the title parks, exits, or the cap elapses.
+    // 6. Follow the attached stream until the title parks, exits, or the cap elapses. The
+    //    stream, the `ps` watcher and the park sentinel are `pros_core::probe`'s, shared with the
+    //    window's probe screen.
     println!("following {id} (until it parks, exits, or {seconds}s)...");
-    match follow_stream(stopper, lines, &target, id, seconds) {
-        FollowEnd::Finished => println!(
-            "{id} finished its work and parked - a payload cannot exit, so it idles until the \
-             dashboard Close ends it."
-        ),
-        FollowEnd::Exited => println!("{id} left the process list - it exited or crashed."),
-        FollowEnd::Parked => println!(
-            "reached the {seconds}s cap - {id} is still running (a probe that finished may have \
-             parked; the dashboard Close ends it)."
-        ),
-        FollowEnd::NeverSeen => println!(
-            "reached the {seconds}s cap - {id} was never seen in the process list, so it exited \
-             at once or did not start."
-        ),
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-/// A beat between attaching the log follower and issuing the launch.
-///
-/// **The connection is the subscription** - [`pros_link::log::follow`] returns once the socket to
-/// klogsrv is open, and everything klogsrv emits after that is buffered until it is read, so the
-/// ordering (follow, then launch) is what prevents the loss. This settle is insurance on top of
-/// the ordering, not the mechanism: a conservative margin so the stream is certainly live before a
-/// launch whose output arrives and parks within a second or two, where missing the subscription
-/// loses the whole run. Measured need is sub-second; this is deliberately more.
-const SUBSCRIBE_SETTLE: Duration = Duration::from_secs(3);
-
-/// How a `follow_title` watch ended.
-enum FollowEnd {
-    /// The payload printed its park sentinel - it finished its work and is now idling. The
-    /// only ending that distinguishes "done" from "still going" for a title that cannot exit.
-    Finished,
-    /// The title was seen and then left the process list - it exited or crashed.
-    Exited,
-    /// The cap elapsed with the title still present - a finished probe that parked rather than
-    /// exiting looks exactly like this.
-    Parked,
-    /// The cap elapsed without the title ever appearing - it exited at once or never started.
-    NeverSeen,
-}
-
-/// Streams an already-attached log until the title parks, leaves the process list, or `seconds`
-/// elapse.
-///
-/// **The follower is attached by the caller, before the launch** - see the ordering note in
-/// `probe`. This takes the open stream (`stopper`, `lines`) rather than opening it, so the
-/// subscription is already live by the time the title prints anything.
-///
-/// **Two connections, two services, on purpose.** The stream is klogsrv and the poll is shsrv, so
-/// they do not contend: a background watcher runs `ps` once a second while the foreground drains
-/// the log to stdout, and stopping the stream is what ends the drain. The watcher waits for the
-/// title to *appear* before treating its absence as an exit, so the gap between a launch and the
-/// process showing is never read as a crash.
-fn follow_stream<I>(
-    stopper: pros_link::log::Stopper,
-    lines: I,
-    target: &Target,
-    id: &str,
-    seconds: u64,
-) -> FollowEnd
-where
-    I: Iterator<Item = pros_link::log::Line>,
-{
-    use std::io::Write as _;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    let stopper = Arc::new(stopper);
-    let done = Arc::new(AtomicBool::new(false));
-    let exited = Arc::new(AtomicBool::new(false));
-    let seen = Arc::new(AtomicBool::new(false));
-    let (stopper_w, done_w, exited_w, seen_w) = (
-        Arc::clone(&stopper),
-        Arc::clone(&done),
-        Arc::clone(&exited),
-        Arc::clone(&seen),
-    );
-    let target_w = target.clone();
-    let id_w = id.to_owned();
-    let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
-
-    let watcher = std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(1));
-            if done_w.load(Ordering::Relaxed) {
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                stopper_w.stop();
-                break;
-            }
-            let ps = pros_link::shell::run(&target_w.link(), "ps", SETTLE).unwrap_or_default();
-            let present =
-                !pros_core::system::of_title(&pros_core::system::processes(&ps), &id_w).is_empty();
-            if present {
-                seen_w.store(true, Ordering::Relaxed);
-            } else if seen_w.load(Ordering::Relaxed) {
-                exited_w.store(true, Ordering::Relaxed);
-                stopper_w.stop();
-                break;
-            }
-        }
-    });
-
     let mut any = false;
-    let mut finished = false;
-    for line in lines {
-        match line {
-            Ok(l) => {
-                println!("{l}");
-                let _ = std::io::stdout().flush();
-                any = true;
-                // **The payload saying it is done.** A homebrew title cannot exit - `exit`,
-                // `_Exit` and `sceKernelExit` are absent, `_exit` raises `SIGSYS` under a
-                // big-app's credentials, and returning from the entry point faults at zero -
-                // so the conforming ending is to park, and a finished probe is indistinguish-
-                // able from a working one by the process list alone. oops-sdk's
-                // `oops_system_park_until_closed` prints this line once, immediately before it
-                // starts idling, so that a watcher does not have to wait out its whole cap
-                // after a run that is already over. Matched on the tail, not the whole line,
-                // because the log prefixes it with the title and the app id.
-                if l.contains(PARK_SENTINEL) {
-                    finished = true;
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    done.store(true, Ordering::Relaxed);
-    stopper.stop();
-    let _ = watcher.join();
-
+    let ending = pros_core::probe::follow(
+        &std::sync::Arc::new(stopper),
+        lines,
+        &link,
+        id,
+        seconds,
+        &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        &mut |line| {
+            use std::io::Write as _;
+            println!("{line}");
+            let _ = std::io::stdout().flush();
+            any = true;
+        },
+    );
     if !any {
         println!("the log was quiet while {id} ran - which is a result, not a failure");
     }
-    if finished {
-        FollowEnd::Finished
-    } else if exited.load(Ordering::Relaxed) {
-        FollowEnd::Exited
-    } else if seen.load(Ordering::Relaxed) {
-        FollowEnd::Parked
-    } else {
-        FollowEnd::NeverSeen
-    }
+    println!("{}", ending.describe(id, seconds));
+    Ok(ExitCode::SUCCESS)
 }
-
-/// What a payload prints immediately before it parks, from oops-sdk's
-/// `oops_system_park_until_closed`.
-///
-/// **The tag goes inside the brackets, not before the message.** oops-sdk's klog renders
-/// `[<app id>:<tag>] <message>`, so the line on the wire is `[GLPB00001:park] work done` and a
-/// payload with no app id set prints `[park] work done`. This matched `park: work done` when it
-/// first shipped and therefore matched nothing: the sentinel was printed on 2026-09-21 at
-/// 11:47Z and the watch ran to its cap anyway. Matching from the closing bracket covers both
-/// spellings and cannot collide with a title whose own log says "work done".
-const PARK_SENTINEL: &str = "park] work done";
 
 /// Fetches payloads and keeps the ones that are what they claim to be.
 fn fetch(

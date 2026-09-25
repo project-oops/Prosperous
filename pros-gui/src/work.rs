@@ -328,32 +328,17 @@ fn restoring(
         return Done::GuardRefused(refusal);
     }
 
-    let mut session = match files::Session::open(&target.link()) {
-        Ok(session) => session,
-        Err(why) => return Done::Failed(why.to_string()),
-    };
-    // Skip files already verified landed on this target and unchanged, the same as `pros restore`:
-    // a restore of a large title should not re-send what has not changed. The window has no
-    // force-all toggle yet - the CLI's `--all` is the escape hatch. See `pros_core::deployed`.
-    let mut deployed = pros_core::deployed::load();
-    let done = {
-        let ledger = deployed.for_target(&target.name);
-        let done = pros_core::transfer::upload(
-            &mut session,
-            from,
-            to,
-            ledger,
-            pros_core::transfer::Resend::OnlyChanged,
-            watch,
-            stop,
-        );
-        session.close();
-        done
-    };
-    // A cache: if it will not write, the cost is a full re-send next time, not a failed restore.
-    let _ = pros_core::deployed::save(&deployed);
-    match done {
-        Ok(summary) => Done::Copied(Box::new(summary), to.to_owned()),
+    // The one restore `pros restore` and `pros probe` run too. Skips what already landed unchanged;
+    // the window has no force-all toggle yet - the CLI's `--all` is the escape hatch.
+    match pros_core::transfer::restore(
+        target,
+        from,
+        to,
+        pros_core::transfer::Resend::OnlyChanged,
+        watch,
+        stop,
+    ) {
+        Ok(restored) => Done::Copied(Box::new(restored.summary), to.to_owned()),
         Err(why) => Done::Failed(why),
     }
 }
@@ -433,6 +418,10 @@ fn copying(job: &Job, watch: &mut dyn FnMut(&Progress), stop: &dyn Fn() -> bool)
                 Err(why) => Done::Failed(why),
             }
         }
+        Job::Titles(target) => match pros_core::probe::installed(&target.link()) {
+            Ok(found) => Done::Titles(found),
+            Err(why) => Done::Failed(why),
+        },
         Job::FindSaves(target) => match pros_core::saves::find(&target.link()) {
             Ok(found) => Done::FoundSaves(found),
             Err(why) => Done::Failed(why),

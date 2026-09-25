@@ -27,6 +27,7 @@
 mod app;
 mod journal;
 mod listing;
+mod probe;
 mod state;
 mod sweep;
 mod tail;
