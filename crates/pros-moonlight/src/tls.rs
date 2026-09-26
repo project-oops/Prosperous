@@ -1,12 +1,8 @@
 //! The TLS configuration for the HTTPS port.
 //!
-//! The one thing that has to be true here: the certificate presented is **the same one the client
-//! pinned during pairing**. A Moonlight client verifies the HTTPS server against the cert it saw as
-//! `plaincert`, so this serves `ServerCert`'s own certificate and key and no other.
-//!
-//! Client certificates are not required. On a trusted LAN the pairing already established who the
-//! client is, and requesting its certificate here buys nothing the pairing did not; a later change
-//! can pin the paired client certs if the deployment ever stops being a trusted LAN.
+//! A client verifies the HTTPS server against the certificate it pinned as `plaincert` during
+//! pairing, so this serves `ServerCert`'s certificate and key and no other. Client certificates
+//! are not requested: on a trusted LAN the pairing has already identified the client.
 
 use std::sync::Arc;
 

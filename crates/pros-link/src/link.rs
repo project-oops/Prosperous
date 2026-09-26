@@ -1,21 +1,9 @@
 //! Where a target is, and on which ports.
 //!
-//! # Why an address is not enough any more
-//!
-//! Every service here had one port, compiled in, measured against a target. That is a fine
-//! default and a bad requirement: the five payloads this program knows are not the only ones
-//! that speak their protocols, and somebody running a different FTP server on a different port
-//! has no way to say so.
-//!
-//! # Why it is one type rather than a port argument
-//!
-//! Because the alternative was tried on paper and is the bug. Overrides that reach only the
-//! **check** would let a file say *ftpsrv is on 2122*, the check probe 2122 and go green, and
-//! every transfer still go to 2121. The config would be believed and disobeyed at the same
-//! time, which is worse than not having it - a wrong answer wearing the shape of a right one.
-//!
-//! So the address and its ports travel together, and everything that connects takes this. A
-//! function that takes a `&str` cannot honour an override, and now there are none.
+//! Each service has a measured default port, and another server speaking the same protocol
+//! may listen elsewhere. The address and its port overrides travel together and everything
+//! that connects takes a [`Link`], so an override reaches the check and every transfer
+//! alike rather than letting a check pass on one port while transfers go to another.
 
 use std::collections::BTreeMap;
 
@@ -25,8 +13,7 @@ pub struct Link {
     /// Host or address, as written. Resolved at use.
     pub address: String,
     /// Ports this target uses instead of the compiled-in ones, by service name.
-    ///
-    /// **Empty is the normal case** and means every default applies.
+    /// Empty means every default applies.
     pub ports: BTreeMap<String, u16>,
 }
 
@@ -42,9 +29,8 @@ impl Link {
 
     /// The port to use for a service: the override if there is one, otherwise `default`.
     ///
-    /// **The default is passed in rather than looked up** so that the caller which knows
-    /// which service it is talking to is the one that says. A lookup by name here would let a
-    /// typo silently fall through to some other service's port.
+    /// The caller passes the default, so a mistyped name falls back to that service's own
+    /// port rather than another's.
     #[must_use]
     pub fn port(&self, service: &str, default: u16) -> u16 {
         self.ports.get(service).copied().unwrap_or(default)
@@ -52,8 +38,7 @@ impl Link {
 
     /// Whether anything about this target is non-standard.
     ///
-    /// Worth saying out loud in a report: a check that passes against overridden ports is a
-    /// different claim from one that passes against the usual ones.
+    /// A report says so, since a check against overridden ports is a different claim.
     #[must_use]
     pub fn is_plain(&self) -> bool {
         self.ports.is_empty()
@@ -79,7 +64,7 @@ mod tests {
         assert!(link.is_plain());
     }
 
-    /// **An override applies to the one service it names, and to nothing else.**
+    /// An override applies to the one service it names and to nothing else.
     #[test]
     fn an_override_applies_only_to_what_it_names() {
         let mut link = Link::to("10.0.0.1");
@@ -89,8 +74,7 @@ mod tests {
         assert!(!link.is_plain());
     }
 
-    /// A name nothing overrode falls through to the default, rather than to some other
-    /// service's port.
+    /// A name nothing overrode gets its own default, not another service's port.
     #[test]
     fn an_unknown_name_gets_its_own_default() {
         let mut link = Link::to("10.0.0.1");

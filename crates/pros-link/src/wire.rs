@@ -1,17 +1,9 @@
 //! Connecting, and reading from things that do not say when they have finished.
 //!
-//! # Three shapes of answer, none of them request-response
-//!
-//! Every service here is awkward in its own way, and the awkwardness is the interface
-//! rather than a defect to be papered over:
-//!
-//! - the log **streams and never ends**, so a reader stops on a window it chose
-//! - the shell has **no framing at all**, so a reader stops when nothing more arrives
-//! - the loader **may or may not answer**, so a reader must be correct when it does not
-//!
-//! A single `read_response` would have to pretend one of those is the others. These
-//! helpers keep the difference visible at the call site, where the caller can see which
-//! rule it is relying on.
+//! None of the services is request-response. The log streams without end, so a reader
+//! stops on a chosen window; the shell has no framing, so a reader stops when nothing more
+//! arrives; the loader may not answer at all. One helper per rule keeps the rule visible at
+//! the call site.
 
 use std::io::Read as _;
 use std::net::{TcpStream, ToSocketAddrs as _};
@@ -21,15 +13,12 @@ use crate::error::{Error, Result};
 
 /// How long a read blocks before the loop checks its own clock again.
 ///
-/// Short enough that a deadline is honoured promptly, long enough that a quiet connection
-/// is not a spin.
+/// Short enough to honour a deadline promptly, long enough not to spin.
 const POLL: Duration = Duration::from_millis(250);
 
 /// Opens a connection, telling an unresolved name apart from a refusal.
 ///
-/// The distinction is the caller: a name that does not resolve is a typo somebody must fix,
-/// and a port that refuses is usually a payload that is not loaded. Retrying helps with
-/// neither, but only one of them is worth mentioning.
+/// An unresolved name is a typo to fix; a refusing port is usually a payload not loaded.
 ///
 /// # Errors
 ///
@@ -42,8 +31,6 @@ pub(crate) fn connect(address: &str, port: u16, timeout: Duration) -> Result<Tcp
         .ok()
         .and_then(|mut addrs| addrs.next())
         .ok_or_else(|| {
-            // A name that does not resolve and a port that is shut look identical from the
-            // outside - the tool simply does not connect - and the remedies are unrelated.
             tracing::debug!(%address, port, "address did not resolve");
             Error::Unresolved {
                 address: address.to_owned(),
@@ -53,9 +40,8 @@ pub(crate) fn connect(address: &str, port: u16, timeout: Duration) -> Result<Tcp
         .inspect(|_| tracing::trace!(%addr, port, took = ?started.elapsed(), "connected"))
         .map_err(|_| {
             let took = started.elapsed();
-            // `debug`, not `warn`: on this target a shut port is the ordinary answer for a
-            // service the console is not currently running, and the caller is asking in order
-            // to find that out. A warning here would fire on a *successful* check.
+            // `debug`, not `warn`: a shut port is the ordinary answer for a service that is
+            // not running, and a check asks in order to find that out.
             tracing::debug!(%addr, port, ?took, "connection refused");
             Error::Refused { port, took }
         })
@@ -63,14 +49,12 @@ pub(crate) fn connect(address: &str, port: u16, timeout: Duration) -> Result<Tcp
 
 /// Reads for a fixed window, whatever arrives.
 ///
-/// For a stream with no end. Returning nothing is a **result**, not a failure: a quiet log
-/// is a fact about the target, and reporting it as an error would make silence look like
-/// a broken tool.
+/// For a stream with no end. Returning nothing is a result, not a failure: a quiet log is a
+/// fact about the target.
 ///
 /// # Errors
 ///
-/// Propagates a socket failure that is not a timeout. A timeout is expected here - it is
-/// how a quiet connection announces itself - and is not one.
+/// Propagates a socket failure other than a timeout, which is how a quiet connection reads.
 pub(crate) fn read_for(stream: &mut TcpStream, window: Duration) -> Result<String> {
     stream.set_read_timeout(Some(POLL))?;
     let started = Instant::now();
@@ -89,9 +73,7 @@ pub(crate) fn read_for(stream: &mut TcpStream, window: Duration) -> Result<Strin
 
 /// Reads until nothing has arrived for `settle`.
 ///
-/// For an interface with no framing, where the only signal that a response has finished is
-/// that it stopped. The window is generous on purpose: guessing short truncates output,
-/// and guessing long costs a moment.
+/// For an interface with no framing, where a response has finished when it stops.
 ///
 /// # Errors
 ///
@@ -117,9 +99,8 @@ pub(crate) fn read_until_quiet(stream: &mut TcpStream, settle: Duration) -> Resu
 
 /// Drains whatever a server says before it is spoken to.
 ///
-/// A banner and a prompt arrive unprompted, and typing over them puts the command in the
-/// middle of somebody else sentence. Anything other than bytes arriving ends it: a closed
-/// stream, or a read timeout saying the server has stopped talking and is waiting.
+/// A banner and prompt arrive unprompted and a command typed over them is garbled. A closed
+/// stream or a read timeout ends the drain.
 pub(crate) fn drain_banner(stream: &mut TcpStream, window: Duration) {
     if stream.set_read_timeout(Some(POLL)).is_err() {
         return;
@@ -144,9 +125,7 @@ fn is_quiet(error: &std::io::Error) -> bool {
 
 /// Appends bytes as text, replacing anything that is not.
 ///
-/// Target output is a log, not a document: it can contain a truncated multi-byte sequence
-/// at the edge of a read, and losing the whole window to one bad byte would throw away the
-/// message somebody is reading this to find.
+/// A read can end mid multi-byte sequence; one bad byte must not lose the whole window.
 fn push_lossy(out: &mut String, bytes: &[u8]) {
     out.push_str(&String::from_utf8_lossy(bytes));
 }

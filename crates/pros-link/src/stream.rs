@@ -1,37 +1,17 @@
 //! Reading what is in an encoded video stream, without decoding it.
 //!
-//! # Reading is not decoding, and the split is the point
+//! Decoding is left to a media player (`docs/VIDEO.md` part three), since it would need a
+//! large C dependency through FFI in a workspace that forbids unsafe code. This module answers
+//! why no picture appears: it finds the units, names their types and counts them.
 //!
-//! `docs/VIDEO.md` part three hands the socket to a media player, because decoding would mean
-//! a substantial C or C++ dependency reached through FFI in a workspace that **forbids**
-//! unsafe code - to show a picture `mpv` shows for free.
-//!
-//! But handing a socket to a player answers nothing when the picture does not appear. Is the
-//! payload emitting? Is it emitting anything a decoder could use? Has a keyframe ever gone
-//! past? A player answers *no picture*; this answers **which of the several reasons**.
-//!
-//! So: find the units, name their types, count them. Never interpret one.
-//!
-//! # The framing, and why this one
-//!
-//! Annex B - each unit preceded by `00 00 01` or `00 00 00 01`. Chosen because **it is what
-//! players already accept**, so the same bytes that feed this feed `mpv` with no container
-//! and no header of ours in the way. A length-prefixed format would be marginally easier to
-//! parse here and would need our client to be running for anything to be watchable, which is
-//! the wrong trade.
-//!
-//! # What a partial read must not become
-//!
-//! A stream arrives in pieces, and a unit split across two reads is the normal case. **A unit
-//! is only complete when the next start code is found**, so this holds the tail rather than
-//! emitting a short unit - because a truncated access unit is one a decoder rejects, and one
-//! reported as complete would send somebody looking at the encoder instead of the network.
+//! The framing is Annex B, each unit preceded by `00 00 01` or `00 00 00 01`, because players
+//! accept it with no container. A unit is complete only when the next start code is found, so
+//! a unit split across reads is held rather than emitted short.
 
 /// What a unit is for, as far as this needs to know.
 ///
-/// **Only the distinctions that answer a question somebody is asking.** The full type table is
-/// a decoder's business; what matters here is whether a picture could be produced, and whether
-/// the parameters a decoder needs have ever gone past.
+/// Only the distinctions that say whether a picture could be produced, and whether the
+/// parameters a decoder needs have gone past.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// A picture that stands alone. Until one of these, a decoder has nothing to start from.
@@ -46,8 +26,7 @@ pub enum Kind {
     Extra,
     /// Something this does not name.
     ///
-    /// **Kept rather than dropped.** A stream full of units nothing recognises is a finding,
-    /// and one silently discarded looks like a stream that carried nothing at all.
+    /// Kept rather than dropped, so a stream of unrecognised units does not look empty.
     Other(u8),
 }
 
@@ -74,7 +53,7 @@ impl Kind {
         matches!(self, Self::Keyframe)
     }
 
-    /// What to call it.
+    /// The kind's display name.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -99,9 +78,8 @@ pub struct Unit {
 
 /// Accumulates a stream and yields whole units.
 ///
-/// **Fed in whatever pieces arrive.** A socket read has no relationship to unit boundaries,
-/// so the only correct design is one that holds a partial unit until the next start code
-/// proves it complete.
+/// Fed in whatever pieces arrive; socket reads bear no relation to unit boundaries, so a
+/// partial unit is held until the next start code proves it complete.
 #[derive(Debug, Default)]
 pub struct Reader {
     held: Vec<u8>,
@@ -124,14 +102,13 @@ impl Reader {
 
     /// Takes more of the stream and returns whatever became complete.
     ///
-    /// The last unit is **never** returned by this: nothing after it has proved it whole. See
-    /// [`Reader::finish`], which is the caller saying the stream ended.
+    /// The last unit is never returned here, since nothing after it proves it whole; see
+    /// [`Reader::finish`].
     pub fn feed(&mut self, more: &[u8]) -> Vec<Unit> {
         self.held.extend_from_slice(more);
         let mut out = Vec::new();
         let mut starts = start_codes(&self.held);
-        // Nothing can be complete until there are two start codes: one opening a unit and one
-        // proving where it ended.
+        // A unit is complete only between two start codes.
         while starts.len() >= 2 {
             let (at, skip) = starts[0];
             let (next, _) = starts[1];
@@ -151,9 +128,8 @@ impl Reader {
 
     /// Says the stream ended, so the last held unit is complete after all.
     ///
-    /// **Separate from [`Reader::feed`] on purpose.** While a stream is open, a held unit
-    /// might still be growing, and emitting it early would report a truncated access unit as a
-    /// whole one - which sends somebody to the encoder for a network's fault.
+    /// Separate from [`Reader::feed`] because while a stream is open the held unit may still
+    /// be growing, and emitting it early would report a truncated unit as whole.
     pub fn finish(&mut self) -> Option<Unit> {
         let starts = start_codes(&self.held);
         let (at, skip) = *starts.first()?;
@@ -168,9 +144,8 @@ impl Reader {
 
     /// How many bytes are held, waiting for a boundary.
     ///
-    /// **Worth exposing.** A number that climbs and never falls is a stream that has stopped
-    /// producing start codes, which looks exactly like a stream that has stopped - and the two
-    /// need different work.
+    /// A value that climbs and never falls means the stream carries no start codes, as
+    /// opposed to a stream that has stopped.
     #[must_use]
     pub fn pending(&self) -> usize {
         self.held.len()
@@ -178,8 +153,7 @@ impl Reader {
 
     /// Whether anything a decoder could begin from has gone past.
     ///
-    /// **The question a black window actually asks.** A stream of nothing but dependent
-    /// pictures decodes to nothing at all, and looks identical to no stream.
+    /// A stream of only dependent pictures decodes to nothing and looks like no stream.
     #[must_use]
     pub const fn could_have_shown_anything(&self) -> bool {
         self.keyframes > 0
@@ -255,10 +229,7 @@ mod tests {
         assert_eq!(reader.keyframes, 1);
     }
 
-    /// **A unit split across reads is held, not emitted short.**
-    ///
-    /// The normal case for a socket, and the one where getting it wrong reports a truncated
-    /// access unit as a whole one - sending somebody to the encoder for a network's fault.
+    /// A unit split across reads is held, not emitted short.
     #[test]
     fn a_unit_split_across_reads_arrives_whole() {
         let whole = {
@@ -295,10 +266,7 @@ mod tests {
         assert_eq!(got[1].kind, Kind::Picture);
     }
 
-    /// **The last unit needs the stream to end before it is whole.**
-    ///
-    /// Held while the stream is open, because a unit that is still growing and one that has
-    /// finished look identical from inside a read.
+    /// The last unit is held until the stream ends.
     #[test]
     fn the_final_unit_waits_for_the_stream_to_end() {
         let mut reader = Reader::new();
@@ -310,9 +278,7 @@ mod tests {
         assert_eq!(reader.units, 1);
     }
 
-    /// **A stream with no keyframe decodes to nothing and looks like no stream.**
-    ///
-    /// The question a black window is actually asking, and the reason this counts them.
+    /// A stream with no keyframe reports that it could show nothing.
     #[test]
     fn a_stream_of_dependent_pictures_says_it_could_show_nothing() {
         let mut stream = Vec::new();
@@ -330,8 +296,7 @@ mod tests {
         );
     }
 
-    /// A unit type this does not name is carried rather than dropped - a stream full of them
-    /// is a finding, and silently discarding them looks like a stream that carried nothing.
+    /// A unit type this does not name is kept rather than dropped.
     #[test]
     fn an_unrecognised_unit_is_kept() {
         let mut reader = Reader::new();
@@ -342,8 +307,7 @@ mod tests {
         assert_eq!(reader.units, 1);
     }
 
-    /// Bytes that are not a stream produce nothing and hold everything, which is what a
-    /// climbing `pending` is for.
+    /// Bytes that are not a stream produce no units and stay held in `pending`.
     #[test]
     fn something_that_is_not_a_stream_produces_no_units() {
         let mut reader = Reader::new();

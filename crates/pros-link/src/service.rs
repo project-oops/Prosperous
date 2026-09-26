@@ -1,25 +1,11 @@
-//! The services a target may be running, and whether it currently is.
+//! The services a target may be running, and whether each is answering.
 //!
-//! # A port number is not a capability
+//! Each service records what its presence makes possible, so a check reads as a list of
+//! capabilities rather than port numbers. Required services are the ones without which there
+//! is no workflow; optional ones only cost visibility.
 //!
-//! A reader told that 3232 is open has been given a worse tool than one told that the
-//! kernel log is readable. The third column of the table below is the point of having a
-//! table at all: it says what each service *buys*, so a check reads as a list of things
-//! that are and are not possible rather than a list of numbers.
-//!
-//! # Required and optional fail differently
-//!
-//! Without a loader and somewhere for a report to come back, there is no workflow at all.
-//! Without the log, the shell or the dashboard there is still a workflow - it is just
-//! harder to see what went wrong inside it, which is a different kind of important and is
-//! marked as such rather than blended in.
-//!
-//! # Why nothing here is cached
-//!
-//! A jailbreak does not survive a power cycle, and the chain that comes back depends on a
-//! text file somebody edited weeks ago. Any stored answer about what a target can do is a
-//! claim that expires without notice. So this is asked every time, and a registration
-//! holds an address and a name and nothing else.
+//! Nothing is cached: the entry point does not survive a power cycle and the chain that
+//! comes back depends on an editable list, so every answer is asked for fresh.
 
 use std::borrow::Cow;
 use std::net::{TcpStream, ToSocketAddrs as _};
@@ -27,25 +13,9 @@ use std::time::{Duration, Instant};
 
 /// A service a target may be running, and what its presence buys.
 ///
-/// # Why the strings are borrowed-or-owned
-///
-/// The five below are compiled in and stay `&'static str`. But a payload list is a **file**,
-/// and an entry in it that declares a port describes a service just as much as these do - it
-/// simply was not known when this was built.
-///
-/// Before this, such an entry could only be probed, and its result was kept in a separate map
-/// that the verdict never read. So a payload somebody had declared **required** could be
-/// missing while the check said *ready*: the tool knew, and the answer did not.
-///
-/// [`Cow`] is what lets one type carry both without the compiled-in five paying for it. That
-/// costs `Copy`, which is why this is `Clone` - the only real consequence of the change.
-///
-/// # Four flags, and clippy is right to notice
-///
-/// They are four independent yes-or-no facts about one service - whether it blocks a check,
-/// whether it is a way back in, whether it runs startup lists, and whether this program was
-/// built knowing about it. Folding them into an enum would make a service pick one role when
-/// the manager genuinely has three of them at once.
+/// The strings are [`Cow`] so compiled-in services and ones declared in a payload list share
+/// one type and one verdict. The four flags are independent facts; the manager holds three
+/// roles at once, so they are not an enum.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Service {
@@ -59,26 +29,19 @@ pub struct Service {
     pub required: bool,
     /// Whether having this running is a way to put a payload on the target.
     ///
-    /// **The property a startup list is audited against.** A chain that leaves none of these
-    /// answering leaves a machine nobody can load anything onto - recoverable only by
-    /// re-running the jailbreak, and not even that if the chain hung it.
-    ///
-    /// Moving files is not enough on its own: a file service can put an ELF on the disk and
-    /// has no way to run it.
+    /// A startup list is audited against this: a chain that leaves none of these answering
+    /// can only be recovered by re-running the entry point. A file service alone does not
+    /// count, since it can place an ELF but not run it.
     pub recovers: bool,
     /// Whether this is what runs a startup list once it is up.
     ///
-    /// **The failure this catches has happened twice on a real target.** An autoloader list
-    /// that does not name this never starts it - and the whole list *this* one would have run
-    /// then silently does nothing. Everything somebody configured is simply absent, with no
-    /// error anywhere, because the thing that would have reported it never ran either.
+    /// An autoloader list that does not start this leaves every list it would run silently
+    /// unrun, with nothing left to report the absence.
     pub runs_lists: bool,
     /// Whether this came from a list rather than from this program.
     ///
-    /// **Kept because the two deserve different treatment when they are wrong.** A compiled-in
-    /// port was measured against a target; a declared one is somebody's typing, and a wrong one
-    /// reports another listener's state under this name. Anything explaining a surprising
-    /// finding should be able to say which kind it is looking at.
+    /// A compiled-in port was measured on a target; a declared one was typed, and a wrong one
+    /// reports another listener's state under this name.
     pub declared: bool,
 }
 
@@ -107,16 +70,9 @@ impl Service {
 
 /// The loader, and the first thing to check.
 ///
-/// # Why it is first rather than alphabetical
-///
-/// The payload manager launches everything through this, **including itself** - so when
-/// this dies, nothing can bring anything back, and the dashboard that would have said so
-/// keeps answering because it is a separate listener already running. The only recovery is
-/// re-running the jailbreak.
-///
-/// That makes it the one failure with a different remedy from every other failure here,
-/// and a check that reports it last has buried the finding that changes what the reader
-/// does next.
+/// The payload manager launches everything through this, itself included, while its own
+/// dashboard keeps answering as a separate listener. When the loader is down the only
+/// recovery is re-running the entry point, a remedy unlike any other, so it is checked first.
 pub const LOADER: Service = Service {
     name: Cow::Borrowed("elfldr"),
     port: 9021,
@@ -177,20 +133,16 @@ pub struct Reachability {
     pub open: bool,
     /// How long the answer took.
     ///
-    /// **Carried rather than discarded, because the two kinds of no are different.** A port
-    /// that refuses instantly is a machine saying no; one that takes a second and a half is
-    /// usually a network deciding, and a reader who cannot tell them apart will blame the
-    /// wrong thing. What counts as slow is the reporting layer business, not this one.
+    /// An instant refusal is the machine saying no; a slow one is usually the network. The
+    /// reporting layer decides what counts as slow.
     pub took: Duration,
 }
 
 /// Tries to connect, briefly.
 ///
-/// A short timeout on purpose: this is asked of five ports in a row, and a target that is
-/// switched off should say so in a couple of seconds rather than a couple of minutes.
-///
-/// **A refusal is the normal answer** for a payload that is not loaded, so this returns a
-/// finding rather than an error - there is nothing here for a caller to handle.
+/// Asked of every service in a row, so a switched-off target answers in seconds. A refusal
+/// is the normal answer for a payload that is not loaded, so this returns a finding, not an
+/// error.
 #[must_use]
 pub fn probe(address: &str, port: u16, timeout: Duration) -> Reachability {
     let started = Instant::now();
@@ -200,8 +152,7 @@ pub fn probe(address: &str, port: u16, timeout: Duration) -> Reachability {
         .and_then(|mut addrs| addrs.next())
         .is_some_and(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok());
     let took = started.elapsed();
-    // `trace`: one of these runs per service on every check, so at any louder level a single
-    // `pros check` would bury whatever else the run had to say.
+    // `trace`: one runs per service on every check, which would drown a louder level.
     tracing::trace!(%address, port, open, ?took, "probed");
     Reachability { open, took }
 }
@@ -210,15 +161,13 @@ pub fn probe(address: &str, port: u16, timeout: Duration) -> Reachability {
 mod tests {
     use super::{LOADER, SERVICES};
 
-    /// The loader is checked first, because its failure has a different remedy from every
-    /// other failure here - re-run the jailbreak, rather than reload a payload.
+    /// The loader, whose failure alone needs the entry point re-run, is checked first.
     #[test]
     fn the_loader_is_first() {
         assert_eq!(SERVICES.first().map(|s| &s.name), Some(&LOADER.name));
     }
 
-    /// Every service says what it unlocks. A table that only carried ports would be a
-    /// worse tool than the numbers written down somewhere.
+    /// Every service has a port and says what it unlocks.
     #[test]
     fn every_service_says_what_it_buys() {
         for service in SERVICES {
@@ -241,8 +190,7 @@ mod tests {
         assert_eq!(ports.len(), before, "two services claim the same port");
     }
 
-    /// There is at least one required service, or a check could report a target fit for
-    /// nothing as entirely healthy.
+    /// At least one service is required, so a useless target cannot read as healthy.
     #[test]
     fn something_is_required() {
         assert!(SERVICES.iter().any(|s| s.required));

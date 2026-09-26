@@ -1,29 +1,12 @@
 //! Transport for the services a prepared target runs.
 //!
-//! # What this crate is for
-//!
-//! Two projects need to talk to a target and neither is a target tool: an emulator that
-//! can only settle some questions by asking real target, and a conformance probe whose
-//! entire delivery problem is getting itself onto the machine. Both had started building
-//! the same transport. This is that transport, once.
-//!
-//! # Why it has no dependencies, and must not acquire any
-//!
-//! One of those consumers carries three dependencies, each argued for in its own manifest,
-//! and forbids unsafe code. A transport crate with a runtime or a serialisation framework
-//! inside it could not be taken by that project without breaking a policy it holds
-//! deliberately.
-//!
-//! So the line is drawn at **what needs a dependency**. Hashing a downloaded payload and
-//! reading a manifest live one layer up, in a crate that consumer does not take. See
+//! This is the one transport shared by the emulator and the conformance probe. It uses
+//! `std::net` and `tracing` only, because a consumer keeps a deliberate dependency list;
+//! anything that needs a library (hashing, manifests) lives in `pros-core`. See
 //! `docs/DESIGN.md`.
 //!
-//! # What it does not decide
-//!
-//! Nothing here holds policy. It does not choose which target to talk to, does not decide
-//! what a slow refusal means, and does not remember anything between calls - a jailbreak
-//! does not survive a power cycle, so a cached capability is a claim that expires without
-//! notice.
+//! It holds no policy and remembers nothing between calls: the entry point does not survive
+//! a power cycle, so a cached capability can expire without notice.
 
 /// Reasons an operation could not complete, told apart.
 pub mod error;

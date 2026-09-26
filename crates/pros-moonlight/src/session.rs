@@ -1,9 +1,8 @@
 //! A streaming session: the mode a client asked for, and the video pipeline that feeds it.
 //!
-//! The pipeline shape follows Moonshine (Hans Gaiser, BSD-2-Clause; see `THIRD-PARTY-LICENSES.md`):
-//! read the target's encoded stream, group it into frames, packetise each frame into RTP with FEC,
-//! and send the packets to the client over UDP. The bridge decodes nothing; it moves bytes the
-//! target produced into the shape the client reads.
+//! The pipeline follows Moonshine (BSD-2-Clause; see `THIRD-PARTY-LICENSES.md`): read the
+//! target's encoded stream, group it into frames, packetise each frame into RTP with FEC, and send
+//! the packets to the client over UDP.
 
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
@@ -22,9 +21,8 @@ const READ_CHUNK: usize = 32 * 1024;
 
 /// What a client asked for when it launched a stream.
 ///
-/// Parsed from the `launch`/`resume` query and the RTSP `ANNOUNCE`. The fields the video pipeline
-/// needs are the packet size and FEC percentage; the geometry and bitrate are recorded so the
-/// bridge can pass them to the target once the `PCTL` set-mode record lands (oops-apps 8c12).
+/// Parsed from the `launch`/`resume` query. The video pipeline uses the packet parameters; the
+/// geometry is recorded and logged but not sent to the target.
 #[derive(Debug, Clone)]
 pub(crate) struct StreamConfig {
     /// Requested width in pixels.
@@ -40,8 +38,8 @@ pub(crate) struct StreamConfig {
 }
 
 impl StreamConfig {
-    /// Read a launch/resume query into a config. Missing fields fall back to safe defaults so a
-    /// terse client still gets a stream rather than a refusal.
+    /// Read a launch/resume query into a config. Missing fields fall back to defaults, so a terse
+    /// client still gets a stream.
     pub(crate) fn from_query(query: &std::collections::HashMap<String, String>) -> Self {
         // Moonlight sends `mode=WIDTHxHEIGHTxFPS`.
         let (mut width, mut height, mut fps) = (1280_u32, 720_u32, 60_u32);
@@ -56,8 +54,7 @@ impl StreamConfig {
             .and_then(|hex_key| hex::decode(hex_key).ok())
             .and_then(|bytes| <[u8; 16]>::try_from(bytes.as_slice()).ok())
             .unwrap_or_default();
-        // `rikeyid` is also sent, but the control channel's nonce is built from the message
-        // sequence, not the key id, so it is not carried here.
+        // `rikeyid` is not kept: the control channel's nonce comes from the message sequence.
         Self {
             width,
             height,
@@ -80,7 +77,7 @@ struct Launch {
 /// The streaming state the RTSP handshake drives: what was launched, and whether it is running.
 #[derive(Debug)]
 pub(crate) struct Sessions {
-    /// The address of the target serving Porthole's 9805/9806 (a console, or the fake target).
+    /// The address of the target serving Porthole's 9805/9806 (a real target or the fake one).
     target: String,
     /// The most recent launch, set by `/launch` and read on PLAY.
     current: Mutex<Option<Launch>>,
@@ -106,8 +103,8 @@ impl Sessions {
         self.streaming.store(false, Ordering::SeqCst);
     }
 
-    /// Handle one RTSP connection (one request; Moonlight opens a connection per request). On PLAY,
-    /// start the video pump and control channel.
+    /// Handle one RTSP connection, which carries one request. On PLAY, start the video pump and
+    /// the control channel.
     pub(crate) fn serve_rtsp(&self, stream: &mut TcpStream) {
         let ports = rtsp::Ports {
             video: VIDEO_PORT,
@@ -124,7 +121,7 @@ impl Sessions {
     /// Start streaming for the launched session, once.
     fn play(&self) {
         if self.streaming.swap(true, Ordering::SeqCst) {
-            return; // already streaming
+            return;
         }
         let Some(launch) = self.current.lock().ok().and_then(|guard| guard.clone()) else {
             tracing::warn!("PLAY with no launch on record");
@@ -133,7 +130,6 @@ impl Sessions {
         let target = self.target.clone();
         tracing::info!(client = %launch.client, target = %target, "streaming started");
 
-        // Video: read the target's 9805, packetise, send to the client's video port.
         let video_target = target.clone();
         let video_config = launch.config.video;
         let client = launch.client;
@@ -143,7 +139,6 @@ impl Sessions {
             }
         });
 
-        // Control: receive the client's input on the control port and forward it to the target.
         let rikey = launch.config.rikey;
         std::thread::spawn(move || {
             if let Err(error) = control::run(CONTROL_PORT, rikey, &target, || true) {
@@ -196,7 +191,7 @@ pub(crate) fn pump_video(
     while keep_going() {
         let read = source.read(&mut buffer)?;
         if read == 0 {
-            break; // the target closed the stream
+            break;
         }
         for frame in frames.feed(&buffer[..read]) {
             stats.frames += 1;
@@ -228,6 +223,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
 
+    /// `mode=WxHxF` and a hex `rikey` parse into the config.
     #[test]
     fn a_launch_query_parses_mode_and_key() {
         let mut query = HashMap::new();
@@ -238,9 +234,9 @@ mod tests {
         assert_eq!(config.rikey, [9_u8; 16]);
     }
 
+    /// A short Annex-B stream from a TCP source arrives at a UDP client as RTP packets.
     #[test]
     fn video_flows_from_a_fake_target_into_rtp_packets() {
-        // A stand-in target: a TCP server that sends a short Annex-B stream and closes.
         let target = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let target_addr = target.local_addr().unwrap();
         thread::spawn(move || {
@@ -256,12 +252,11 @@ mod tests {
                     clip.extend_from_slice(&[0, 0, 0, 1, kind]);
                     clip.extend_from_slice(body);
                 }
+                // Dropping the stream closes it, which ends the pump after the last frame.
                 let _ = stream.write_all(&clip);
-                // Close, which ends the pump after it flushes the last frame.
             }
         });
 
-        // The client side: a UDP socket collecting the RTP packets.
         let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         client
             .set_read_timeout(Some(std::time::Duration::from_millis(500)))
@@ -299,7 +294,6 @@ mod tests {
         );
         assert!(stats.packets >= 2);
         assert!(!packets.is_empty(), "RTP packets reached the client socket");
-        // The first packet is the start of a frame and its RTP version byte is 0x90.
         assert_eq!(packets[0][0], 0x90);
     }
 }

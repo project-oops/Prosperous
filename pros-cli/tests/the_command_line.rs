@@ -1,16 +1,9 @@
 //! The command line, run as a command line.
 //!
-//! # Why these spawn the binary rather than calling the functions
-//!
-//! Two of the three things this program promises are only observable from outside it: **the
-//! exit code**, and what a person reads. A test that called a function would check neither,
-//! and the manual run that did check them does not run again tomorrow.
-//!
-//! It also settles a practical problem cleanly. Every command here needs a registry that is
-//! not the developer's own, and pointing one at a scratch directory means setting an
-//! environment variable - which is process-global, and in this edition unsafe, and this
-//! workspace forbids unsafe. A child process takes its environment as an argument, so the
-//! honest way to isolate the test and the safe way turn out to be the same way.
+//! These spawn the binary because the exit code and the printed text are only observable
+//! from outside it. A child process also takes its environment as an argument, so each test
+//! gets its own registry without setting process-global environment variables, which is
+//! unsafe in this edition.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -26,20 +19,12 @@ const SHORT: Duration = Duration::from_millis(300);
 
 /// Held by every test that cares whether the target's own ports are answering.
 ///
-/// **They cannot run at the same time.** The command line reaches for fixed port numbers,
-/// so a test that stands a fake on them and a test that asserts nothing is there are two
-/// tests making opposite claims about one machine. Run together, the second sees the first's
-/// fakes and reports a target that is up - which is a true statement about the wrong thing.
-///
-/// The lock is taken rather than the ports moved, because moving them would mean the command
-/// line was told where to look, and being told is precisely what a real run does not get.
+/// The command line reaches for fixed port numbers, so a test that stands fakes on them and a
+/// test that asserts nothing is there cannot run at the same time. The ports are not moved,
+/// because a real run is not told where to look.
 static WELL_KNOWN_PORTS: Mutex<()> = Mutex::new(());
 
-/// A target that is registered and is not there.
-///
-/// **Exit 2, not 1.** A target that is switched off is an answer; the tool falling over is
-/// a different thing, and a script branching on one should not have to read the message to
-/// tell it from the other.
+/// An absent target exits 2, distinct from a tool failure, and names the remedy.
 #[test]
 fn a_target_that_is_not_there_is_blocked_and_says_what_to_do() {
     let _ports = WELL_KNOWN_PORTS
@@ -48,12 +33,7 @@ fn a_target_that_is_not_there_is_blocked_and_says_what_to_do() {
     let home = scratch("absent");
     register(&home, "127.0.0.1");
 
-    // **Establish the premise before testing against it.**
-    //
-    // This test means nothing unless the target's ports are genuinely silent, and on a
-    // developer's machine they may not be - a stand-in left running from an experiment will
-    // answer on all of them. Without this the failure is an exit code of 0 where 2 was
-    // wanted, which reads as a bug in the verdict and is not one. Said plainly instead.
+    // The premise: a stand-in left running on this machine would answer on these ports.
     for service in SERVICES {
         let answered = pros_link::probe("127.0.0.1", service.port, SHORT).open;
         assert!(
@@ -67,34 +47,24 @@ fn a_target_that_is_not_there_is_blocked_and_says_what_to_do() {
     let said = text(&out);
 
     assert_eq!(out.status.code(), Some(2), "{said}");
-    // The finding that changes what a person does next, in words rather than left to be
-    // worked out from a table of ports.
     assert!(
-        said.contains("re-running the exploit"),
+        said.contains("re-running the entry point"),
         "the remedy is missing: {said}"
     );
-    // **And what it must not say.** A console can run its whole chain with 9021 unreachable -
-    // one was measured doing exactly that - so this verdict is about what *this program* can
-    // do, and wording that read as a diagnosis of the target was wrong twice over.
+    // The loader being unreachable is not a diagnosis of the target, which can run its whole
+    // chain with 9021 unreachable.
     assert!(
         said.contains("says nothing about the target"),
         "it stated more than was measured: {said}"
     );
-    // The wording of the *other* blocked verdict, which must not appear: it says the loader
-    // is up and the missing thing can be sent again, and here the loader is the missing
-    // thing.
+    // The other blocked verdict assumes the loader is up.
     assert!(
         !said.contains("can be sent again"),
         "it offered the remedy for a different failure: {said}"
     );
 }
 
-/// A target with the chain up reports what is possible, and what is merely dimmed.
-///
-/// The fakes are put on the target's own port numbers, because that is what the command
-/// line reaches for. A port that is already held on this machine fails the test rather than
-/// moving it somewhere else - a test that quietly relocates is no longer testing what its
-/// name says.
+/// A target with the chain up reports what each service makes possible, and what is dimmed.
 #[test]
 fn a_target_that_answers_reports_what_each_service_buys() {
     let _ports = WELL_KNOWN_PORTS
@@ -133,7 +103,7 @@ fn a_target_that_answers_reports_what_each_service_buys() {
     );
 }
 
-/// Naming a target that was never registered is the tool's failure, not the target's.
+/// An unregistered name exits 1, distinct from a target being down.
 #[test]
 fn a_name_that_is_not_registered_is_a_different_failure_from_a_target_being_down() {
     let home = scratch("unknown");
@@ -149,10 +119,7 @@ fn a_name_that_is_not_registered_is_a_different_failure_from_a_target_being_down
     assert!(said.contains("not-registered"), "which name: {said}");
 }
 
-/// A manifest says which of its entries cannot be trusted, before anything is sent.
-///
-/// No target is involved. That is the point: this is knowable from the file alone, and
-/// finding it out half way through a job is finding it out too late.
+/// A manifest names its unverifiable entries from the file alone, with no target.
 #[test]
 fn a_manifest_says_which_entries_cannot_be_verified() {
     let home = scratch("manifest");
@@ -204,10 +171,7 @@ fn the_wrong_file_is_refused_and_the_message_carries_both_digests() {
     );
 }
 
-/// An entry whose digest cannot be checked is refused rather than passed over.
-///
-/// The failure this pins is the worst one available in this program: a payload reported as
-/// verified when nothing looked at it.
+/// An entry whose digest cannot be checked is refused, never reported as verified.
 #[test]
 fn an_entry_that_cannot_be_verified_is_refused_rather_than_passed() {
     let home = scratch("unverifiable");
@@ -229,11 +193,7 @@ fn an_entry_that_cannot_be_verified_is_refused_rather_than_passed() {
     assert!(said.contains("cannot be checked"), "{said}");
 }
 
-/// Nothing is announced that is not going to happen.
-///
-/// The wrong kind of file is refused before the send is described. Printing *sending 64
-/// bytes* and then refusing describes an action that never took place, which is the defect
-/// this whole project is about, in the program that is about it.
+/// The wrong kind of file is refused before any send is announced.
 #[test]
 fn a_vendor_module_is_refused_without_anything_being_announced() {
     let home = scratch("shape");
@@ -258,17 +218,10 @@ fn a_vendor_module_is_refused_without_anything_being_announced() {
     );
 }
 
-/// The target's own repository can be read as a source.
+/// The target's own repository can be read as a source and is judged like a file on disk.
 ///
-/// # Why this is worth a test rather than a note
-///
-/// It is the only way this project will ever find out what that document actually looks
-/// like. Its field names are known and its shape is not, and a target that is already
-/// configured is already described - so the command that reads it is the command that turns
-/// a guess into a measurement.
-///
-/// The stand-in serves a manifest in this project's own shape, which proves the plumbing and
-/// deliberately proves nothing about the real file.
+/// The stand-in serves a manifest in this project's own shape, so this covers the plumbing
+/// and says nothing about the real file's shape.
 #[test]
 fn the_target_can_be_asked_for_its_own_repository() {
     let _ports = WELL_KNOWN_PORTS
@@ -287,8 +240,8 @@ fn the_target_can_be_asked_for_its_own_repository() {
         file_service.port,
         Behaviour::Files {
             contents,
-            // Wrong on purpose, as everywhere else: the client must dial what reached the
-            // target, not what the target believes about itself.
+            // Wrong on purpose: the client dials the address that reached the target, not
+            // the one the target claims.
             claims: [10, 0, 0, 1],
             binary: true,
             swallows_stores: false,
@@ -310,11 +263,7 @@ fn the_target_can_be_asked_for_its_own_repository() {
     );
 }
 
-/// A machine with nothing set up still gets an answer.
-///
-/// **Falling back rather than refusing.** Somebody who has just installed this wants to know
-/// what a target ought to be running; telling them to write a manifest first is telling
-/// them to already know the answer.
+/// With no manifest set up, the built-in list is shown and says where it came from.
 #[test]
 fn a_machine_with_no_manifest_gets_the_built_in_list() {
     let home = scratch("nosource");
@@ -327,17 +276,13 @@ fn a_machine_with_no_manifest_gets_the_built_in_list() {
         said.contains("elfldr") && said.contains("ftpsrv"),
         "the recommended list should name what a target needs: {said}"
     );
-    // It says where the list came from, because that decides how much to trust it.
     assert!(
         said.contains("read off a target's own repository"),
         "{said}"
     );
 }
 
-/// The built-in list can be written out, and will not overwrite one somebody has edited.
-///
-/// What an existing file holds that the built-in one does not is exactly the part somebody
-/// had to find out - a digest they checked themselves.
+/// Writing the built-in list never overwrites an existing manifest.
 #[test]
 fn writing_the_built_in_list_never_destroys_one_already_there() {
     let home = scratch("write");
@@ -387,8 +332,7 @@ fn register(home: &Path, address: &str) {
 /// A directory of this test's own, named after what it is for.
 fn scratch(what: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("pros-{}-{what}", std::process::id()));
-    // Fresh every run: a registry left over from a previous run is a test that passes
-    // because of something that happened yesterday.
+    // Fresh every run, so no registry survives from an earlier run.
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).expect("a scratch directory");
     path

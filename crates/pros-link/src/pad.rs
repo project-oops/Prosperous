@@ -1,28 +1,11 @@
 //! Controller state, on the wire.
 //!
-//! # Why this format is a decision and not a discovery
-//!
-//! Nothing here is reverse-engineered. The payload that receives these does not exist yet, so
-//! there is nothing to be compatible with - **both ends are ours to write**, and the format is
-//! chosen rather than recovered. `docs/VIDEO.md` part three is where it is specified; this
-//! implements that side of it.
-//!
-//! That is worth saying because the sibling projects spend most of their effort in the
-//! opposite situation, and the habits that suit a vendor format are the wrong ones here.
-//!
-//! # Four choices, each with an obvious wrong alternative
-//!
-//! - **Fixed size, not a text line.** This goes sixty times a second or faster. The rest of
-//!   this project prefers text for anything diagnosed by hand with a socket and a keyboard; a
-//!   pad is not one of those, and a parser hunting field boundaries at 250 Hz drops inputs.
-//! - **A sequence number, and the receiver may skip.** Input is a *state*, not an event. The
-//!   newest record supersedes every older one, so a receiver three behind should apply the
-//!   last and discard two. A queue that delivered all three would replay stale sticks.
-//! - **Absolute state, never deltas.** A dropped delta is wrong forever; a dropped state is
-//!   wrong for sixteen milliseconds.
-//! - **Reserved bytes are zero, and that is checked.** Gyro, touchpad and rumble are the
-//!   obvious additions, and a version bump into room already reserved is cheaper than a
-//!   second format beside the first.
+//! Both ends of this format are ours, specified in `docs/VIDEO.md` part three; only the button
+//! bits are measured. A record is fixed-size, not a text line, because it goes out at 60 Hz or
+//! faster. Each record carries the absolute state and a sequence number, so a receiver that
+//! falls behind applies the newest and discards the rest, and a dropped record is wrong for
+//! one frame rather than forever. Reserved bytes must be zero, leaving room for gyro, touchpad
+//! and rumble in a later version.
 
 /// What a record starts with.
 pub const MAGIC: [u8; 4] = *b"PPAD";
@@ -35,26 +18,17 @@ pub const RECORD: usize = 24;
 
 /// How many pads a target accepts.
 ///
-/// Four, which is what the platform supports. **A constant rather than an assumption spread
-/// through the code**, because the number appears in a wire check, a collection size and a
-/// panel, and three copies of it is how two of them end up disagreeing.
+/// The platform's limit, used by the wire check, the slot collection and the panel.
 pub const SLOTS: u8 = 4;
 
 /// One button, as a bit in the button word.
 ///
-/// # These are measured, not chosen
+/// These bits are measured, not chosen: they are the target's own pad structure, and a wrong
+/// bit presses a different button. Source: the Ghostpad project, which confirmed each bit on a
+/// target and credits shadPS4's `pad.h` for the enum (see `ACKNOWLEDGEMENTS.md`).
 ///
-/// The rest of this format is ours to decide. **This part is not.** The bits are the ones the
-/// target's own pad structure uses, and a wrong one does not fail - it presses something else.
-///
-/// The layout was published by the Ghostpad project, which confirmed each bit empirically
-/// against a real target, and it credits shadPS4's `pad.h` for the underlying enum. Recorded
-/// in `ACKNOWLEDGEMENTS.md`. **An earlier version of this file invented the numbering**, which
-/// would have produced a controller where every button was the wrong one.
-///
-/// One bit is left out on purpose: `0x0002_0000` is documented as producing an unintended
-/// Cross press. A plausible-looking bit that fires a different button is exactly the kind of
-/// thing that gets assigned by somebody counting upwards.
+/// `0x0002_0000` is deliberately unassigned: it is documented as producing an unintended Cross
+/// press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Button {
@@ -74,8 +48,7 @@ pub enum Button {
     Left = 0x0000_0080,
     /// Lower left trigger, as a bit.
     ///
-    /// **Not sufficient on its own.** The target reads the analogue byte as well, so a press
-    /// sets both - see [`Pad::pull`].
+    /// The target also reads the analogue byte, so a press sets both; see [`Pad::pull`].
     L2 = 0x0000_0100,
     /// Lower right trigger, as a bit. The same applies.
     R2 = 0x0000_0200,
@@ -93,8 +66,8 @@ pub enum Button {
     Square = 0x0000_8000,
     /// The system button.
     ///
-    /// Bit sixteen, which the previous generation's headers name differently. Confirmed on a
-    /// target rather than inferred from an enum's order.
+    /// Bit sixteen, which the previous generation's headers name differently; confirmed on a
+    /// target.
     Home = 0x0001_0000,
     /// The touchpad, pressed.
     Pad = 0x0010_0000,
@@ -128,7 +101,7 @@ impl Button {
         matches!(self, Self::L2 | Self::R2)
     }
 
-    /// What to call it.
+    /// The button's word name, used in saved layouts, logs and test output.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -152,20 +125,10 @@ impl Button {
         }
     }
 
-    /// What to show it as.
+    /// What to show on screen: the printed shape or lettering, in plain ASCII.
     ///
-    /// # Why the glyph rather than the word
-    ///
-    /// **It is what is printed on the thing in somebody's hands.** A person rebinding a key
-    /// is looking between a screen and a controller, and *triangle* asks them to translate
-    /// where the shape does not.
-    ///
-    /// This is display only - [`Button::name`] stays the word, because that is what goes in a
-    /// saved layout, a log line and a test failure. **A glyph in a file is a file somebody
-    /// cannot grep**, and a layout that survives a font change matters more than a tidy one.
-    ///
-    /// The four shapes are the only real glyphs here. The shoulders and sticks have no printed
-    /// symbol, so they keep their printed *lettering*, in caps as they are printed on it.
+    /// Display only; [`Button::name`] stays the word so files remain greppable. The face
+    /// shapes are spelled in ASCII because the window font has no symbols for them.
     #[must_use]
     pub const fn glyph(self) -> &'static str {
         match self {
@@ -192,21 +155,15 @@ impl Button {
 
 /// Where a stick rests.
 ///
-/// **Not zero.** The target's structure carries each axis as a single unsigned byte with the
-/// centre in the middle, so this format does too - a client that used a signed range would be
-/// asking the payload to do arithmetic, and arithmetic in a payload is a thing that can be
-/// wrong somewhere nobody is looking.
+/// Not zero: the target carries each axis as an unsigned byte centred in the middle, and this
+/// format matches so the payload does no conversion.
 pub const CENTRE: u8 = 128;
 
 /// Everything a pad is doing at one moment.
 ///
-/// **Absolute, never a change**, and shaped like the structure the target actually reads:
-/// sticks are unsigned bytes centred on [`CENTRE`], triggers rest at zero. A more precise
-/// representation here would be precision the wire throws away, and the conversion would have
-/// to happen in the payload where a mistake is hardest to see.
-///
-/// Use [`Pad::rest`] rather than `default()` for a neutral pad - a zeroed one has both sticks
-/// hard left and up.
+/// Absolute state, shaped like the structure the target reads: sticks are unsigned bytes
+/// centred on [`CENTRE`], triggers rest at zero. [`Pad::rest`] is the neutral pad; a zeroed
+/// one has both sticks hard left and up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pad {
     /// One bit per [`Button`].
@@ -223,34 +180,19 @@ pub struct Pad {
     pub l2: u8,
     /// Right trigger.
     pub r2: u8,
-    /// Which update this is.
+    /// Which update this is, counted per slot.
     ///
-    /// **The receiver is allowed to skip.** Being three behind means applying the newest and
-    /// discarding two, because every record is the whole state.
+    /// A receiver that is behind applies the newest record and discards the rest.
     pub sequence: u32,
     /// Which pad this is, counted from zero.
     ///
-    /// # Why this is in the record rather than in a connection
-    ///
-    /// Four pads over one socket, each identifying itself, rather than four sockets that a
-    /// receiver has to associate with slots. **A slot is a property of the input, not of the
-    /// route it took** - and a payload that inferred the slot from which connection carried it
-    /// would put pad two's input on pad one the first time a socket reconnected in a different
-    /// order.
-    ///
-    /// It also makes the sequence number per-slot, which is the only way it means anything:
-    /// one counter shared by four pads advances on somebody else's input, so *behind by two*
-    /// would stop being answerable.
+    /// In the record rather than implied by the connection, so all pads share one socket and
+    /// a reconnect in a different order cannot move input between slots.
     pub slot: u8,
 }
 
 impl Pad {
-    /// A pad at rest.
-    ///
-    /// **Not `default()`**, which zeroes every field and so holds both sticks hard left and
-    /// up. Neutral is a value here rather than the absence of one, which is the cost of
-    /// matching the target's own representation - and it is cheaper than the arithmetic the
-    /// alternative would put in a payload.
+    /// A pad at rest: sticks at [`CENTRE`], nothing held.
     #[must_use]
     pub const fn rest() -> Self {
         Self {
@@ -274,9 +216,8 @@ impl Pad {
 
     /// Holds a button, or lets it go.
     ///
-    /// **A trigger sets its analogue byte too.** The target reads both, and the bit alone does
-    /// not register - which is the kind of thing that looks like a dead button and gets
-    /// diagnosed as a network problem. Use [`Pad::pull`] for a partial press.
+    /// A trigger sets its analogue byte to full as well, since the target does not register
+    /// the bit alone. Use [`Pad::pull`] for a partial press.
     pub const fn hold(&mut self, button: Button, down: bool) {
         if down {
             self.buttons |= button as u32;
@@ -292,13 +233,12 @@ impl Pad {
 
     /// Pulls a trigger part way.
     ///
-    /// Sets the bit once there is any travel at all, because the two are read together and a
-    /// pressure with no bit is a press the target does not see.
+    /// Sets the bit once there is any travel, because the target does not see pressure
+    /// without the bit. Other buttons are unaffected.
     pub const fn pull(&mut self, button: Button, amount: u8) {
         match button {
             Button::L2 => self.l2 = amount,
             Button::R2 => self.r2 = amount,
-            // Anything else has no analogue half, so this is the same as holding it.
             _ => {}
         }
         if button.is_a_trigger() {
@@ -310,11 +250,7 @@ impl Pad {
         }
     }
 
-    /// Whether anything at all is being done.
-    ///
-    /// Useful for not sending: a pad at rest that keeps sending its rest state spends a
-    /// network on nothing. **The first rest after activity still has to go**, or the target
-    /// holds the last thing that moved.
+    /// Whether the pad is at rest: nothing held, sticks centred, triggers released.
     #[must_use]
     pub const fn is_at_rest(&self) -> bool {
         self.buttons == 0
@@ -350,9 +286,8 @@ impl Pad {
     ///
     /// # Errors
     ///
-    /// [`NotAPad`] for anything that is not one of ours. **Reserved bytes must be zero**: they
-    /// are where a later version puts gyro or the touchpad, and accepting them now means a
-    /// newer payload cannot tell an old sender from a new one.
+    /// [`NotAPad`] for anything that is not one of ours. Reserved bytes must be zero, so a
+    /// later version that uses them can tell an old sender from a new one.
     pub fn from_wire(raw: &[u8]) -> Result<Self, NotAPad> {
         let Some(record) = raw.get(..RECORD) else {
             return Err(NotAPad::Short(raw.len()));
@@ -404,9 +339,7 @@ pub enum NotAPad {
     Reserved,
     /// A slot beyond what the target has.
     ///
-    /// **Refused rather than clamped.** A record meant for a fifth pad is a sender that
-    /// believes something untrue, and quietly delivering it to the fourth would make one
-    /// person's input arrive as another's.
+    /// Refused rather than clamped, so one player's input never arrives on another's pad.
     Slot(u8),
 }
 
@@ -431,11 +364,8 @@ impl std::error::Error for NotAPad {}
 
 /// Keeps the newest state and says whether it is worth sending.
 ///
-/// # Why sending is conditional
-///
-/// A pad at rest sending its rest state sixty times a second spends a network on nothing. But
-/// **the first rest after activity must go**, or the target keeps holding whatever moved last -
-/// which is the difference between a stick that returns to centre and one that sticks.
+/// A pad that stays at rest sends nothing, but the first rest after activity is always sent,
+/// or the target keeps holding whatever moved last.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Sender {
     last: Pad,
@@ -467,7 +397,7 @@ impl Sender {
 
     /// Takes a new state and returns the record to send, if one should be.
     ///
-    /// `None` means nothing changed and the pad is at rest, so there is nothing worth saying.
+    /// `None` means nothing changed and the pad is at rest.
     pub fn update(&mut self, now: Pad) -> Option<[u8; RECORD]> {
         let same = now.buttons == self.last.buttons
             && now.left_x == self.last.left_x
@@ -484,8 +414,8 @@ impl Sender {
         self.sequence = self.sequence.wrapping_add(1);
         let mut record = now;
         record.sequence = self.sequence;
-        // The sender owns both, so a caller cannot make two records claiming to be the same
-        // update, nor put its input in somebody else's slot.
+        // The sender owns sequence and slot, so a caller cannot duplicate an update or write
+        // into another slot.
         record.slot = self.slot;
         Some(record.to_wire())
     }
@@ -523,19 +453,14 @@ mod tests {
         assert!(!after.holds(Button::Triangle));
     }
 
-    /// A record is exactly the size the specification says, because a payload will read it
-    /// with a fixed-size struct at the other end.
+    /// A record is exactly the specified size, since a payload reads it as a fixed struct.
     #[test]
     fn a_record_is_the_size_it_says_it_is() {
         assert_eq!(busy().to_wire().len(), RECORD);
         assert_eq!(RECORD, 24);
     }
 
-    /// **The reserved byte is checked, not ignored.**
-    ///
-    /// It is where the next version puts gyro or rumble. Accepting anything there now means a
-    /// later payload cannot tell an old sender from a new one, and would read whatever
-    /// happened to be present as a real value.
+    /// A non-zero reserved byte is refused.
     #[test]
     fn a_record_with_something_in_the_reserved_byte_is_refused() {
         for at in [7_usize, 18, 19] {
@@ -549,7 +474,7 @@ mod tests {
         }
     }
 
-    /// The slot survives the wire, because a payload has to tell four pads apart.
+    /// The slot survives the wire, so a payload can tell pads apart.
     #[test]
     fn a_record_carries_which_pad_it_is() {
         for slot in 0..super::SLOTS {
@@ -559,10 +484,7 @@ mod tests {
         }
     }
 
-    /// **A slot beyond what a target has is refused, not clamped.**
-    ///
-    /// A record meant for a fifth pad is a sender believing something untrue, and quietly
-    /// delivering it to the fourth would make one person's input arrive as another's.
+    /// A slot beyond what a target has is refused, not clamped.
     #[test]
     fn a_slot_the_target_does_not_have_is_refused() {
         let mut raw = busy().to_wire();
@@ -570,8 +492,7 @@ mod tests {
         assert_eq!(Pad::from_wire(&raw), Err(NotAPad::Slot(super::SLOTS)));
     }
 
-    /// A sender puts its own slot on every record, so a caller cannot send into another
-    /// player's pad by filling the field in.
+    /// A sender puts its own slot on every record, whatever the caller filled in.
     #[test]
     fn the_sender_owns_the_slot_as_well_as_the_sequence() {
         let mut sender = Sender::new(2);
@@ -581,7 +502,7 @@ mod tests {
         assert_eq!(Pad::from_wire(&record).expect("reads").slot, 2);
     }
 
-    /// Three ways of not being a record, kept apart because they need different work.
+    /// Short, foreign and newer-version records are distinct errors.
     #[test]
     fn the_ways_of_not_being_a_record_stay_distinct() {
         assert_eq!(Pad::from_wire(&[0_u8; 8]), Err(NotAPad::Short(8)));
@@ -595,7 +516,7 @@ mod tests {
         assert_eq!(Pad::from_wire(&newer), Err(NotAPad::Version(9)));
     }
 
-    /// Neutral is zero in every field, so a rest state needs nothing remembered.
+    /// The default pad is at rest and survives the wire.
     #[test]
     fn a_pad_at_rest_is_zero_everywhere() {
         let rest = Pad::default();
@@ -606,10 +527,7 @@ mod tests {
         assert_eq!(after, rest);
     }
 
-    /// **A held button that stops being held still sends.**
-    ///
-    /// The one that matters: without it the target keeps holding whatever moved last, which
-    /// is the difference between a stick returning to centre and a stick that sticks.
+    /// Releasing a button is sent once, then rest goes quiet.
     #[test]
     fn letting_go_is_sent_and_then_silence_follows() {
         let mut sender = Sender::new(0);
@@ -623,13 +541,11 @@ mod tests {
         let read = Pad::from_wire(&released).expect("reads");
         assert!(!read.holds(Button::Cross));
 
-        // And only then does it go quiet.
         assert!(sender.update(pad).is_none(), "rest after rest says nothing");
         assert!(sender.update(pad).is_none());
     }
 
-    /// **The sequence number advances on every record sent**, so a receiver can tell how far
-    /// behind it is and discard everything but the newest.
+    /// The sequence number advances on every record sent.
     #[test]
     fn the_sequence_advances_so_a_receiver_can_skip() {
         let mut sender = Sender::new(0);
@@ -644,8 +560,7 @@ mod tests {
         assert_eq!(seen, [1, 2, 3, 4]);
     }
 
-    /// The caller's own sequence field is not what goes on the wire - the sender owns it, so
-    /// two callers cannot produce two records claiming to be the same update.
+    /// The sender numbers records, ignoring the caller's sequence field.
     #[test]
     fn the_sender_numbers_the_records_rather_than_the_caller() {
         let mut sender = Sender::new(0);
@@ -655,10 +570,7 @@ mod tests {
         assert_eq!(Pad::from_wire(&record).expect("reads").sequence, 1);
     }
 
-    /// **A trigger sets both halves, because the target reads both.**
-    ///
-    /// The bit alone does not register. That failure looks like a dead button and gets
-    /// diagnosed as a network problem, which is why it is pinned rather than commented.
+    /// Holding a trigger sets both the bit and full pressure, and releasing clears both.
     #[test]
     fn a_trigger_press_carries_its_pressure() {
         let mut pad = Pad::rest();
@@ -671,7 +583,7 @@ mod tests {
         assert_eq!(pad.l2, 0, "letting go clears both");
     }
 
-    /// And a partial pull sets the bit, because pressure with no press is not seen.
+    /// A partial pull sets the bit; a pull of zero clears it.
     #[test]
     fn a_partial_pull_still_counts_as_a_press() {
         let mut pad = Pad::rest();
@@ -683,8 +595,7 @@ mod tests {
         assert!(!pad.holds(Button::R2), "and none is not");
     }
 
-    /// **Neutral is not zero.** A zeroed pad holds both sticks hard left and up, which is why
-    /// `rest()` exists and `default()` defers to it.
+    /// The default pad is rest with centred sticks, not zero.
     #[test]
     fn a_zeroed_pad_would_be_holding_both_sticks() {
         let rest = Pad::rest();
@@ -702,10 +613,7 @@ mod tests {
         assert!(!zeroed.is_at_rest(), "hard left and up is not rest");
     }
 
-    /// **The bit that presses the wrong button is not reachable.**
-    ///
-    /// `0x0002_0000` is documented as producing an unintended Cross press on the target. No
-    /// button maps to it, and this is what stops one being added by somebody counting upwards.
+    /// No button maps to `0x0002_0000`, which the target reads as an unintended Cross press.
     #[test]
     fn the_bit_that_fires_the_wrong_button_is_unassigned() {
         const UNSAFE_BIT: u32 = 0x0002_0000;
@@ -719,11 +627,7 @@ mod tests {
         }
     }
 
-    /// **The name stays greppable and the glyph stays for the screen.**
-    ///
-    /// The temptation is to make `name` the shape and be done with it. That would put a glyph
-    /// into every saved layout, log line and test failure - and a file somebody cannot grep,
-    /// type or read over the phone is worse than one that says `triangle`.
+    /// `name` is a plain ASCII word and `glyph` is an ASCII shape distinct from it.
     #[test]
     fn the_name_is_the_word_and_the_glyph_is_the_shape() {
         for button in Button::ALL {
@@ -735,16 +639,12 @@ mod tests {
             assert!(!button.glyph().is_empty(), "{name} has nothing to show");
         }
 
-        // **The four shapes, spelled in characters any font has.**
-        //
-        // They were the real symbols, and the window font has none of them - every one drew
-        // as a replacement box. Square was the worst of it: its symbol IS a box, so a Square
-        // button and a glyph the font could not draw were the same picture.
+        // The face shapes use characters any font has; the window font has no symbols for
+        // them, and a missing-glyph box is indistinguishable from Square's own shape.
         assert_eq!(Button::Triangle.glyph(), "/\\");
         assert_eq!(Button::Cross.glyph(), "X");
         assert_eq!(Button::Circle.glyph(), "O");
         assert_eq!(Button::Square.glyph(), "[]");
-        // And nothing here is outside plain ASCII, which is the property that keeps it true.
         for button in Button::ALL {
             assert!(
                 button.glyph().is_ascii(),
@@ -754,14 +654,12 @@ mod tests {
         }
         assert_ne!(Button::Triangle.glyph(), Button::Triangle.name());
 
-        // The shoulders have no printed symbol, so they keep their printed lettering rather
-        // than being given an invented one.
+        // The shoulders keep their printed lettering.
         assert_eq!(Button::L1.glyph(), "L1");
         assert_eq!(Button::R2.glyph(), "R2");
     }
 
-    /// No two buttons show the same thing, or a mapping table would have rows nobody can
-    /// tell apart.
+    /// No two buttons show the same glyph.
     #[test]
     fn no_two_buttons_look_alike() {
         for (at, one) in Button::ALL.iter().enumerate() {
@@ -777,8 +675,7 @@ mod tests {
         }
     }
 
-    /// Every button has its own bit, which a hand-written table is exactly the place to get
-    /// wrong.
+    /// Every button has its own bit.
     #[test]
     fn no_two_buttons_share_a_bit() {
         for (at, one) in Button::ALL.iter().enumerate() {

@@ -1,29 +1,11 @@
-//! Sending controller records to a target.
+//! Sending controller records to a target's input payload over TCP.
 //!
-//! # Why this is separate from reading a keyboard
+//! Input goes down its own socket so that playing a target needs no vendor protocol, pairing
+//! or account: both ends are ours (`docs/VIDEO.md` part three). Reading a keyboard is a
+//! separate module because an unbound key and a dropped connection need different fixes.
 //!
-//! What drives a pad and where its records go are different failures. A key that is not bound
-//! is somebody's mapping; a connection that dropped is the network; and a panel that showed
-//! one when it meant the other would send a person to fix the wrong thing.
-//!
-//! # The state that must never be guessed
-//!
-//! **Connected, not connected, and lost are three states.** A feed that reported *not
-//! connected* after a drop would look identical to one nobody had started, and the difference
-//! is the whole question - the first is a thing that broke, the second is a thing that has not
-//! begun.
-//!
-//! So [`crate::feed::Feed::status`] carries the reason a connection ended, and carries it until somebody
-//! either reconnects or gives up. Silence is never success here and never failure either; it
-//! is one of three things and the caller is told which.
-//!
-//! # Why input goes down a socket at all
-//!
-//! `docs/VIDEO.md` part three: the whole stand-in exists so that watching and playing a target
-//! does not require speaking the vendor's protocol. Video comes back over one socket and input
-//! goes down another, and neither needs pairing, encryption or a vendor account - because the
-//! target is prepared and runs our code, so the protocol is a decision rather than a
-//! specification to reverse.
+//! [`crate::feed::Feed::status`] tells idle, sending, lost and refused apart, and keeps the
+//! reason a connection ended until the caller reconnects or closes.
 
 use std::io::Write;
 use std::net::TcpStream;
@@ -33,14 +15,13 @@ use crate::pad::RECORD;
 
 /// The port a target's input payload listens on.
 ///
-/// From `docs/VIDEO.md` part three. **Ours to choose**, because both ends are ours - unlike
-/// every other port this crate knows, which were measured.
+/// Chosen by us in `docs/VIDEO.md` part three, since both ends are ours; every other port in
+/// this crate is measured.
 pub const PORT: u16 = 9806;
 
 /// How long to wait for a target to accept a connection.
 ///
-/// Short. A target on the same network answers immediately or is not there, and a person
-/// pressing *connect* is watching the button.
+/// Short: a target on the same network answers at once or is not there.
 pub const PATIENCE: Duration = Duration::from_millis(1500);
 
 /// Where a feed has got to.
@@ -53,9 +34,8 @@ pub enum Status {
     Sending,
     /// It was connected and is not any more, for this reason.
     ///
-    /// **Distinct from [`Status::Idle`]** - one is a thing that broke and the other is a thing
-    /// that has not begun, and reporting the first as the second loses the only fact worth
-    /// having.
+    /// Distinct from [`Status::Idle`]: a connection that broke needs different work from one
+    /// that never started.
     Lost(String),
     /// It would not connect at all.
     Refused(String),
@@ -68,7 +48,7 @@ impl Status {
         matches!(self, Self::Sending)
     }
 
-    /// How to put it to somebody.
+    /// The status as a short phrase for display.
     #[must_use]
     pub fn describe(&self) -> String {
         match self {
@@ -90,9 +70,7 @@ pub struct Feed {
     pub sent: u64,
     /// How many were dropped because nothing was connected.
     ///
-    /// **Counted rather than ignored.** Input that went nowhere while somebody was pressing
-    /// keys is the difference between *the mapping is wrong* and *the feed was not open*, and
-    /// a panel that showed neither would leave them guessing between the two.
+    /// Counted so a panel can tell a wrong mapping from a feed that was not open.
     pub dropped: u64,
 }
 
@@ -112,8 +90,8 @@ impl Feed {
     ///
     /// # Errors
     ///
-    /// When the target will not accept. The reason is kept in [`crate::feed::Feed::status`] as well, so a
-    /// caller that ignores the result still has it to show.
+    /// When the target will not accept. The reason is also kept in [`crate::feed::Feed::status`],
+    /// so a caller that ignores the result still has it to show.
     pub fn open(&mut self, address: &str, port: u16) -> Result<(), String> {
         self.close();
         let target = format!("{address}:{port}");
@@ -122,18 +100,14 @@ impl Feed {
             .map_err(|_| format!("{target} is not an address this can reach"));
         let stream = match resolved {
             Ok(at) => TcpStream::connect_timeout(&at, PATIENCE),
-            // A name rather than an address: fall back to the resolving connect, which is
-            // slower and handles what the parse could not.
+            // A host name rather than an address: the resolving connect handles it.
             Err(_) => TcpStream::connect(&target),
         };
         match stream {
             Ok(stream) => {
-                // **Nagle off.** It exists to coalesce small writes, and every record here is
-                // a small write that matters immediately - holding one back to fill a packet
-                // is latency added on purpose to input.
+                // Nagle off: every record is a small write that matters immediately.
                 let _ = stream.set_nodelay(true);
-                // A write that blocks would block the window, and a window that has stopped
-                // repainting is indistinguishable from one that has crashed.
+                // A blocking write would stall the window's repaint.
                 let _ = stream.set_write_timeout(Some(PATIENCE));
                 self.stream = Some(stream);
                 self.status = Status::Sending;
@@ -150,9 +124,7 @@ impl Feed {
 
     /// Closes the connection, without recording a reason.
     ///
-    /// For somebody choosing to stop. A drop nobody asked for goes through
-    /// [`Status::Lost`] instead, because *asked to stop* and *stopped by itself* are the two
-    /// things a person needs told apart.
+    /// For a deliberate stop. An unrequested drop goes through [`Status::Lost`] instead.
     pub fn close(&mut self) {
         if self.stream.take().is_some() {
             self.status = Status::Idle;
@@ -161,9 +133,8 @@ impl Feed {
 
     /// Sends whatever records are ready.
     ///
-    /// Returns how many went. **A feed that is not open counts them as dropped** rather than
-    /// failing: somebody pressing keys with nothing connected is an ordinary state, and an
-    /// error per frame would bury the one thing worth saying.
+    /// Returns how many went. A feed that is not open counts them in `dropped` rather than
+    /// failing, since pressing keys with nothing connected is an ordinary state.
     pub fn send(&mut self, records: &[[u8; RECORD]]) -> usize {
         if records.is_empty() {
             return 0;
@@ -172,8 +143,7 @@ impl Feed {
             self.dropped = self.dropped.saturating_add(records.len() as u64);
             return 0;
         };
-        // One write for the batch. Several records in a frame are several pads, and a target
-        // reading them together sees one moment rather than four.
+        // One write for the batch, so a target reads all pads of a frame as one moment.
         let mut batch = Vec::with_capacity(records.len() * RECORD);
         for record in records {
             batch.extend_from_slice(record);
@@ -184,8 +154,7 @@ impl Feed {
                 records.len()
             }
             Err(why) => {
-                // The connection is gone, and saying so is the whole point of this branch.
-                // Reverting to Idle here would make a break look like a thing never started.
+                // Lost, not Idle: a break must not look like a feed that never started.
                 self.stream = None;
                 self.status = Status::Lost(why.to_string());
                 self.dropped = self.dropped.saturating_add(records.len() as u64);
@@ -210,7 +179,7 @@ mod tests {
         pad.to_wire()
     }
 
-    /// **What is written is exactly what a payload will read.**
+    /// What is written is exactly what a payload reads.
     #[test]
     fn records_arrive_as_they_were_written() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
@@ -258,11 +227,7 @@ mod tests {
         assert_eq!(Pad::from_wire(&got[24..]).expect("second").slot, 1);
     }
 
-    /// **Nothing connected is not an error, and the records are counted.**
-    ///
-    /// Somebody pressing keys with no connection is ordinary. What is not ordinary is not
-    /// knowing whether the mapping is wrong or the feed was never open, which is what the
-    /// count answers.
+    /// Sending with nothing connected is not an error, and the records are counted as dropped.
     #[test]
     fn records_with_nowhere_to_go_are_counted_rather_than_lost_silently() {
         let mut feed = Feed::new();
@@ -271,10 +236,7 @@ mod tests {
         assert_eq!(feed.status, Status::Idle, "it never started");
     }
 
-    /// **A connection that dropped is not a connection that never started.**
-    ///
-    /// The two look identical from the outside and need different work, so the reason is kept
-    /// rather than reset.
+    /// A dropped connection reports `Lost` with its reason, not `Idle`.
     #[test]
     fn a_dropped_connection_says_so_rather_than_going_quiet() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
@@ -286,8 +248,7 @@ mod tests {
         drop(accepted);
         drop(listener);
 
-        // The first write after a close may succeed - the failure arrives with the reset, so
-        // this sends until it is told, which is what a caller does too.
+        // The first write after a close may succeed; the failure arrives with the reset.
         let mut said = None;
         for _ in 0..50 {
             feed.send(&[pressed()]);
@@ -305,15 +266,14 @@ mod tests {
     #[test]
     fn a_refusal_names_what_it_could_not_reach() {
         let mut feed = Feed::new();
-        // Port zero cannot be connected to, so this fails without depending on what happens
-        // to be listening on the machine running the test.
+        // Port zero cannot be connected to, whatever is listening on the test machine.
         let refused = feed.open("127.0.0.1", 0).expect_err("nothing is there");
         assert!(refused.contains("127.0.0.1:0"), "{refused}");
         assert!(matches!(feed.status, Status::Refused(_)));
         assert!(!feed.status.is_sending());
     }
 
-    /// Choosing to stop is not the same as being stopped, so it records no reason.
+    /// A deliberate close leaves the status `Idle` with no reason.
     #[test]
     fn closing_deliberately_leaves_no_complaint() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("binds");

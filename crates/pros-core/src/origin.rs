@@ -1,44 +1,13 @@
 //! Where a copied save came from, and whether it can go back as-is.
 //!
-//! # The question a save transfer has to answer first
+//! Save data is encrypted and signed for the account that wrote it. Sending it to the same
+//! account is a plain copy; to another it needs re-signing, which this project does not do.
+//! Both transfers complete without error, so the decision is made before sending.
 //!
-//! Save data on this platform is encrypted and signed for the account that wrote it. Copying
-//! the files off a target is a plain fetch and always works. Copying them *on* is only a
-//! plain send when they are going back to the account they came from - otherwise they need
-//! decrypting and re-signing for the target, which is a different job needing a payload this
-//! project does not carry.
-//!
-//! **The two cases look identical.** Both are a directory of files going across a network,
-//! both complete without error, and the difference only shows up later when a target refuses
-//! a save somebody was relying on. So the transfer has to decide before it starts, and it
-//! cannot decide by looking at the files.
-//!
-//! # Asking the save, before asking anything this project wrote down
-//!
-//! A save carries its own answer. `ACCOUNT_ID` sits in the `.sfo` parameter file a target
-//! keeps beside it, and comparing that against the account already on the destination settles
-//! the question outright - for a save that arrived from anywhere, by any route, not only for
-//! one this tool copied. That is the first source, and it is better than any record this
-//! project could keep.
-//!
-//! **It is not always there.** Measured on a target with three saves: one carried `.sfo`
-//! files, two carried only icons. A design that used it alone would work for one save in
-//! three and fail quietly for the rest, which is the shape of failure this whole project
-//! exists to avoid.
-//!
-//! So there is a second source. When a save is fetched, the account it belongs to is in the
-//! path it came out of; that is written down beside the copy at the moment it is known for
-//! certain, and read back if the parameter file cannot answer.
-//!
-//! # And a third answer, which is no answer
-//!
-//! Neither source, and the result is [`crate::origin::Needs::Unknown`] - deliberately not the same as
-//! *fine*. A save with no provenance is precisely the one most likely to have come from
-//! another target, so defaulting it to a plain copy would put the failure exactly where it
-//! does most damage.
-//!
-//! The same holds for a known account with nothing to compare it against: an identifier on
-//! its own says nothing about whether a copy will work.
+//! The save's own `ACCOUNT_ID` (from its `.sfo` parameter file) answers first. Not every save
+//! carries one (measured on a target: one save in three did), so a record written beside a
+//! fetched copy is the second source. With neither, the answer is
+//! [`crate::origin::Needs::Unknown`], never a plain copy.
 
 use std::path::{Path, PathBuf};
 
@@ -46,8 +15,7 @@ use serde::{Deserialize, Serialize};
 
 /// The file written beside a copied save.
 ///
-/// Named to sort with dotfiles and to be obviously this tool's, so somebody looking at the
-/// folder can tell what it is and delete it without wondering.
+/// A dotfile named for this tool, so it is recognisable in the folder.
 pub const RECORD: &str = ".prosperous-origin.json";
 
 /// Where a copy came from.
@@ -57,7 +25,7 @@ pub struct Origin {
     pub target: String,
     /// Its address at the time.
     pub address: String,
-    /// **The account the save belongs to.** The part that decides everything below.
+    /// The account the save belongs to.
     pub user: String,
     /// The path it was taken from, whole.
     pub from: String,
@@ -70,21 +38,17 @@ pub struct Origin {
 pub enum Needs {
     /// Nothing: it is going back to the account it came from.
     Nothing,
-    /// Decrypting and re-signing, because the account differs.
-    ///
-    /// Carries both accounts, because *which* differs is the first thing somebody asks and
-    /// the answer decides whether they meant to do this at all.
+    /// Decrypting and re-signing, because the account differs. Carries both accounts.
     Resigning {
         /// The account that wrote it.
         wrote: String,
         /// The account it is going to.
         going_to: String,
     },
-    /// **Nothing here can tell.**
+    /// Nothing here can tell, with the reason.
     ///
-    /// No record beside the copy, or the destination is not a save path this recognises. Not
-    /// the same as [`Needs::Nothing`]: an unrecorded save is the one most likely to have come
-    /// from another target.
+    /// Not the same as [`Needs::Nothing`]: an unrecorded save is the one most likely to have
+    /// come from another target.
     Unknown(String),
 }
 
@@ -98,9 +62,8 @@ impl Needs {
 
 /// The account a save path belongs to.
 ///
-/// `/user/home/<user>/savedata_prospero/<title>` gives `<user>`. Anything that is not that
-/// shape gives nothing, which is what makes an unrecognised destination *unknown* rather than
-/// silently matching.
+/// `/user/home/<user>/savedata_prospero/<title>` gives `<user>`. Any other shape gives `None`,
+/// so an unrecognised destination is unknown rather than matching.
 #[must_use]
 pub fn user_in(path: &str) -> Option<String> {
     let mut parts = path.trim_start_matches('/').split('/');
@@ -114,9 +77,8 @@ pub fn user_in(path: &str) -> Option<String> {
 ///
 /// # Errors
 ///
-/// When the folder cannot be written to. **Worth reporting rather than ignoring**: a backup
-/// with no record is one that will read as *unknown* forever, and somebody should find that
-/// out now rather than at the restore.
+/// When the folder cannot be written to. Reported, because a copy with no record reads as
+/// unknown at restore.
 pub fn stamp(into: &Path, origin: &Origin) -> Result<PathBuf, String> {
     let path = into.join(RECORD);
     let text = serde_json::to_string_pretty(origin).map_err(|why| why.to_string())?;
@@ -134,13 +96,11 @@ pub fn of(folder: &Path) -> Option<Origin> {
 
 /// The account a copied save says it belongs to, from its own parameter file.
 ///
-/// **Better than anything this project could record**, because it is true for a save that
-/// arrived from anywhere rather than only for one this tool copied. Any `.sfo` in the folder
-/// or below it will do - they carry the same account, being the same target's saves.
+/// True for a save from any source, not only one this tool copied. Any `.sfo` in the folder
+/// or up to three levels below will do; they carry the same account.
 ///
-/// `None` when there is no parameter file, which is common: of three saves measured on a
-/// target, one carried `.sfo` files and two carried only icons. That is why this is the
-/// first source and not the only one.
+/// `None` when there is no parameter file, which is common (measured on a target: two saves
+/// in three carried only icons).
 #[must_use]
 pub fn account_of(folder: &Path) -> Option<String> {
     fn look(dir: &Path, depth: usize) -> Option<String> {
@@ -168,22 +128,15 @@ pub fn account_of(folder: &Path) -> Option<String> {
 
 /// Decides what a copy needs to go to this destination.
 ///
-/// # Three sources, in order of what they are worth
+/// The save's own `ACCOUNT_ID` is compared with `account_here` first; failing that, the
+/// record beside the copy is compared with the account in `to`; failing both, the answer is
+/// [`Needs::Unknown`].
 ///
-/// 1. **The save's own `ACCOUNT_ID`**, read out of its parameter file, compared against the
-///    account already on the destination target. True regardless of where the save came
-///    from or which tool moved it.
-/// 2. **The record written when this tool made the copy**, which covers saves whose parameter
-///    file is missing - two in three, measured.
-/// 3. **Nothing**, which is [`Needs::Unknown`] and is not the same as fine.
-///
-/// `account_here` is the account the destination target belongs to, when it is known - read
-/// from a save already on it, by the same route as (1). Without it the first source cannot be
-/// used, because an account identifier means nothing on its own; there is only something to
-/// compare it *to*.
+/// `account_here` is the destination target's account, read from a save already on it. When
+/// the save has an account but `account_here` is `None`, there is nothing to compare it to and
+/// the answer is unknown.
 #[must_use]
 pub fn needed(folder: &Path, to: &str, account_here: Option<&str>) -> Needs {
-    // The save's own word first.
     if let Some(theirs) = account_of(folder) {
         return match account_here {
             Some(ours) if ours.eq_ignore_ascii_case(&theirs) => Needs::Nothing,
@@ -198,7 +151,6 @@ pub fn needed(folder: &Path, to: &str, account_here: Option<&str>) -> Needs {
         };
     }
 
-    // Then what was written down when the copy was made.
     let Some(going_to) = user_in(to) else {
         return Needs::Unknown(format!(
             "{to} is not a save path this recognises, and the save carries no parameter file, \
@@ -263,8 +215,7 @@ mod tests {
         assert_eq!(user_in("/user/home"), None);
     }
 
-    /// **Going back where it came from needs nothing.** The ordinary case, and the only one
-    /// where a plain copy is honest.
+    /// A save going back to the account it came from is a plain copy.
     #[test]
     fn a_save_going_back_to_its_own_account_is_a_plain_copy() {
         let folder = scratch("same");
@@ -279,10 +230,7 @@ mod tests {
         assert!(needs.is_plain());
     }
 
-    /// **A different account needs re-signing, and both accounts are named.**
-    ///
-    /// The failure this prevents is silent: the copy would succeed, and the target would
-    /// reject the save later, with nothing to connect the two events.
+    /// A different account needs re-signing, and both accounts are named.
     #[test]
     fn a_save_going_to_another_account_needs_resigning() {
         let folder = scratch("different");
@@ -303,10 +251,7 @@ mod tests {
         assert!(!needs.is_plain());
     }
 
-    /// **A copy with no record is unknown, not fine.**
-    ///
-    /// It is also the likeliest to need work, having come from somewhere else. Defaulting it
-    /// to a plain copy would put the failure exactly where it does most harm.
+    /// A copy with no record and no parameter file is unknown, not a plain copy.
     #[test]
     fn a_copy_from_nowhere_known_is_not_assumed_to_be_fine() {
         let folder = scratch("nameless");
@@ -319,8 +264,7 @@ mod tests {
         assert!(!needs.is_plain());
     }
 
-    /// A destination that is not a save path cannot be checked, and says so rather than
-    /// matching by accident.
+    /// A destination that is not a save path is unknown rather than matching.
     #[test]
     fn an_unrecognised_destination_is_unknown_rather_than_matching() {
         let folder = scratch("elsewhere");
@@ -330,10 +274,7 @@ mod tests {
         assert!(matches!(needs, Needs::Unknown(_)), "{needs:?}");
     }
 
-    /// **The save's own parameter file beats anything recorded here.**
-    ///
-    /// It is true for a save that arrived from anywhere - downloaded, handed over, copied by
-    /// another tool - where the record beside a copy only ever describes copies this made.
+    /// The save's own parameter file takes precedence over the record beside the copy.
     #[test]
     fn the_saves_own_account_is_what_decides_when_it_has_one() {
         let folder = scratch("parameters");
@@ -363,11 +304,7 @@ mod tests {
         );
     }
 
-    /// **An account with nothing to compare it to is unknown.**
-    ///
-    /// An identifier on its own says nothing about whether a copy will work; the whole
-    /// question is whether it matches the target's. Treating a known account as sufficient
-    /// would be the boolean mistake in a new place.
+    /// A save's account with no destination account to compare it to is unknown.
     #[test]
     fn an_account_with_nothing_to_compare_it_to_is_not_an_answer() {
         let folder = scratch("nothing-to-compare");
@@ -381,8 +318,7 @@ mod tests {
         assert!(matches!(needs, Needs::Unknown(_)), "{needs:?}");
     }
 
-    /// The parameter file is found below the top of the copy, since that is where a target
-    /// keeps it - under a title folder, not beside it.
+    /// A parameter file under a title folder, where a target keeps it, is found.
     #[test]
     fn a_parameter_file_further_down_is_still_found() {
         let folder = scratch("nested");

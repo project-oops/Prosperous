@@ -1,22 +1,12 @@
 //! Several pads at once, and what drives each one.
 //!
-//! # Why a slot is not a device
+//! A target accepts [`crate::pad::SLOTS`] pads. A slot is not a device: what fills it (the keyboard, a
+//! physical controller, or nothing) is assigned per slot, so unplugging a controller empties
+//! its slot instead of renumbering the rest.
 //!
-//! A target accepts four pads. What fills each one is this machine's business: a physical
-//! controller, the keyboard, or nothing. **Keeping those apart is what makes a slot
-//! reassignable** - unplugging a controller should empty its slot rather than renumber
-//! everything after it, which is what happens when the slot *is* the device.
-//!
-//! # Why the keyboard is a first-class source
-//!
-//! It costs nothing. The window already receives key state, so a keyboard-driven pad works
-//! with no new dependency at all - and a stand-in stream that can be driven the moment it
-//! exists is worth more than one waiting on a decision about which gamepad crate to take.
-//!
-//! Reading a physical controller is a **separate** decision, and it is a real one: this
-//! workspace forbids unsafe code, so the platform APIs are out of reach directly and a crate
-//! would have to be argued for like every other dependency here. Until then a slot can say it
-//! wants a controller and report that none is readable, which is honest and is not nothing.
+//! The keyboard is a first-class source because the window already receives key state, so it
+//! needs no dependency. Reading a physical controller would need a crate (the workspace forbids
+//! unsafe code), so a slot set to a controller reports that nothing can read it.
 
 use std::collections::BTreeMap;
 
@@ -32,14 +22,13 @@ pub enum Source {
     Keyboard,
     /// A physical controller.
     ///
-    /// **Declared but not readable yet.** A slot set to this reports that nothing can read it,
-    /// rather than silently behaving like [`Source::Empty`] - the two are different states and
-    /// only one of them is somebody's mistake.
+    /// Declared but not readable: it reports as unreadable rather than behaving like
+    /// [`Source::Empty`], since only one of the two is a mistake.
     Controller(u8),
 }
 
 impl Source {
-    /// What to call it.
+    /// The source's display name.
     #[must_use]
     pub fn describe(self) -> String {
         match self {
@@ -49,24 +38,20 @@ impl Source {
         }
     }
 
-    /// Whether anything can currently read this.
+    /// Whether anything can read this.
     ///
-    /// **`false` for a declared controller**, because nothing here can read one yet. A source
-    /// that claimed to work and sent nothing would be indistinguishable from a pad at rest.
+    /// `false` for a controller, which nothing here reads; claiming otherwise would make it
+    /// look like a pad at rest.
     #[must_use]
     pub const fn is_readable(self) -> bool {
         matches!(self, Self::Keyboard)
     }
 }
 
-/// How far a key pushes a stick.
+/// How far a key pushes a stick: all the way.
 ///
-/// All the way. A key is held or it is not, so anything less would be inventing an analogue
-/// value from a digital source - and a stick that never reaches its edge is one a game reads
-/// as a slow walk forever.
-///
-/// The axis is an unsigned byte centred on [`CENTRE`], matching what the target reads, so the
-/// two extremes are the ends of that byte rather than a signed range somebody has to convert.
+/// A key is digital, and a stick that never reaches its edge reads as a slow walk. The axis is
+/// an unsigned byte centred on [`CENTRE`], as the target reads it.
 pub const LOW: u8 = 0;
 
 /// The other end of the same travel.
@@ -74,14 +59,9 @@ pub const HIGH: u8 = u8::MAX;
 
 /// Which key does what, for a keyboard-driven pad.
 ///
-/// **Names rather than key codes**, because this crate has no window and must not grow one.
-/// The window resolves a name to its own key type, which keeps the mapping testable here and
-/// the platform detail there.
-///
-/// **Keyed by button, not by key.** A button has exactly one key and a key may - wrongly - be
-/// on two buttons, so this is the direction that cannot represent the impossible case. The
-/// possible-but-wrong one is found by [`Pads::conflicts`] rather than prevented, for reasons
-/// given there.
+/// Keys are names, not key codes, because this crate has no window; the window resolves a name
+/// to its own key type. Keyed by button, so a button has exactly one key; a key on two buttons
+/// is found by [`Pads::conflicts`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keys {
     /// Which key holds each button.
@@ -93,10 +73,8 @@ pub struct Keys {
 }
 
 impl Default for Keys {
-    /// A layout somebody can use without reading anything.
-    ///
-    /// The face buttons sit under the right hand where a pad's would be, movement is on the
-    /// left, and nothing is bound to a key a window needs for itself.
+    /// The first player's layout: face buttons under the right hand, movement on the left, and
+    /// no key the window needs for itself.
     fn default() -> Self {
         let named = |text: &str| text.to_owned();
         Self {
@@ -129,12 +107,7 @@ impl Default for Keys {
 }
 
 impl Keys {
-    /// Nothing bound at all.
-    ///
-    /// **What a second keyboard slot starts from is a real question**, and this is only half
-    /// the answer - see [`Keys::shifted`], which is the other half. An empty map is right when
-    /// somebody wants to build a layout; it is the wrong default for somebody who wanted a
-    /// second player and now has seventeen buttons to bind by hand.
+    /// Nothing bound at all, for building a layout from scratch.
     #[must_use]
     pub fn none() -> Self {
         Self {
@@ -144,17 +117,10 @@ impl Keys {
         }
     }
 
-    /// A second layout that shares no key with the default one.
+    /// A second player's layout that shares no key with [`Keys::default`].
     ///
-    /// # Why this exists rather than a copy of the default
-    ///
-    /// Two keyboard players is an ordinary thing to want, and the two obvious routes are both
-    /// bad: copying the default collides on every key, and starting empty means binding
-    /// seventeen buttons before anything happens.
-    ///
-    /// So the second player gets the other side of the keyboard. It will not suit everybody
-    /// and it is rebindable - **what matters is that it works immediately and conflicts with
-    /// nothing**, so the first thing somebody does is play rather than configure.
+    /// Uses the other side of the keyboard, so a second keyboard player works at once with no
+    /// conflict and no binding by hand.
     #[must_use]
     pub fn shifted() -> Self {
         let named = |text: &str| text.to_owned();
@@ -193,9 +159,8 @@ impl Keys {
 
     /// Builds a pad from whichever of these keys are held.
     ///
-    /// `held` answers whether a named key is down. **Opposite directions cancel** rather than
-    /// one winning, because a keyboard can hold both and a stick cannot be in two places - and
-    /// picking a winner would make left-plus-right mean something a pad can never say.
+    /// `held` answers whether a named key is down. Opposite directions cancel to centre, since
+    /// a keyboard can hold both and a stick cannot be in two places.
     #[must_use]
     pub fn read(&self, held: &dyn Fn(&str) -> bool) -> Pad {
         // Rest, not zero: a zeroed pad holds both sticks hard left and up.
@@ -210,8 +175,6 @@ impl Keys {
             match (held(minus), held(plus)) {
                 (true, false) => LOW,
                 (false, true) => HIGH,
-                // Both or neither is centred. A keyboard can hold both directions; a stick
-                // cannot be in two places.
                 _ => CENTRE,
             }
         };
@@ -230,10 +193,8 @@ impl Keys {
 
     /// Binds a key to a button.
     ///
-    /// **Does not take the key from whatever else had it.** An earlier version did, and that
-    /// is the same failure it was meant to prevent seen from the other side: the button it
-    /// silently unbound is now dead, and nothing said so. A key on two buttons is reported by
-    /// [`Pads::conflicts`] instead, where somebody can see it and decide.
+    /// Does not take the key from another button, which would leave that button silently
+    /// dead; a key on two buttons is reported by [`Pads::conflicts`] instead.
     pub fn bind(&mut self, key: &str, button: Button) {
         self.buttons.insert(button, key.to_owned());
     }
@@ -264,8 +225,7 @@ impl Keys {
 
 /// One key doing two jobs.
 ///
-/// **Reported rather than resolved**, because resolving it means silently undoing a binding
-/// somebody made, and a binding that half works with nothing saying so is the harder bug.
+/// Reported rather than resolved, because resolving it would silently undo a binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Conflict {
     /// One key bound to two buttons on the same slot.
@@ -279,9 +239,7 @@ pub enum Conflict {
     },
     /// One key driving two slots at once.
     ///
-    /// **The two-players-one-keyboard case**, and the one that looks like it works: both pads
-    /// move together, which reads as one person controlling two characters rather than as a
-    /// mapping mistake.
+    /// Both pads move together, which looks like working input rather than a mapping mistake.
     Shared {
         /// The two slots.
         slots: [u8; 2],
@@ -291,7 +249,7 @@ pub enum Conflict {
 }
 
 impl Conflict {
-    /// How to put it to somebody.
+    /// The conflict as a sentence for display.
     #[must_use]
     pub fn describe(&self) -> String {
         match self {
@@ -317,8 +275,7 @@ pub struct Slot {
     pub source: Source,
     /// Which key holds which button, when the source is the keyboard.
     ///
-    /// **Kept even when the source is not the keyboard**, so switching a slot to a controller
-    /// and back does not throw away a layout somebody spent time on.
+    /// Kept when the source changes, so switching away and back keeps the layout.
     pub keys: Keys,
     /// The state it last read.
     pub state: Pad,
@@ -328,10 +285,8 @@ pub struct Slot {
 impl Slot {
     /// A slot with a layout but nothing driving it.
     ///
-    /// The first two get real layouts and the rest start empty - not from meanness, but
-    /// because two players share one keyboard and four cannot: past the second there are no
-    /// keys left that anybody would find comfortable, and inventing a third layout out of
-    /// whatever remains would be worse than an honest blank.
+    /// Slots 0 and 1 get [`Keys::default`] and [`Keys::shifted`]; the rest start empty, since
+    /// one keyboard has no comfortable room for a third layout.
     #[must_use]
     pub fn new(slot: u8) -> Self {
         let keys = match slot {
@@ -358,8 +313,7 @@ impl Slot {
 
     /// Whether anything at all is bound here.
     ///
-    /// **Worth asking before a slot is switched to the keyboard**, because a slot with no
-    /// bindings looks exactly like one where the keyboard is not working.
+    /// A slot with no bindings looks exactly like one where the keyboard is not working.
     #[must_use]
     pub fn is_bound(&self) -> bool {
         !self.keys.buttons.is_empty()
@@ -377,9 +331,7 @@ impl Slot {
 pub struct Pads {
     /// One per slot, always [`SLOTS`] of them.
     ///
-    /// **Fixed rather than a list that grows.** A target has four whether or not anything
-    /// drives them, and a collection that only held the filled ones would renumber the rest
-    /// when one emptied.
+    /// Fixed, so emptying one slot never renumbers the others.
     pub slots: Vec<Slot>,
 }
 
@@ -390,11 +342,7 @@ impl Default for Pads {
 }
 
 impl Pads {
-    /// Four slots, the first driven by the keyboard.
-    ///
-    /// One rather than none, because a fresh window with nothing bound has no way to press
-    /// anything; one rather than four, because three empty pads in front of somebody with one
-    /// keyboard is three questions they did not ask.
+    /// All slots, the first driven by the keyboard so a fresh window can press something.
     #[must_use]
     pub fn new() -> Self {
         let mut slots: Vec<Slot> = (0..SLOTS).map(Slot::new).collect();
@@ -415,16 +363,9 @@ impl Pads {
 
     /// Every key doing two jobs.
     ///
-    /// # Why these are reported and not prevented
-    ///
-    /// Both kinds are almost always a mistake made while rebinding, and both alternatives are
-    /// worse than saying so. Preventing a doubled key means silently unbinding whatever had
-    /// it - a dead button nobody was told about. Preventing a shared one means refusing a
-    /// layout somebody may have meant.
-    ///
-    /// **The shared case is the one that hides.** Two slots on the same keys move together,
-    /// which reads as one person driving two characters rather than as a mapping fault, and
-    /// nothing about it looks broken.
+    /// Reported, not prevented: preventing a doubled key would silently unbind a button, and
+    /// preventing a shared one would refuse a layout that may be intended. Shared keys are
+    /// checked only between slots the keyboard drives.
     #[must_use]
     pub fn conflicts(&self) -> Vec<Conflict> {
         let mut found = Vec::new();
@@ -438,8 +379,7 @@ impl Pads {
             }
         }
 
-        // Only between slots the keyboard actually drives. Two layouts that overlap while one
-        // of them is on a controller is a collision nobody can feel.
+        // An overlap with a slot on a controller has no effect.
         let driven: Vec<&Slot> = self
             .slots
             .iter()
@@ -471,8 +411,7 @@ impl Pads {
         for slot in &mut self.slots {
             let read = match slot.source {
                 Source::Keyboard => slot.keys.read(held),
-                // Nothing can read a controller yet, and an empty slot has nothing to read.
-                // Neither sends, and neither pretends the other's state.
+                // An empty slot has nothing to read and a controller cannot be read.
                 Source::Empty | Source::Controller(_) => continue,
             };
             let numbered = Pad {
@@ -507,10 +446,7 @@ mod tests {
         assert!(!pad.holds(Button::Circle));
     }
 
-    /// **Opposite directions cancel rather than one winning.**
-    ///
-    /// A keyboard can hold both; a stick cannot be in two places, and picking a winner would
-    /// make left-plus-right mean something no pad can say.
+    /// Opposite directions cancel to centre rather than one winning.
     #[test]
     fn holding_both_directions_centres_the_stick() {
         let keys = Keys::default();
@@ -528,11 +464,7 @@ mod tests {
         assert_eq!(pad.l2, u8::MAX);
     }
 
-    /// **Binding no longer steals the key from another button.**
-    ///
-    /// It used to, which was the same failure it meant to prevent seen from the other side:
-    /// the button it silently unbound was dead and nothing said so. The collision is reported
-    /// instead.
+    /// Binding a key already in use keeps both bindings and reports the collision.
     #[test]
     fn binding_a_key_twice_is_reported_rather_than_resolved() {
         let mut pads = Pads::new();
@@ -551,10 +483,7 @@ mod tests {
         assert!(said[0].describe().contains('K'));
     }
 
-    /// **Two keyboard slots sharing a key is the conflict that hides.**
-    ///
-    /// Both pads move together, which reads as one person driving two characters rather than
-    /// as a mapping fault.
+    /// Two keyboard slots sharing a key are reported as a shared conflict.
     #[test]
     fn two_slots_on_the_same_key_are_reported() {
         let mut pads = Pads::new();
@@ -575,8 +504,7 @@ mod tests {
         );
     }
 
-    /// An overlap only counts when the keyboard actually drives both - a layout that overlaps
-    /// while its slot is on a controller is a collision nobody can feel.
+    /// An overlap with a slot the keyboard does not drive is not a conflict.
     #[test]
     fn an_overlap_on_a_slot_the_keyboard_does_not_drive_is_not_a_conflict() {
         let mut pads = Pads::new();
@@ -585,10 +513,7 @@ mod tests {
         assert!(pads.conflicts().is_empty(), "{:?}", pads.conflicts());
     }
 
-    /// **A second keyboard player works immediately.**
-    ///
-    /// The two obvious alternatives are both bad: copying the first layout collides on every
-    /// key, and an empty one means binding seventeen buttons before anything happens.
+    /// A second keyboard slot is bound, conflict-free and announces itself when switched on.
     #[test]
     fn the_second_slot_is_playable_the_moment_it_is_switched_on() {
         let mut pads = Pads::new();
@@ -597,8 +522,7 @@ mod tests {
         assert!(pads.slots[1].is_bound(), "it starts with a layout");
         assert!(pads.conflicts().is_empty(), "and it collides with nothing");
 
-        // **A newly active slot announces itself**, even at rest, so the target learns the
-        // pad exists rather than only hearing about it when somebody presses something.
+        // A newly active slot sends once at rest, so the target learns the pad exists.
         let sent = pads.poll(&holding(&["K"]));
         assert_eq!(sent.len(), 2, "one press and one introduction");
 
@@ -618,8 +542,7 @@ mod tests {
         );
     }
 
-    /// A slot keeps its layout when it stops being on the keyboard, so switching back does
-    /// not lose work.
+    /// A slot keeps its layout when its source changes and changes back.
     #[test]
     fn a_layout_survives_the_slot_changing_hands() {
         let mut pads = Pads::new();
@@ -629,7 +552,7 @@ mod tests {
         assert_eq!(pads.slots[0].keys.key_for(Button::Cross), Some("Y"));
     }
 
-    /// A target has four slots whether or not anything drives them.
+    /// A target has all its slots whether or not anything drives them.
     #[test]
     fn there_are_always_four_slots() {
         let pads = Pads::new();
@@ -640,7 +563,7 @@ mod tests {
         }
     }
 
-    /// **Each slot's records carry its own number**, so a payload can tell them apart.
+    /// Each slot's records carry its own number, so a payload can tell them apart.
     #[test]
     fn every_slot_sends_under_its_own_number() {
         let mut pads = Pads::new();
@@ -655,9 +578,7 @@ mod tests {
         assert_eq!(slots, [0, 2], "and nothing from the empty ones");
     }
 
-    /// **An unreadable source sends nothing and says so**, rather than behaving like an empty
-    /// slot - a declared controller nothing can read is somebody's mistake, and an empty slot
-    /// is not.
+    /// A controller slot counts as filled, is unreadable, and sends nothing.
     #[test]
     fn a_controller_is_declared_but_not_readable() {
         let mut pads = Pads::new();
@@ -672,8 +593,7 @@ mod tests {
         );
     }
 
-    /// A slot at rest goes quiet, and letting go still sends - the same rule as one pad, kept
-    /// per slot so one player's silence does not stop another's input.
+    /// Each slot goes quiet at rest independently, and letting go still sends.
     #[test]
     fn each_slot_goes_quiet_on_its_own() {
         let mut pads = Pads::new();

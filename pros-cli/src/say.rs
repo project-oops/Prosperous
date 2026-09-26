@@ -1,18 +1,9 @@
-//! What a person reads.
+//! What a person reads: the wording and column layout of every report.
 //!
-//! # Why this is the only thing in the shim
-//!
-//! Every decision this program makes is made in a crate. What is left is how a finding is
-//! worded and where the columns line up, and that is the one job a library should not be
-//! doing on somebody's behalf - a library that prints has chosen the interface of every
-//! tool that uses it.
-//!
-//! # The rule the wording follows
-//!
-//! A reader is told **what is possible**, not which ports are open, and when something is
-//! wrong they are told **what to do about it** rather than left to work it out from a
-//! table. Those are the same two rules the check itself is built on; this is where they
-//! become sentences.
+//! Decisions are made in the library crates; printing lives here because a library that
+//! prints chooses the interface of every tool that uses it. A reader is told what is
+//! possible rather than which ports are open, and when something is wrong, what to do
+//! about it.
 
 use pros_core::check::{Remedy, Report, Verdict};
 use pros_core::library::{Item, Kind as LibraryKind};
@@ -30,9 +21,8 @@ pub(crate) fn report(report: &Report) {
         } else {
             "--  "
         };
-        // A slow answer is said out loud, because a port that refuses instantly and one
-        // that takes a second and a half mean different things and look identical in a
-        // column of up and down.
+        // A slow answer is shown: an instant refusal and a slow one mean different things
+        // and look identical in a column of up and down.
         let slow = if finding.was_slow() {
             format!("  ({}ms)", finding.reachability.took.as_millis())
         } else {
@@ -58,11 +48,11 @@ pub(crate) fn verdict(verdict: &Verdict) -> String {
             were(names.len())
         ),
         Verdict::Blocked {
-            remedy: Remedy::RerunTheJailbreak,
+            remedy: Remedy::RerunTheEntryPoint,
         } => "the loader is not answering, so nothing can be sent or started from here. \
               This says nothing about the target: a console can run its whole chain with \
-              9021 unreachable. Getting it back means loading elfldr through the exploit's \
-              own loader, which means re-running the exploit"
+              9021 unreachable. Getting it back means starting elfldr the way it was first \
+              started, which means re-running the entry point"
             .to_owned(),
         Verdict::Blocked {
             remedy: Remedy::LoadThese { names },
@@ -75,7 +65,7 @@ pub(crate) fn verdict(verdict: &Verdict) -> String {
     }
 }
 
-/// Agreement, because a list of two that says "is" reads as a tool that has never had two.
+/// The verb agreeing with a count of names.
 const fn were(count: usize) -> &'static str {
     if count == 1 { "is" } else { "are" }
 }
@@ -87,8 +77,7 @@ pub(crate) fn listing(entries: &[Entry]) {
             let size = entry.size.map_or_else(|| "-".to_owned(), |n| n.to_string());
             println!("  {size:>10}  {}", entry.name);
         } else {
-            // Shown rather than dropped: a listing that hides the lines it could not read
-            // says a directory is emptier than it is.
+            // Shown rather than dropped, so the listing is not emptier than the directory.
             println!("  {:>10}  ? {}", "", entry.raw);
         }
     }
@@ -96,9 +85,8 @@ pub(crate) fn listing(entries: &[Entry]) {
 
 /// Prints what is described, what can be trusted, and what is on the target.
 ///
-/// `probed` says whether a target was asked. **Without it every row is unknown**, and the
-/// difference between *nobody looked* and *it is not there* is the whole reason the presence
-/// column has three states rather than two.
+/// `probed` says whether a target was asked. Without it every row is unknown: the presence
+/// column has three states so that "nobody looked" differs from "it is not there".
 pub(crate) fn payloads(rows: &[Row<'_>], probed: bool) {
     for row in rows {
         let presence = match row.presence {
@@ -106,9 +94,8 @@ pub(crate) fn payloads(rows: &[Row<'_>], probed: bool) {
             Presence::NotLoaded => "off",
             Presence::Unknown => "?  ",
         };
-        // **A second column, because they are different questions.** A service can be
-        // answering now and absent from the boot list, which means it is there until
-        // somebody turns the target off - usually the finding that was actually wanted.
+        // A separate column: a service can be answering now and absent from the boot list,
+        // so it is gone after the next reboot.
         let boot = match row.boot {
             Boot::At(position) => format!("{position:>2}"),
             Boot::NotInList => " -".to_owned(),
@@ -145,9 +132,7 @@ pub(crate) fn payloads(rows: &[Row<'_>], probed: bool) {
     if doubtful.is_empty() {
         return;
     }
-    // **Said at the end, not left to be discovered one payload at a time.** An entry that
-    // cannot be verified is one that cannot be sent, and finding that out half way through
-    // a job is finding it out too late.
+    // Listed together at the end: an entry that cannot be verified cannot be sent.
     println!();
     println!("{} of these cannot be verified:", doubtful.len());
     for row in doubtful {
@@ -184,7 +169,7 @@ pub(crate) fn library(items: &[&Item]) {
     if counted == items.len() {
         println!("{} {}, {}", items.len(), things(items.len()), size(total));
     } else {
-        // A total over a listing where some sizes were missing looks complete and is not.
+        // Some sizes are missing, so the total says what it covers.
         println!(
             "{} {}, {} over {counted} of them - the rest stated no size",
             items.len(),
@@ -194,15 +179,14 @@ pub(crate) fn library(items: &[&Item]) {
     }
 }
 
-/// One item is an item. Same reason as `were`: a tool that says "1 items" has never had one.
+/// The noun agreeing with a count of items.
 const fn things(count: usize) -> &'static str {
     if count == 1 { "item" } else { "items" }
 }
 
 /// A byte count somebody can read at a glance.
 ///
-/// Integer arithmetic throughout: a size can exceed what a float represents exactly, and a
-/// library listing is one of the few places where numbers that large turn up.
+/// Integer arithmetic throughout: a library size can exceed what a float represents exactly.
 fn size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     const STEP: u64 = 1024;
@@ -225,9 +209,8 @@ fn size(bytes: u64) -> String {
 
 /// Prints what a folder copy did, and what it did not.
 ///
-/// **The incomplete case is not a footnote.** A backup that quietly missed a file will be
-/// trusted at the moment it matters, so a copy with anything skipped says so first, lists
-/// every one, and exits non-zero.
+/// A copy with anything skipped says so, lists every skipped file and exits non-zero, so an
+/// incomplete copy is never trusted as a backup.
 pub(crate) fn copied(
     summary: &pros_core::transfer::Summary,
     where_to: &str,
@@ -238,8 +221,8 @@ pub(crate) fn copied(
         if summary.files == 1 { "file" } else { "files" },
         size(summary.bytes)
     );
-    // Not a copy and not a skip: files already on the target, unchanged, so not sent again. Said
-    // so a restore that moved little because little changed does not read as one that did nothing.
+    // Files already on the target unchanged are neither copied nor skipped; they are counted so
+    // a restore that moved little does not read as one that did nothing.
     if summary.unchanged > 0 {
         println!(
             "{} {} already there, unchanged - not re-sent",
@@ -267,11 +250,9 @@ pub(crate) fn copied(
 
 /// Prints a process listing as a table: pid, state, memory, title, command.
 ///
-/// **Shared by `ps` and `top`** so the two cannot drift - a column shown by one and not the other
-/// is exactly the split the shims are meant not to have. Memory is the current figure in MiB; a row
-/// the listing gave no memory for shows `-` rather than a zero it did not measure. Columns are
-/// sized to the widest value present so they line up without assuming how many digits a pid or a
-/// figure happens to have.
+/// Shared by `ps` and `top` so their columns cannot drift. Memory is the current figure in MiB;
+/// a row with no memory figure shows `-` rather than an unmeasured zero. Columns are sized to
+/// the widest value present.
 pub(crate) fn processes(processes: &[pros_core::system::Process]) {
     let pid_w = processes
         .iter()

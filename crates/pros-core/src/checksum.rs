@@ -1,29 +1,11 @@
 //! Proving a payload is the one that was described, before it is run.
 //!
-//! # This is the risk surface, in one paragraph
-//!
-//! A payload is fetched from a mirror somebody else controls and then handed to a loader
-//! that runs it with kernel-adjacent privileges. Everything else in this project is
-//! convenience; this is the part where being wrong matters. **Verification happens before
-//! sending, always, and the ordinary path offers no way past it.**
-//!
-//! # An algorithm this cannot check is an error, not a shrug
-//!
-//! The obvious way to write this is to verify what you recognise and pass over what you do
-//! not. That produces a tool which reports success for an entry it never checked - the same
-//! defect as a probe that cannot fail, applied to the one place where it would matter most.
-//!
-//! So an unreadable or unsupported checksum fails at the point the manifest is read, naming
-//! what it found. A person can then fix the manifest, which is a small job, rather than
-//! discover months later that a category of entry was never verified.
-//!
-//! # Why only one algorithm
-//!
-//! SHA-256 is what release assets are published with. The payload manager's own repository
-//! has a `checksum` field whose format **has not been measured**, so rather than guess at a
-//! second algorithm and write code that has never seen a real input, anything else is
-//! reported by name. When a real repository is in front of us, the error message will say
-//! exactly what to add.
+//! A payload comes from a mirror somebody else controls and is run by a loader with
+//! kernel-adjacent privileges, so verification happens before sending and the ordinary path
+//! has no way past it. A checksum this cannot check fails when the manifest is read, naming
+//! what it found, rather than being skipped and reported as verified. Only SHA-256 is
+//! supported: it is what release assets publish, and the payload manager's own `checksum`
+//! field format is unmeasured, so any other algorithm is reported by name.
 
 use std::fmt;
 
@@ -32,7 +14,7 @@ use sha2::{Digest as _, Sha256};
 /// How a digest was computed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Algorithm {
-    /// SHA-256, and currently the only one that can be checked.
+    /// SHA-256, the only one that can be checked.
     Sha256,
 }
 
@@ -83,9 +65,8 @@ impl Checksum {
     ///
     /// # Errors
     ///
-    /// [`Unreadable`] for anything this cannot check, **including digests it recognises but
-    /// cannot verify**. See the module note: passing over those would produce a tool that
-    /// reports success for entries it never looked at.
+    /// [`Unreadable`] for anything this cannot check, including digests it recognises but
+    /// cannot verify.
     pub fn parse(text: &str) -> Result<Self, Unreadable> {
         let text = text.trim();
         if text.is_empty() {
@@ -102,9 +83,8 @@ impl Checksum {
             });
         }
 
-        // A name, when there is one, wins over the length. A file that says `md5:` followed
-        // by sixty-four digits is a manifest somebody has already got wrong, and guessing
-        // which half to believe would be inventing an answer.
+        // A name, when there is one, must agree with the length; a disagreement is refused
+        // rather than resolved by believing one half.
         if let Some(named) = named {
             if named != Algorithm::Sha256.name() || digest.len() != Algorithm::Sha256.digits() {
                 return Err(Unreadable::Unsupported {
@@ -141,9 +121,8 @@ impl Checksum {
     ///
     /// # Errors
     ///
-    /// [`Mismatch`], carrying both digests. **Both, not just a verdict**: the one thing
-    /// somebody wants when a download fails to verify is whether it is the file that is
-    /// wrong or the manifest, and that is a question about two numbers.
+    /// [`Mismatch`], carrying both digests, so a reader can tell whether the file or the
+    /// manifest is wrong.
     pub fn verify(&self, bytes: &[u8]) -> Result<(), Mismatch> {
         let found = Self::of(bytes);
         if found.digest == self.digest {
@@ -154,13 +133,8 @@ impl Checksum {
             );
             return Ok(());
         }
-        // `warn` rather than `error`, and the distinction is not pedantry: this returns `Err`
-        // and the caller decides what a mismatch means to it. The command that gives up says
-        // `error`. Logging both here would report one problem twice, at the wrong severity,
-        // from the layer that knows least about why it was asked. Conventions section 9.
-        //
-        // Never silent, though. This is the check standing between a download and something
-        // run with kernel-adjacent privileges, and a failure here is never routine.
+        // `warn`, not `error`: this returns `Err` and the caller that gives up logs the error,
+        // so one problem is reported once at the right severity.
         tracing::warn!(
             algorithm = self.algorithm.name(),
             expected = %self.digest,
@@ -186,8 +160,8 @@ impl fmt::Display for Checksum {
 pub enum Unreadable {
     /// The manifest entry has no checksum at all.
     ///
-    /// Its own error rather than a parse failure, because the remedy is different: somebody
-    /// has to find out what the digest should be, not correct a typo.
+    /// Its own error because the remedy differs: somebody has to find the digest, not fix a
+    /// typo.
     Absent,
     /// The text is not a digest.
     NotADigest {
@@ -271,7 +245,7 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::{Algorithm, Checksum, Unreadable};
 
-    /// Two published vectors, so the wiring is checked against something outside this crate.
+    /// The digest agrees with the published SHA-256 test vectors.
     #[test]
     fn it_agrees_with_the_published_vectors() {
         assert_eq!(
@@ -284,7 +258,7 @@ mod tests {
         );
     }
 
-    /// A manifest may write it either way, and case is not meaning.
+    /// A prefixed and a bare digest read the same, in any case.
     #[test]
     fn a_prefix_and_a_bare_digest_read_the_same() {
         let bare =
@@ -298,10 +272,7 @@ mod tests {
         assert_eq!(bare.algorithm(), Algorithm::Sha256);
     }
 
-    /// A digest this cannot check is an error naming it, **not** a check that is skipped.
-    ///
-    /// The failure this pins is the worst one available: a tool that reports a payload as
-    /// verified when it never looked at it.
+    /// A digest this cannot check is an error naming it, not a skipped check.
     #[test]
     fn a_digest_that_cannot_be_checked_is_refused_by_name() {
         let error = Checksum::parse("d41d8cd98f00b204e9800998ecf8427e").expect_err("md5 is 32");
@@ -320,7 +291,7 @@ mod tests {
         ));
     }
 
-    /// A missing checksum is its own answer, because the remedy differs from a typo.
+    /// A missing checksum is told apart from a malformed one.
     #[test]
     fn no_checksum_at_all_is_told_apart_from_a_bad_one() {
         assert_eq!(Checksum::parse("   "), Err(Unreadable::Absent));
@@ -330,8 +301,7 @@ mod tests {
         ));
     }
 
-    /// A name that disagrees with the length is a manifest somebody has already got wrong,
-    /// and picking a half to believe would be inventing an answer.
+    /// A name that contradicts the digest length is refused.
     #[test]
     fn a_name_that_contradicts_the_length_is_refused() {
         assert!(matches!(
@@ -340,7 +310,7 @@ mod tests {
         ));
     }
 
-    /// A mismatch carries both digests, because *which* is wrong is the actual question.
+    /// A mismatch carries both the expected and the found digest.
     #[test]
     fn a_mismatch_says_what_was_expected_and_what_arrived() {
         let expected = Checksum::of(b"the payload that was described");

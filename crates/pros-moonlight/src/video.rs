@@ -1,19 +1,9 @@
 //! Turning an encoded frame into the RTP packets a Moonlight client expects.
 //!
-//! **Adapted from Moonshine** (Hans Gaiser, BSD-2-Clause; see `THIRD-PARTY-LICENSES.md`), whose
-//! `video/packetizer.rs` is the working reference for GameStream's video wire format. The byte
-//! layout, the NV video-packet header, the `fec_info` bit-packing and the Reed-Solomon scheme
-//! below follow it. Nothing here decodes a picture - it prepends a frame header, splits the bytes
-//! into equal shards, adds parity, and wraps each shard in RTP.
-//!
-//! A packet is laid out exactly as the client reads it:
-//!
-//! ```text
-//! [0..12]   RTP header
-//! [12..16]  four zero bytes of padding
-//! [16..32]  NV video packet header
-//! [32..]    shard payload (frame header on the first shard, then frame bytes; zero-padded)
-//! ```
+//! Adapted from Moonshine's `video/packetizer.rs` (BSD-2-Clause; see `THIRD-PARTY-LICENSES.md`):
+//! the byte layout, the NV video-packet header, the `fec_info` packing and the Reed-Solomon scheme
+//! follow it. A frame gets a frame header, is split into equal zero-padded shards, gains parity
+//! shards, and each shard is wrapped as RTP header, four zero bytes, NV header, then payload.
 
 use fec_rs::ReedSolomon;
 
@@ -51,8 +41,7 @@ pub(crate) struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        // 1024-byte shards and 20% parity are the common GameStream defaults; the client's ANNOUNCE
-        // can narrow them, but these stream on a LAN.
+        // 1024-byte shards and 20% parity are the common GameStream defaults.
         Self {
             shard_payload: 1024,
             fec_percentage: 20,
@@ -112,10 +101,8 @@ impl Packetizer {
             shards.push(vec![0_u8; shard_payload]);
         }
         if nr_parity > 0 {
-            // fec-rs is the same Reed-Solomon Moonshine and Moonlight use; it fills the parity
-            // shards in place from the data shards. If it cannot be built (only for invalid shard
-            // counts, which the caps above prevent), send the data shards alone rather than zeros
-            // a client would take for parity.
+            // fec-rs fills the parity shards in place. On failure the data shards go alone, since
+            // zeroed shards would be taken for parity.
             match ReedSolomon::new(nr_data, nr_parity) {
                 Ok(fec) => {
                     if let Err(error) = fec.encode(&mut shards) {
@@ -146,7 +133,7 @@ impl Packetizer {
                     flags |= flag::END_OF_FRAME;
                 }
             }
-            // See Moonshine: shard index, data-shard count and FEC percentage packed into one word.
+            // Shard index, data-shard count and FEC percentage packed into one word, as Moonshine.
             let fec_info = (u32::try_from(index).unwrap_or(0) << 12)
                 | (u32::try_from(nr_data).unwrap_or(0) << 22)
                 | (u32::from(config.fec_percentage) << 4);
@@ -167,7 +154,6 @@ impl Packetizer {
                 .to_be_bytes(),
         );
         packet[4..8].copy_from_slice(&frame_index.to_be_bytes());
-        // packet[8..12] SSRC stays zero.
         // NV video packet header (after the four padding bytes), all little-endian.
         let nv = RTP_HEADER + PADDING;
         packet[nv..nv + 4].copy_from_slice(&self.stream_index.to_le_bytes());
@@ -185,7 +171,7 @@ impl Packetizer {
 fn frame_header(keyframe: bool, last_payload_len: u32) -> [u8; FRAME_HEADER] {
     let mut header = [0_u8; FRAME_HEADER];
     header[0] = 0x01; // header type
-    // bytes 1..3 frame processing latency: zero, we do not measure it.
+    // Bytes 1..3, the frame processing latency, stay zero: it is not measured.
     header[3] = if keyframe { 2 } else { 1 };
     header[4..8].copy_from_slice(&last_payload_len.to_le_bytes());
     header
@@ -211,6 +197,7 @@ mod tests {
         packet[super::RTP_HEADER + super::PADDING + 8]
     }
 
+    /// A frame under one shard is one data shard, flagged start and end, plus one parity shard.
     #[test]
     fn a_small_frame_is_one_data_shard_plus_parity_marked_start_and_end() {
         let mut packetizer = Packetizer::new();
@@ -219,19 +206,16 @@ mod tests {
             fec_percentage: 20,
         };
         let packets = packetizer.packetize(b"a tiny keyframe", true, 0, &config);
-        // One data shard (the frame is far under 1024) and, at 20%, one parity shard.
         assert_eq!(packets.len(), 2);
-        // The single data shard is both the start and the end of the frame, and carries pic data.
         assert_eq!(
             flags_of(&packets[0]),
             flag::PIC_DATA | flag::START_OF_FRAME | flag::END_OF_FRAME
         );
-        // The parity shard carries no picture-data flag.
         assert_eq!(flags_of(&packets[1]) & flag::PIC_DATA, 0);
-        // Every packet is at least a full set of headers long.
         assert!(packets.iter().all(|p| p.len() >= PAYLOAD_OFFSET));
     }
 
+    /// A frame larger than a shard splits into several, the first flagged start and the last end.
     #[test]
     fn a_larger_frame_splits_into_several_data_shards() {
         let mut packetizer = Packetizer::new();
@@ -253,6 +237,7 @@ mod tests {
         );
     }
 
+    /// The RTP sequence continues across frames rather than resetting.
     #[test]
     fn the_rtp_sequence_advances_across_frames() {
         let mut packetizer = Packetizer::new();
@@ -271,6 +256,7 @@ mod tests {
         );
     }
 
+    /// Parity is zero at 0%, at least one otherwise, and capped at the GF(256) block size.
     #[test]
     fn parity_is_capped_and_optional() {
         assert_eq!(parity_count(10, 0), 0);

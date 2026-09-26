@@ -1,20 +1,8 @@
 //! What is on the target's storage: titles, saves and packages.
 //!
-//! # What this does and does not know
-//!
-//! It reads directory listings and says what the entries **look like**. It does not install
-//! anything, does not know how the system registers a title, and does not pretend to: those
-//! need a protocol nobody here has measured.
-//!
-//! What it does need is nothing but the file service, which already works. Listing a folder
-//! and recognising the shape of what is in it is the whole of it, and that is enough to
-//! browse a library, find a save and copy one off.
-//!
-//! # Why the paths are parameters
-//!
-//! Where a target keeps titles and saves has **not been measured** by this project. The
-//! shapes below are conventions, and a convention is a good guess; the caller supplies the
-//! place. Same rule as the payload repository, and for the same reason. (D007)
+//! It reads directory listings through the file service and says what the entries look like;
+//! it installs nothing and knows nothing of how the system registers a title. Paths are
+//! parameters supplied by the caller, since the name shapes here are conventions. (D007)
 
 use std::path::Path;
 
@@ -40,8 +28,8 @@ pub struct Item {
     pub name: String,
     /// The title identifier, when the name is one.
     ///
-    /// Kept apart from the name because a title folder is named by identifier and a person
-    /// reading a list wants both, and because **only this field is safe to match on**.
+    /// Kept apart from the name because a reader wants both, and only this field is safe to
+    /// match on.
     pub id: Option<String>,
     /// What it appears to be.
     pub kind: Kind,
@@ -59,9 +47,8 @@ impl Item {
 
 /// Reads a directory listing as a library.
 ///
-/// Lines the listing could not parse are **dropped here and only here**: they were already
-/// kept and marked by the transport, and a library view is a place for things that are
-/// things. A caller that wants everything asks the file service instead.
+/// Lines the listing could not parse are dropped here; the transport has already kept and
+/// marked them for callers that want everything.
 #[must_use]
 pub fn scan(entries: &[Entry]) -> Vec<Item> {
     entries
@@ -70,10 +57,8 @@ pub fn scan(entries: &[Entry]) -> Vec<Item> {
         .filter(|entry| entry.name != "." && entry.name != "..")
         .map(|entry| {
             let id = title_id(&entry.name);
-            // **A folder is a title only when the identifier is the whole of its name.**
-            // A save folder is named after a title and is not one, and calling it a title
-            // would put saves in the same column as installed software. The identifier is
-            // still reported, because that is the useful half.
+            // A folder is a title only when the identifier is its whole name: a save folder
+            // named after a title is not one, though its identifier is still reported.
             let is_title = id == Some(entry.name.as_str());
             let kind = match entry.kind {
                 EntryKind::Directory | EntryKind::Link if is_title => Kind::Title,
@@ -83,8 +68,8 @@ pub fn scan(entries: &[Entry]) -> Vec<Item> {
             };
             Item {
                 name: entry.name.clone(),
-                // A package says which title it is for, somewhere in its name. A folder
-                // says it at the front or not at all.
+                // A package names its title anywhere in its name; a folder at the front or not
+                // at all.
                 id: if kind == Kind::Package {
                     title_id_within(&entry.name).map(str::to_owned)
                 } else {
@@ -97,19 +82,13 @@ pub fn scan(entries: &[Entry]) -> Vec<Item> {
         .collect()
 }
 
-/// Reads a directory on **this** machine as a library.
-///
-/// # Why the same shape as a target's
-///
-/// Because the useful view is both at once. A person wants to see what is here beside what
-/// is there and move things between them, and that comparison is only possible if the two
-/// sides are described the same way.
+/// Reads a directory on this machine as a library, in the same shape as a target's so the
+/// two sides can be compared.
 ///
 /// # Errors
 ///
-/// When the directory cannot be read. **A directory that is not there is an empty list**,
-/// not a failure: this project's own folders do not exist until something is put in them,
-/// and reporting that as an error would make an ordinary state look like a fault.
+/// When the directory cannot be read. A directory that is not there is an empty list: this
+/// program's folders do not exist until something is put in them.
 pub fn here(path: &Path) -> Result<Vec<Item>, String> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -118,8 +97,7 @@ pub fn here(path: &Path) -> Result<Vec<Item>, String> {
     for entry in std::fs::read_dir(path).map_err(|why| why.to_string())? {
         let entry = entry.map_err(|why| why.to_string())?;
         let name = entry.file_name().to_string_lossy().to_string();
-        // `file_type` does not follow links and `is_dir` does, which is the difference
-        // between describing a link and describing whatever it points at.
+        // `file_type` does not follow links, so a link is described rather than its target.
         let kind = entry.file_type().map_err(|why| why.to_string())?;
         let id = title_id(&name).map(str::to_owned);
         let is_title = id.as_deref() == Some(name.as_str());
@@ -142,11 +120,9 @@ pub fn here(path: &Path) -> Result<Vec<Item>, String> {
     Ok(items)
 }
 
-/// The title identifier in a name, if the name has that shape.
+/// The title identifier at the front of a name, if it has that shape.
 ///
-/// Four letters and five digits, which is the published form of these identifiers. Matched
-/// as a **shape only**: this says the name looks like an identifier, not that any title
-/// exists, and certainly not which one.
+/// Four letters and five digits. A shape only: it does not say that any title exists.
 #[must_use]
 pub fn title_id(name: &str) -> Option<&str> {
     let candidate = name.split(['-', '_', ' ']).next().unwrap_or(name);
@@ -155,15 +131,9 @@ pub fn title_id(name: &str) -> Option<&str> {
 
 /// A title identifier anywhere in a name, rather than only at the front.
 ///
-/// # Why packages need this and folders do not
-///
-/// A title's folder is named `PPSA01650` and nothing else, so the strict rule is right there.
-/// A package is named `PS5_LAPY20011_v1.05.pkg` - the identifier is in the middle, wrapped in
-/// a platform and a version by whoever built it.
-///
-/// Kept separate from [`title_id`] rather than loosening it, because loosening the strict one
-/// would let a folder called `backup_PPSA01650_old` read as that title, and a folder is a
-/// thing this project copies into and out of.
+/// For packages, which wrap the identifier in a platform and a version
+/// (`PS5_LAPY20011_v1.05.pkg`). Separate from [`title_id`] so a folder such as
+/// `backup_PPSA01650_old` is not read as that title.
 #[must_use]
 pub fn title_id_within(name: &str) -> Option<&str> {
     name.split(['-', '_', ' ', '.'])
@@ -182,10 +152,7 @@ fn is_identifier(word: &str) -> bool {
             .is_some_and(|digits| digits.iter().all(u8::is_ascii_digit))
 }
 
-/// Whether a file name is a package.
-///
-/// Case-insensitively, because the extension is a convention and a target's filesystem is
-/// not the arbiter of how somebody typed it.
+/// Whether a file name is a package, by its extension in any case.
 fn is_package(name: &str) -> bool {
     name.rsplit_once('.')
         .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("pkg"))
@@ -202,8 +169,8 @@ pub fn titles(items: &[Item]) -> Vec<&Item> {
 
 /// How much the listed items add up to, counting only what stated a size.
 ///
-/// **Returns what it counted as well as the total**, because a total over a listing where
-/// half the entries carried no size is a number that looks complete and is not.
+/// Returns how many were counted beside the total, since a total over partly sized entries
+/// looks complete and is not.
 #[must_use]
 pub fn total_size(items: &[Item]) -> (u64, usize) {
     let counted: Vec<u64> = items.iter().filter_map(|item| item.size).collect();
@@ -242,7 +209,7 @@ mod tests {
         ]
     }
 
-    /// A folder named like an identifier is a title; one that is not, is not.
+    /// A folder named like an identifier is a title; any other folder is not.
     #[test]
     fn a_title_is_told_from_an_ordinary_folder_by_its_name() {
         let items = scan(&listing());
@@ -257,8 +224,7 @@ mod tests {
         assert_eq!(other.kind, Kind::Folder, "a data folder is not a title");
     }
 
-    /// A package is a file this cannot install, and saying which files are packages is still
-    /// worth doing - it is what somebody is looking for.
+    /// A package is recognised by its extension.
     #[test]
     fn a_package_is_recognised_by_its_extension() {
         let items = scan(&listing());
@@ -272,11 +238,7 @@ mod tests {
         assert_eq!(plain.kind, Kind::File);
     }
 
-    /// **A package names the title it installs, in the middle of its own name.**
-    ///
-    /// Real ones from a target: `PS5_LAPY20011_v1.05.pkg` is for `LAPY20011`, and
-    /// `Store-R2-PS5.pkg` is for nothing this can name - which is a package that installs
-    /// something without a title identifier in its file name, not a failure.
+    /// A package's title identifier is found in the middle of its name, when it has one.
     #[test]
     fn a_package_says_which_title_it_is_for() {
         let items = scan(&[
@@ -290,8 +252,7 @@ mod tests {
         );
     }
 
-    /// Looking anywhere is for packages only. A folder that mentions a title is not that
-    /// title, and folders are what this project copies into and out of.
+    /// A folder that mentions a title mid-name is not that title.
     #[test]
     fn a_folder_that_merely_mentions_a_title_is_not_that_title() {
         let items = scan(&[entry("backup_PPSA01650_old", EntryKind::Directory, Some(0))]);
@@ -303,9 +264,6 @@ mod tests {
     }
 
     /// A line the transport could not read is not an item.
-    ///
-    /// It was already kept and marked where that mattered. A library view is a place for
-    /// things that are things.
     #[test]
     fn an_unreadable_listing_line_is_not_a_title() {
         let items = scan(&listing());
@@ -316,7 +274,7 @@ mod tests {
         assert_eq!(items.len(), 5);
     }
 
-    /// This machine is read with the same rules, so the two sides can be compared.
+    /// A local directory is read with the same rules as a target's.
     #[test]
     fn a_local_directory_reads_the_same_way() {
         let scratch = std::env::temp_dir().join(format!("pros-here-{}", std::process::id()));
@@ -343,21 +301,14 @@ mod tests {
         assert_eq!(package.kind, Kind::Package);
     }
 
-    /// **A folder that is not there is an empty list, not a failure.**
-    ///
-    /// This project's own directories do not exist until something is put in them, and
-    /// reporting that as an error makes an ordinary state look like a fault.
+    /// A local directory that does not exist is an empty list, not an error.
     #[test]
     fn a_local_directory_that_is_not_there_is_empty_rather_than_broken() {
         let nowhere = std::env::temp_dir().join("pros-there-is-no-such-directory-here");
         assert_eq!(super::here(&nowhere).expect("not an error").len(), 0);
     }
 
-    /// A folder named after a title is not a title.
-    ///
-    /// Save folders are named that way, and putting them in the same column as installed
-    /// software would be a claim nobody made. The identifier is still reported, because a
-    /// person looking at a save wants to know whose it is.
+    /// A save folder named after a title is a folder that still reports the identifier.
     #[test]
     fn a_folder_named_after_a_title_is_not_a_title() {
         let items = scan(&[entry("PPSA02664-SAVE00", EntryKind::Directory, Some(0))]);
@@ -370,13 +321,12 @@ mod tests {
         );
     }
 
-    /// The shape is four letters and five digits, and nothing else is claimed.
+    /// The identifier is matched by shape only: four letters and five digits.
     #[test]
     fn the_identifier_is_a_shape_and_not_a_lookup() {
         assert_eq!(title_id("PPSA02664"), Some("PPSA02664"));
         assert_eq!(title_id("CUSA00001"), Some("CUSA00001"));
-        // Enough to be an identifier and part of a longer name, which happens in save
-        // folders that append a slot or a user.
+        // Save folders append a slot or a user after the identifier.
         assert_eq!(title_id("PPSA02664-SAVE00"), Some("PPSA02664"));
 
         assert_eq!(title_id("sce_sys"), None);
@@ -384,10 +334,7 @@ mod tests {
         assert_eq!(title_id("PPSAX2664"), None, "a letter among the digits");
     }
 
-    /// **A total over a listing where half the sizes are missing looks complete and is not.**
-    ///
-    /// So the count comes back with it, and a caller that wants to say "3.2 GB" can first
-    /// check whether it is over everything or over some of it.
+    /// A total comes back with the count of entries that stated a size.
     #[test]
     fn a_total_says_how_many_it_could_count() {
         let items = scan(&listing());

@@ -1,27 +1,14 @@
-//! Showing a folder in whatever this machine browses files with.
+//! Showing a folder in the machine's file browser.
 //!
-//! # Why this exists rather than a line of code at each button
-//!
-//! There were two buttons saying *open folder*. Neither opened anything: they made the
-//! directory if it was missing and put its path in the status line. **A control whose label
-//! promises one thing and does another is worse than no control**, because the path appearing
-//! somewhere reads as it having worked.
-//!
-//! # Why the exit code is ignored
-//!
-//! Windows Explorer returns a non-zero code on success. Treating that as failure would report
-//! an error over a window that had just opened, which is the same lie pointing the other way.
-//!
-//! So what is checked is whether the program could be **started** - a missing file browser is
-//! a real and reportable condition - and what it did afterwards is between it and the person
-//! looking at it.
+//! The opener's exit code is ignored: Windows Explorer returns non-zero on success. What is
+//! checked is whether the program could be started, since a missing file browser is a real,
+//! reportable condition.
 
 use std::path::Path;
 
-/// What to run, and the platforms it is for.
+/// The file browser command for this platform.
 ///
-/// Measured only on the one this was written on; the other two are the conventional commands
-/// and are named here rather than assumed silently.
+/// Measured on Windows only; `open` and `xdg-open` are the conventional commands elsewhere.
 const OPENER: &str = if cfg!(target_os = "windows") {
     "explorer"
 } else if cfg!(target_os = "macos") {
@@ -32,14 +19,9 @@ const OPENER: &str = if cfg!(target_os = "windows") {
 
 /// Makes the folder if it is not there.
 ///
-/// **Made rather than refused**, because every one of these folders is somewhere this program
-/// keeps its own files, and one that does not exist yet is one nothing has been put in.
-///
-/// Separate from [`crate::reveal::folder`] so that it can be tested. **A test that called the
-/// whole thing would open a window on whoever ran it** - which is exactly what happened, on
-/// every `cargo test`, for as long as this was one function. Worse, the test removed the
-/// folder immediately afterwards, so by the time the file browser opened the path was gone and
-/// it fell back to showing somebody's Documents instead.
+/// Every folder shown is one this program keeps its own files in, so a missing one is made
+/// rather than refused. Separate from [`crate::reveal::folder`] so it can be tested without
+/// opening a window.
 ///
 /// # Errors
 ///
@@ -50,22 +32,20 @@ pub fn ensure(path: &Path) -> Result<(), String> {
 
 /// Opens a folder in the system's file browser, making it first if it is not there.
 ///
-/// **Not unit tested, on purpose.** There is no way to check that a file browser opened
-/// without opening one, and a test suite that opens windows is one nobody can run while
-/// working. What can be checked is [`crate::reveal::ensure`], and that is what is checked.
+/// Not unit tested: a test could not check this without opening a window on the machine
+/// running it. [`crate::reveal::ensure`] is tested instead.
 ///
 /// # Errors
 ///
-/// When the folder cannot be made, or the file browser cannot be started - the second usually
-/// meaning there is not one, which is worth saying rather than looking like nothing happened.
+/// When the folder cannot be made, or the file browser cannot be started - usually meaning
+/// there is none.
 pub fn folder(path: &Path) -> Result<(), String> {
     ensure(path)?;
     std::process::Command::new(OPENER)
         .arg(path)
         .spawn()
         .map(|_| ())
-        // Not waited on: a file browser stays open, and waiting would freeze the window until
-        // somebody closed it.
+        // Not waited on: a file browser stays open, and waiting would freeze the window.
         .map_err(|why| format!("could not start {OPENER}: {why}"))
 }
 
@@ -73,12 +53,7 @@ pub fn folder(path: &Path) -> Result<(), String> {
 mod tests {
     use super::ensure;
 
-    /// **The folder is made when it is not there**, which is the ordinary case for a section
-    /// nobody has put anything in yet.
-    ///
-    /// This tests `ensure` and not `folder`, and that distinction is the whole point: a test
-    /// of `folder` **opens a file browser on the machine running it**. It did, on every test
-    /// run, until somebody noticed their Documents folder kept appearing.
+    /// A folder that does not exist yet is made.
     #[test]
     fn a_folder_that_does_not_exist_is_made() {
         let path = std::env::temp_dir().join("prosperous-reveal-test");

@@ -1,47 +1,28 @@
 //! What a file is, decided before it is sent anywhere.
 //!
-//! # The mistake this module exists to prevent
+//! A vendor-format module and a plain payload share their first four bytes, `7f 45 4c 46`.
+//! The target loader checks only those, accepts either, and dies silently on a vendor
+//! module whose imports nobody resolved - which looks like a payload that ran and did
+//! nothing. So the check happens here, before a byte goes out.
 //!
-//! A vendor-format module and a plain payload **share their first four bytes**. Both begin
-//! `7f 45 4c 46`, because both are ELF. The target loader checks exactly that much,
-//! accepts either, maps the one it cannot run, and dies without printing anything - the
-//! entry point it jumps to expects tens of thousands of resolved imports that nobody
-//! resolved.
-//!
-//! From the outside that is indistinguishable from a payload that ran and did nothing,
-//! which is the worst shape a failure can have. So the check happens on this side, before
-//! a byte goes out.
-//!
-//! # Where the numbers come from
-//!
-//! `e_type` sits at offset `0x10` of an ELF header and is two bytes, little-endian.
-//!
-//! **The two vendor values are easy to swap, and swapping them is not hypothetical.** The
-//! sibling project had them named the wrong way round for months, so its module builder
-//! wrote the library type while claiming the executable one, and its documentation
-//! repeated the name back as fact. Every loader that checked accepted the file and then
-//! declined to run it, which looks exactly like loading a module and not entering it.
-//!
-//! They are written here with what each one *is*, not with what it is called.
+//! `e_type` is two bytes, little-endian, at offset `0x10`. The two vendor values are easy
+//! to swap, so each constant below is documented by what it is, not by its name.
 
 /// Offset of `e_type` in an ELF header.
 const E_TYPE: usize = 0x10;
 
-/// The four bytes every ELF begins with, and the reason this module is needed.
+/// The four bytes every ELF begins with.
 const MAGIC: [u8; 4] = [0x7f, 0x45, 0x4c, 0x46];
 
-/// An ordinary shared object - what a linker produces, and what a payload loader runs.
+/// An ordinary shared object: what a linker produces and a payload loader runs.
 const ET_DYN: u16 = 0x0003;
 
-/// The vendor position-independent **executable**: what a title binary is, and what an
-/// emulator fetches an entry point from.
+/// The vendor position-independent executable: a title binary, which an emulator enters.
 const ET_SCE_DYNEXEC: u16 = 0xFE10;
 
-/// The vendor shared **library**, the `.prx` shape.
+/// The vendor shared library, the `.prx` shape.
 ///
-/// A loader that distinguishes the two runs a library initialisers and then looks
-/// elsewhere for something to start. Accepted everywhere, entered only by loaders that do
-/// not check.
+/// A loader that tells the two apart runs its initialisers and never enters it.
 const ET_SCE_DYNAMIC: u16 = 0xFE18;
 
 /// What a candidate file turned out to be.
@@ -55,8 +36,7 @@ pub enum Shape {
     VendorLibrary,
     /// An ELF with an `e_type` this crate has no name for.
     ///
-    /// Refused rather than attempted. An unrecognised type is not evidence that it is
-    /// harmless, and the loader failure mode for a wrong one is silence.
+    /// Refused, because the loader fails silently on a wrong type.
     UnknownElf(u16),
     /// Not an ELF at all.
     NotElf,
@@ -80,9 +60,7 @@ impl Shape {
 
     /// What to do about it.
     ///
-    /// Included because *what is this* and *what do I do now* are different questions, and
-    /// somebody holding a vendor module has almost always reached for the wrong file in a
-    /// directory containing both.
+    /// A vendor module offered here is usually the wrong file from a directory holding both.
     #[must_use]
     pub fn remedy(self) -> &'static str {
         match self {
@@ -104,9 +82,7 @@ impl Shape {
 
 /// Reads what a file is from its own header.
 ///
-/// Reads two fields and nothing else. This is a guard, not a parser: anything more would
-/// be a second ELF reader in a project that does not need one, and the sibling projects
-/// already have theirs.
+/// Reads two fields and nothing else: a guard, not a second ELF parser.
 #[must_use]
 pub fn identify(bytes: &[u8]) -> Shape {
     let Some(head) = bytes.get(..E_TYPE + 2) else {
@@ -115,8 +91,7 @@ pub fn identify(bytes: &[u8]) -> Shape {
     if head.get(..4) != Some(&MAGIC[..]) {
         return Shape::NotElf;
     }
-    // Two bytes, little-endian, at a fixed offset. Both are present because the slice
-    // above is exactly long enough, which is what makes the reads below total.
+    // `head` is exactly long enough, so both reads succeed.
     let low = head.get(E_TYPE).copied().unwrap_or_default();
     let high = head.get(E_TYPE + 1).copied().unwrap_or_default();
     match u16::from_le_bytes([low, high]) {
@@ -139,16 +114,14 @@ mod tests {
         bytes
     }
 
-    /// The whole reason this module exists: these three are indistinguishable to the check
-    /// the target loader performs, and only one of them may be sent.
+    /// Three ELF shapes the loader's magic check cannot tell apart are told apart here.
     #[test]
     fn the_three_elf_shapes_are_told_apart() {
         assert_eq!(identify(&header(ET_DYN)), Shape::Payload);
         assert_eq!(identify(&header(ET_SCE_DYNEXEC)), Shape::VendorExecutable);
         assert_eq!(identify(&header(ET_SCE_DYNAMIC)), Shape::VendorLibrary);
 
-        // And every one of them passes a check that reads only the magic, which is what
-        // the loader does. This is the assertion that makes the rest necessary.
+        // All three pass a magic-only check, which is what the loader does.
         for shape in [ET_DYN, ET_SCE_DYNEXEC, ET_SCE_DYNAMIC] {
             assert_eq!(header(shape).get(..4), Some(&MAGIC[..]));
         }
@@ -163,10 +136,7 @@ mod tests {
         assert!(!identify(&header(0x1234)).is_payload());
     }
 
-    /// An unrecognised type is refused rather than tried, and carries what it was.
-    ///
-    /// Silence is the loader failure mode, so "this might be fine" is not a bet worth
-    /// taking on somebody else target.
+    /// An unrecognised type is refused and carries what it was.
     #[test]
     fn an_unknown_type_is_refused_and_says_what_it_saw() {
         assert_eq!(identify(&header(0xBEEF)), Shape::UnknownElf(0xBEEF));
@@ -181,9 +151,6 @@ mod tests {
     }
 
     /// Every shape says what it is and what to do about it.
-    ///
-    /// A refusal that only says no leaves the reader to work out which of two tools wanted
-    /// the file, which is the guess this whole module exists to remove.
     #[test]
     fn every_shape_explains_itself_and_says_what_to_do() {
         for shape in [

@@ -1,71 +1,13 @@
-//! Whether a startup list leaves you a way back in.
+//! Whether a startup list leaves a way back in: after the chain runs, can anything on the
+//! target still accept a payload? If not, recovery means re-running the entry point.
 //!
-//! # The question this exists to answer
+//! `pldmgr` loads each entry by handing it to `elfldr` on 127.0.0.1:9021 (`ps5_launch_elf` in
+//! its source), so every entry after a broken loader fails. `elfldr` serves the boot chain and
+//! then exits; listing it last in the manager's own list starts a fresh copy that keeps 9021
+//! open for development. Listing it while 9021 already answers makes a second copy that finds
+//! the port bound - the one condition [`crate::recovery::can_work_in`] refuses.
 //!
-//! Not *what will be running* - the check already says that. **Whether, after this chain has
-//! run, anything on the target can still be given a payload.** A chain that answers no is one
-//! where the only recovery is re-running the exploit, and if it hung the machine on the way
-//! there, not even that.
-//!
-//! This has cost a real target its jailbreak twice. It is not a hypothetical.
-//!
-//! # The mechanism, read from the manager's source
-//!
-//! `pldmgr` does not load payloads itself. `ps5_launch_elf` opens a socket to
-//! **127.0.0.1:9021** and hands the bytes to `elfldr`:
-//!
-//! ```text
-//! server_addr.sin_port = htons(ELFLDR_PORT);
-//! server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-//! ```
-//!
-//! Two consequences follow, and both are load-bearing:
-//!
-//! 1. **Every entry after a broken loader fails.** The manager logs *Connection to elfldr
-//!    failed* and carries on down the list, achieving nothing.
-//! 2. **The loader must never be in the manager's own list.** Sending `elfldr` to `elfldr`
-//!    means the running loader spawns a second one, which finds 9021 already bound. Whatever
-//!    the outcome, it is at best pointless and at worst the end of the chain - and everything
-//!    listed after it is what pays.
-//!
-//! # The loader's lifetime is the boot chain, not the session
-//!
-//! This is the piece that was missing, and its absence produced a whole page of wrong reasoning
-//! here. **`elfldr` exists to bring the startup payloads up, and then it goes.** Once the chain
-//! has run there is nothing on 9021, because the thing that served it has exited.
-//!
-//! Everything measured on 2026-08-31 falls out of that with nothing left over. A console that
-//! had just been brought up by `y2jb`:
-//!
-//! - loaded seven payloads from the manager's list - `elfldr` was up while that happened;
-//! - answered on 8084, 2121, 3232 and 2323 afterwards - those payloads are still running;
-//! - **refused 9021, with `elfldr` named nowhere** - it did its job during the chain and closed,
-//!   and nothing restarts it.
-//!
-//! The reading of the manager's source was right. What was wrong was reading a **dependency**
-//! where there is a **lifetime**: *the manager loads entries through 9021* is true at the moment
-//! the chain runs and says nothing about a minute later.
-//!
-//! # So what listing the loader in the manager's own list actually does
-//!
-//! It starts a second one, after the first has gone, and **keeps 9021 open**. That is not a
-//! repair and it is not a hazard - it is a choice, and a narrow one:
-//!
-//! - on an ordinary console it buys nothing. The chain has already run; nothing else is going
-//!   to be sent;
-//! - on a machine somebody develops against it is the whole point. It is what lets a payload be
-//!   sent, run, changed and sent again without re-running the exploit between each attempt.
-//!
-//! This project is a development tool, so the chains here list it and say why. The one case
-//! where it is genuinely wrong is listing it while 9021 is **already** answering - then a second
-//! copy finds the port bound - and that is the only condition
-//! [`crate::recovery::can_work_in`] refuses on.
-//!
-//! # Why this is not a lint
-//!
-//! A lint is advice. This is the difference between a machine you can fix from your desk and
-//! one you have to walk over to with a USB stick, so it is stated as a hazard, in the check,
-//! in red, before the write rather than after it.
+//! Findings are hazards reported before a write, not lint advice.
 
 use pros_link::service::Service;
 
@@ -74,29 +16,9 @@ use crate::chain::Chain;
 
 /// Whether an entry can do anything at all in a list of this kind.
 ///
-/// # The payload manager, in its own list
-///
-/// Never. The list **is** the thing it reads; an entry telling it to load itself is a second
-/// copy fighting the first for a port. That holds whatever else turns out to be true, because
-/// it does not depend on how entries are loaded.
-///
-/// # The loader, in the manager's list - and why this changed
-///
-/// This used to refuse outright, on the reading that the manager loads every entry by
-/// connecting to the loader: listing it would need it already running, pointless if it is and
-/// impossible if it is not.
-///
-/// That mistook a **lifetime** for a **dependency** - see this module's opening. The loader
-/// brings the chain up and then exits, so by the time anything asks, the port it served is
-/// closed and listing it starts a fresh one rather than colliding with anything.
-///
-/// So the only condition that matters is the one that can be measured:
-///
-/// - **it is answering**: an entry for it would send the loader to itself while a copy is
-///   already bound to 9021. Refused, and the audit reports it as a hazard.
-/// - **it is not answering, or nobody looked**: allowed, and on a development machine wanted -
-///   it is what keeps 9021 open so a payload can be sent, run, changed and sent again without
-///   re-running the exploit each time.
+/// Anything works in an autoloader's list. In the manager's own list, the list runner never
+/// does (a second copy fights the first for its port), and the loader does unless it is
+/// already answering on 9021.
 #[must_use]
 pub fn can_work_in(name: &str, kind: Kind, known: &Catalogue, loader_up: Option<bool>) -> bool {
     if kind == Kind::Autoloader {
@@ -120,7 +42,7 @@ pub fn can_work_in(name: &str, kind: Kind, known: &Catalogue, loader_up: Option<
 pub enum Gravity {
     /// Worth knowing, costs visibility rather than access.
     Warning,
-    /// **This chain can leave the target unreachable.**
+    /// This chain can leave the target unreachable.
     Critical,
 }
 
@@ -129,7 +51,7 @@ pub enum Gravity {
 pub enum Hazard {
     /// The list re-loads the loader that is loading the list.
     ///
-    /// Carries the position, because everything **after** it is what is at risk.
+    /// Carries the position, because everything after it is at risk.
     ReloadsTheLoader {
         /// What the loader is called on this machine.
         loader: String,
@@ -143,22 +65,19 @@ pub enum Hazard {
         /// What would fix it, named and described, from the catalogue.
         candidates: Vec<(String, String)>,
     },
-    /// Nothing in this list starts the thing that runs the *other* list.
+    /// Nothing in this list starts the thing that runs the other list.
     ///
-    /// **The measured failure.** An autoloader list that does not name the manager never
-    /// starts it, so the manager's own list never runs - and nothing reports that, because the
-    /// thing that would have reported it never ran either. Everything somebody configured is
-    /// simply absent, silently.
+    /// An autoloader list that does not name the manager never starts it, so the manager's own
+    /// list never runs and nothing reports it.
     ChainNeverRuns {
         /// What runs lists on this machine, from the catalogue.
         runner: String,
     },
     /// An entry names a file the manager cannot resolve, or can only resolve sometimes.
     ///
-    /// **Measured from the manager's source.** `payload_mgr_resolve_path` searches
-    /// `/data/pldmgr` and `/mnt/usbN/pldmgr` only, while its *listing* also walks the root of
-    /// every stick - so it shows payloads it can never load, and a list naming one has an entry
-    /// that fails at every boot with only a log line to say so.
+    /// In the manager's source, `payload_mgr_resolve_path` searches `/data/pldmgr` and
+    /// `/mnt/usbN/pldmgr` only, while its listing also walks the root of every stick, so it
+    /// lists payloads it cannot load.
     OnRemovable {
         /// The entry, as the list spells it.
         entry: String,
@@ -181,8 +100,7 @@ impl Hazard {
     #[must_use]
     pub const fn gravity(&self) -> Gravity {
         match self {
-            // Each of these ends with a target that is not what somebody configured, and no
-            // error anywhere saying so.
+            // Each leaves a target unlike its configuration, with no error saying so.
             Self::ReloadsTheLoader { .. }
             | Self::NoWayBack { .. }
             | Self::ChainNeverRuns { .. } => Gravity::Critical,
@@ -239,7 +157,7 @@ impl Hazard {
             }
             Self::NoWayBack { candidates } => format!(
                 "add at least one of these, and any one is enough:\n{}\nWithout one, the only \
-                 way back into this target is re-running the jailbreak",
+                 way back into this target is re-running the entry point",
                 candidates
                     .iter()
                     .map(|(name, gives)| format!("  {name} - {gives}"))
@@ -260,11 +178,7 @@ impl Hazard {
     }
 }
 
-/// The edit that would put a hazard right.
-///
-/// **Every hazard here is fixable by adding or removing one entry**, and the payloads are
-/// already on the target - so telling somebody to go and do it themselves is asking them to
-/// retype what this already knows. A finding that can be acted on should come with the action.
+/// The edit that would put a hazard right: adding or removing one entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fix {
     /// Take this service out of the list.
@@ -276,9 +190,8 @@ pub enum Fix {
 impl Hazard {
     /// The one edit that answers this, when there is one.
     ///
-    /// `None` for [`Hazard::NoWayBack`], which is not one edit: **any** of several would do,
-    /// and picking for somebody would be choosing how their target boots. The other findings
-    /// name exactly one thing.
+    /// `None` for [`Hazard::NoWayBack`], where any of several would do and the choice is the
+    /// person's, and for a removable entry that may be deliberate.
     #[must_use]
     pub fn fix(&self) -> Option<Fix> {
         match self {
@@ -290,7 +203,7 @@ impl Hazard {
                 Some(Fix::Remove(entry.clone()))
             }
             // One on a stick's own manager folder works while that stick is in, which may be
-            // deliberate. Removing somebody's deliberate choice is not a fix.
+            // deliberate.
             Self::OnRemovable { .. } | Self::NoWayBack { .. } => None,
         }
     }
@@ -301,21 +214,18 @@ impl Hazard {
 pub enum Kind {
     /// The manager's own list, which the manager runs after it is already up.
     ///
-    /// The manager does not need to be in it. Whether the **loader** may be depends on whether
-    /// the loader is already answering - see [`crate::recovery::can_work_in`].
+    /// The manager does not belong in it. Whether the loader may be depends on whether it is
+    /// already answering - see [`can_work_in`].
     Manager,
-    /// An autoloader's list, run by the jailbreak before anything else exists.
+    /// An autoloader's list, run by the entry point before anything else exists.
     ///
-    /// This one has to bring up everything, the manager included - and if it does not name the
-    /// manager, the manager never runs. That is the failure that costs a jailbreak.
+    /// It brings up everything, the manager included; without the manager, the manager's own
+    /// list never runs.
     Autoloader,
 }
 
 impl Kind {
     /// What to call this kind of list, in a sentence about it.
-    ///
-    /// **Because there is more than one.** A finding that said *this list* read as a verdict on
-    /// the target while being a verdict on one file of several.
     #[must_use]
     pub const fn describe(self) -> &'static str {
         match self {
@@ -327,9 +237,8 @@ impl Kind {
 
 /// Everything worth saying about a startup list, worst first.
 ///
-/// `kind` decides three of the rules and is required rather than guessed: the same text is
-/// safe in one place and fatal in the other. `known` is where every service name comes from -
-/// **nothing here has a payload's name written into it.**
+/// `kind` is required, not guessed: the same text is safe in one kind of list and fatal in the
+/// other. Every service name comes from `known`; no payload name is written into this code.
 #[must_use]
 pub fn audit(
     chain: &Chain,
@@ -344,19 +253,10 @@ pub fn audit(
     let named = |service: &Service| chain.position(&service.name);
     let loader_name = pros_link::service::LOADER.name.as_ref();
 
-    // Taken from the catalogue, so a machine running a different loader is audited against
-    // that one rather than against the one this was built with.
+    // Taken from the catalogue, so a target running a different loader is audited against it.
     let loader = known.get(loader_name);
-    // **Only when it is answering, and only when something comes after it.**
-    //
-    // The risk is a second copy finding 9021 already bound and the entries *after* it paying
-    // for the disruption. Both halves are needed and each was wrong on its own:
-    //
-    // - with nothing answering there is no first copy to collide with;
-    // - **with nothing after it, nothing can pay.** Last in the list is the deliberate way to
-    //   run it - everything else has loaded by then, and it stays up afterwards holding 9021
-    //   open. This reported that configuration as a hazard and said *the 0 after it depend on
-    //   it*, a sentence its own carried count disproves.
+    // A hazard only while the loader answers (a second copy finds 9021 bound) and only with
+    // entries after it to pay; last in the list is the deliberate way to keep 9021 open.
     let mut reloads = false;
     if kind == Kind::Manager
         && loader_up == Some(true)
@@ -372,8 +272,7 @@ pub fn audit(
         });
     }
 
-    // **The failure that was confirmed on a real target.** An autoloader list that does not
-    // start whatever runs lists means the other list never runs, and nothing says so.
+    // An autoloader list that does not start the list runner leaves the other list unrun.
     if kind == Kind::Autoloader {
         for runner in known.services().iter().filter(|one| one.runs_lists) {
             if named(runner).is_none() {
@@ -384,9 +283,8 @@ pub fn audit(
         }
     }
 
-    // **What can still take a payload once this has run.** For an autoloader's list that is
-    // only what the list names. For the manager's, the loader is already up - unless the list
-    // is about to break it.
+    // What can still take a payload once this has run: for an autoloader's list, only what it
+    // names; for the manager's, also the running loader unless the list reloads it.
     let survives = known.ways_back().into_iter().any(|way| match kind {
         Kind::Autoloader => named(way).is_some(),
         Kind::Manager => named(way).is_some() || (way.name == loader_name && !reloads),
@@ -401,8 +299,8 @@ pub fn audit(
         });
     }
 
-    // **Every entry checked against where its file actually is.** The manager lists payloads
-    // it cannot resolve, so a list can name one and look perfectly reasonable.
+    // Every entry checked against where its file is: the manager lists payloads it cannot
+    // resolve.
     for entry in chain.order() {
         if let Some(one) = on_target
             .iter()
@@ -416,7 +314,7 @@ pub fn audit(
         }
     }
 
-    // 1. Audit baseline requirements for Prosperous from chain.json.
+    // Baseline requirements from chain.json.
     for req in baseline::required_for_prosperous() {
         if !req.autoloader && kind == Kind::Autoloader {
             continue;
@@ -439,7 +337,6 @@ pub fn audit(
         });
     }
 
-    // 2. Audit preset-specific entries.
     preset_hazards(chain, known, kind, preset, loader_up, &mut found);
 
     found.sort_by_key(|hazard| std::cmp::Reverse(hazard.gravity()));
@@ -467,9 +364,7 @@ fn preset_hazards(
         {
             continue;
         }
-        // **Nothing is reported missing that could not work if it were there.** The loader is
-        // also already reported above where it matters, and saying it twice makes the louder
-        // finding easier to miss.
+        // Nothing is reported missing that could not work if it were there.
         if !can_work_in(&placed.name, kind, known, loader_up) {
             continue;
         }
@@ -526,13 +421,7 @@ mod tests {
     use crate::catalogue::{Catalogue, Entry};
     use crate::chain::Chain;
 
-    /// **The loader is not reported missing from an autoloader's list.**
-    ///
-    /// The autoloader loads it itself, and its README says so in as many words. An entry for it
-    /// there is a second copy of something already running - which is why the shipped chain
-    /// marks it `autoloader: false`. Auditing read the flat entry list and ignored that flag,
-    /// so a correct autoloader list was told, as a CRITICAL, that it was missing the one thing
-    /// it must not name.
+    /// The loader (`autoloader: false`) is not reported missing from an autoloader's list.
     #[test]
     fn an_autoloader_list_is_not_told_to_add_the_loader() {
         let preset = crate::recovery::baseline::first();
@@ -544,7 +433,6 @@ mod tests {
                 .any(|one| one.name == loader && !one.autoloader),
             "this test is about the entry that is excluded from an autoloader's list"
         );
-        // Everything the preset says belongs in an autoloader's list, and nothing else.
         let listed = preset
             .in_order(Kind::Autoloader)
             .into_iter()
@@ -568,7 +456,7 @@ mod tests {
         );
     }
 
-    /// The list measured on a real target, which had cost it its jailbreak.
+    /// A manager list measured on a target, with the loader mid-list.
     const BROKEN: &str = "!3000\nkstuff-lite_v1.09.elf\n!3000\nnanodns.elf\n!3000\n\
                           elfldr_v0.24.elf\n!3000\nShadowMountPlus_1.6beta16.elf\n!3000\n\
                           ps5upload-4.1.2.elf\n!3000\nftpsrv_v0.21.elf\n";
@@ -578,11 +466,7 @@ mod tests {
                            elfldr_v0.25.elf\nklogsrv_v0.9.elf\nps5debug-NG_1.3.0.elf\n\
                            pldmgr_v0.5.1.elf\n";
 
-    /// **The real list is called dangerous, and says why.**
-    ///
-    /// The manager sends every entry to the loader on 127.0.0.1:9021, so the loader appearing
-    /// in the manager's own list puts everything after it at risk - here, the file service
-    /// that is the only way to fix any of it.
+    /// The measured broken list is dangerous, naming the loader, its position and what follows.
     #[test]
     fn the_list_that_broke_a_target_is_reported_as_dangerous() {
         let hazards = audit(
@@ -605,7 +489,7 @@ mod tests {
         assert_eq!(loader, "elfldr", "named from the catalogue, not hardcoded");
         assert_eq!(at, 2, "third entry");
         assert_eq!(after, 3, "three entries depend on it surviving");
-        // The shell, the log and pltauth-patch are absent too, and are said as warnings rather than buried.
+        // The shell, the log and pltauth-patch are absent too, and reported.
         for wanted in ["shsrv", "klogsrv", "pltauth-patch"] {
             assert!(
                 hazards.iter().any(|one| matches!(
@@ -617,11 +501,10 @@ mod tests {
         }
     }
 
-    /// **pltauth-patch is demanded when missing from the startup list.**
+    /// pltauth-patch is reported and offered when missing from the startup list.
     ///
-    /// Native Prospero homebrew (category 0) requires /dev/pltauth patched to pass `PFAuthClient`
-    /// verification (0x80de0051). Missing it from the startup chain leaves category 0 apps unable
-    /// to run after restart, and the check must report it and offer to add it.
+    /// Native category 0 homebrew needs /dev/pltauth patched to pass `PFAuthClient`
+    /// verification (0x80de0051).
     #[test]
     fn pltauth_patch_is_demanded_when_missing_from_startup_list() {
         let without = Chain::parse(
@@ -651,7 +534,6 @@ mod tests {
             Some(super::Fix::Add("pltauth-patch".to_owned()))
         );
 
-        // When present, it is no longer reported missing.
         let with = Chain::parse(
             "!3000\nkstuff-lite_v1.09.elf\n!3000\npltauth-patch.elf\n!3000\nnanodns.elf\n\
              !3000\nShadowMountPlus_1.6beta16.elf\n!3000\nps5upload-4.1.2.elf\n!3000\nftpsrv_v0.21.elf\n\
@@ -673,9 +555,7 @@ mod tests {
         );
     }
 
-    /// **The failure that was confirmed on a real target**: an autoloader list with no
-    /// manager in it means the manager never starts, so the manager's own list - everything
-    /// somebody configured - never runs, and nothing anywhere says so.
+    /// An autoloader list without the list runner is critical; adding it clears the hazard.
     #[test]
     fn an_autoloader_list_without_the_list_runner_is_critical() {
         let chain = Chain::parse(
@@ -697,7 +577,6 @@ mod tests {
         assert_eq!(never.gravity(), Gravity::Critical);
         assert!(never.describe().contains("silently"));
 
-        // And the same list *with* it is fine, which is what makes the finding actionable.
         let fixed = Chain::parse(
             "etaHEN_2.5B.bin\nftpsrv_v0.21.elf\nshsrv_v0.20.elf\n\
                                   elfldr_v0.25.elf\nklogsrv_v0.9.elf\npldmgr_v0.5.1.elf\n",
@@ -712,8 +591,7 @@ mod tests {
         )));
     }
 
-    /// **A rival named only in the catalogue can satisfy the audit**, which is the property
-    /// that keeps these rules from being welded to the five this was built with.
+    /// A way back named only in the catalogue satisfies the audit.
     #[test]
     fn a_rival_named_only_in_the_catalogue_can_make_a_chain_safe() {
         let chain = Chain::parse("someldr_v2.elf\n");
@@ -750,8 +628,7 @@ mod tests {
         );
     }
 
-    /// The worst thing is first, because the one that changes what somebody does must not be
-    /// third in a list of six.
+    /// The gravest hazard is reported first.
     #[test]
     fn the_gravest_hazard_is_reported_first() {
         let hazards = audit(
@@ -765,8 +642,7 @@ mod tests {
         assert_eq!(hazards[0].gravity(), Gravity::Critical);
     }
 
-    /// **The working list raises nothing critical**, which is what makes the check worth
-    /// having - a rule that flags everything is a rule nobody reads.
+    /// A working autoloader list raises nothing critical.
     #[test]
     fn the_list_that_works_is_not_called_dangerous() {
         let hazards = audit(
@@ -780,8 +656,7 @@ mod tests {
         assert!(!is_dangerous(&hazards), "{hazards:?}");
     }
 
-    /// The loader belongs in an autoloader's list and must not be in the manager's. **Same
-    /// text, opposite verdicts**, which is why the kind is a parameter and not a guess.
+    /// The same list text gets opposite verdicts as an autoloader's and a manager's list.
     #[test]
     fn the_loader_is_required_in_one_list_and_forbidden_in_the_other() {
         let one = "elfldr_v0.25.elf\nftpsrv_v0.21.elf\nshsrv_v0.20.elf\nklogsrv_v0.9.elf\n\
@@ -805,10 +680,7 @@ mod tests {
         )));
     }
 
-    /// **Every hazard that names one thing carries the edit that fixes it.**
-    ///
-    /// The payloads are already on the target; making somebody retype what this already knows
-    /// is the difference between a tool and a lecture.
+    /// Every hazard that names one thing carries the edit that fixes it.
     #[test]
     fn the_findings_carry_the_edit_that_fixes_them() {
         use super::Fix;
@@ -832,8 +704,7 @@ mod tests {
         );
     }
 
-    /// **Except the one where several answers would do.** Picking between them would be
-    /// choosing how somebody's target boots, which is not this program's decision.
+    /// No way back offers no single fix, since several answers would do.
     #[test]
     fn no_way_back_offers_no_single_fix() {
         let chain = Chain::parse("nanodns.elf\n");
@@ -852,7 +723,7 @@ mod tests {
         assert!(no_way.fix().is_none());
     }
 
-    /// A list with no door left open at all is the worst case, and names the doors.
+    /// A list leaving no way back names the catalogue's ways back in its remedy.
     #[test]
     fn a_chain_leaving_no_door_open_says_so() {
         let chain = Chain::parse("nanodns.elf\nShadowMountPlus_1.6beta16.elf\n");
@@ -868,14 +739,14 @@ mod tests {
             .iter()
             .find(|one| matches!(one, Hazard::NoWayBack { .. }))
             .expect("there is no way back");
-        assert!(no_way.remedy().contains("re-running the jailbreak"));
+        assert!(no_way.remedy().contains("re-running the entry point"));
         assert!(
             no_way.remedy().contains("elfldr"),
             "the remedy names what would fix it, from the catalogue"
         );
     }
 
-    /// An empty manager list is harmless: nothing runs, and everything already up stays up.
+    /// An empty manager list is not dangerous: everything already up stays up.
     #[test]
     fn an_empty_manager_list_is_not_dangerous() {
         let hazards = audit(
@@ -897,7 +768,7 @@ mod applying {
     use crate::catalogue::Catalogue;
     use crate::chain::Chain;
 
-    /// The list measured on the target that lost its jailbreak, verbatim.
+    /// A manager list measured on a target, verbatim.
     const REAL: &str = "!3000\nkstuff-lite_v1.09.elf\n!3000\nnanodns.elf\n!3000\n\
                         elfldr_v0.24.elf\n!3000\nShadowMountPlus_1.6beta16.elf\n!3000\n\
                         ps5upload-4.1.2.elf\n!3000\nftpsrv_v0.21.elf\n";
@@ -915,10 +786,7 @@ mod applying {
         "shsrv_v0.20.elf",
     ];
 
-    /// **Every fix actually changes the list.**
-    ///
-    /// A button that navigates somewhere and silently does nothing is worse than no button:
-    /// it spends somebody's trust and leaves the target exactly as dangerous as it was.
+    /// Applying every fix changes the list and clears every critical hazard.
     #[test]
     fn applying_every_fix_changes_the_list() {
         let mut boot = Boot::parse(REAL);
@@ -958,7 +826,6 @@ mod applying {
         assert!(applied > 0, "nothing was applied from {fixes:?}");
         assert_ne!(boot.to_text(), before, "the list is unchanged");
 
-        // And the result is no longer dangerous, which is the point of the button.
         let after = Chain::parse(&boot.to_text());
         let left = audit(
             &after,
@@ -991,11 +858,10 @@ mod storage_tests {
         }
     }
 
-    /// **An entry the manager can never resolve is critical, and comes out.**
+    /// An entry the manager can never resolve is critical, and its fix removes it.
     ///
-    /// Measured from the manager's source: it lists payloads from the root of a stick when
-    /// `SCAN_USB_PAYLOADS` is on, and resolves only from its own folders. So a list can name
-    /// one, look perfectly reasonable, and fail at every boot with a log line nobody reads.
+    /// The manager lists stick roots when `SCAN_USB_PAYLOADS` is on but resolves only from its
+    /// own folders.
     #[test]
     fn an_entry_the_manager_cannot_resolve_is_critical() {
         let chain = Chain::parse("ftpsrv_v0.21.elf\nshsrv_v0.20.elf\nsomething_v1.elf\n");
@@ -1025,8 +891,7 @@ mod storage_tests {
         assert!(is_dangerous(&hazards));
     }
 
-    /// **A payload in a stick's own manager folder is a warning, not a verdict**, and carries
-    /// no fix: it works while that stick is in, which somebody may have chosen deliberately.
+    /// A payload in a stick's own manager folder is a warning with no fix.
     #[test]
     fn a_payload_on_a_stick_is_a_warning_with_no_fix() {
         let chain = Chain::parse("ftpsrv_v0.21.elf\nshsrv_v0.20.elf\n");
@@ -1050,8 +915,7 @@ mod storage_tests {
         assert!(found.fix().is_none(), "not this program's choice to make");
     }
 
-    /// Everything on the target's own disk says nothing at all, which is what keeps the
-    /// warning worth reading.
+    /// A list whose files are all internal raises no storage hazard.
     #[test]
     fn an_internal_list_raises_nothing_about_storage() {
         let chain = Chain::parse("ftpsrv_v0.21.elf\nshsrv_v0.20.elf\n");
@@ -1078,16 +942,9 @@ mod storage_tests {
 
 /// The recommended startup order, and why each entry is where it is.
 ///
-/// # Why this is a file in the repository
-///
-/// An ordering constraint is a **fact about how these payloads work**, not a preference about
-/// one machine: kstuff has to precede anything needing executable memory on every target there
-/// has ever been. So it is tracked here, reviewed like anything else, and the same for
-/// everybody - rather than typed into a window where it would live on one machine and be lost
-/// with it.
-///
-/// A per-target note in `services.json` still wins, for the cases where somebody's setup
-/// genuinely differs.
+/// Tracked in `data/chain.json`, because an ordering constraint (kstuff before anything needing
+/// executable memory) is a fact about the payloads, not one machine. A per-target note in
+/// `services.json` still wins.
 pub mod baseline {
     use serde::{Deserialize, Serialize};
 
@@ -1100,35 +957,21 @@ pub mod baseline {
         pub order: u32,
         /// Whether it belongs in an autoloader's list at all.
         ///
-        /// **`false` for the loader**, because the autoloader has already loaded it. Read
-        /// from y2jb's source: `aioshellcode.js` maps and starts the loader, and `autoload.js`
-        /// waits for it to accept connections on 9021 before reading any list. An entry for it
-        /// is therefore a second copy arriving at a port the first one holds.
-        ///
-        /// This was carried for a while as a quotation from that project's README, which does
-        /// not contain it. The conclusion survived the checking; the citation did not, and a
-        /// wrong citation in a file of measured facts is worse than none.
+        /// `false` for the loader, which the autoloader has already started. In y2jb's source,
+        /// `autoload.js` waits for the loader on 9021 before reading any list, so an entry for
+        /// it is a second copy at a bound port.
         #[serde(default = "yes")]
         pub autoloader: bool,
-        /// Whether it belongs in **the manager's own list** at all.
+        /// Whether it belongs in the manager's own list at all.
         ///
-        /// The mirror of [`Self::autoloader`], and it is `false` for exactly one entry: the
-        /// manager itself. The manager's own list **is** the thing it reads, so an entry telling
-        /// it to load itself is a second copy fighting the first for its port - the same shape of
-        /// mistake `autoloader: false` keeps the loader out of the autoloader's list for. Every
-        /// other payload belongs in both lists, so this defaults to `true`.
+        /// The mirror of [`Self::autoloader`], `false` only for the manager itself: an entry
+        /// telling it to load itself is a second copy fighting the first for its port.
         #[serde(default = "yes")]
         pub manager: bool,
-        /// Where it belongs in **the manager's own list**, when that differs.
+        /// Where it belongs in the manager's own list, when that differs.
         ///
-        /// # Why one entry needs two positions
-        ///
-        /// The loader. In an autoloader's list it goes early, because it is what makes 9021
-        /// exist for everything after it. In the manager's own list it goes **last**, for the
-        /// opposite reason: everything else has already loaded by then, and what it is there
-        /// for is to still be running afterwards.
-        ///
-        /// One rank cannot say both, and picking either one makes the other list wrong.
+        /// The loader goes last there, so it is still running afterwards holding 9021 open;
+        /// one rank cannot also place it for an autoloader's list.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub manager_order: Option<u32>,
         /// What breaks if it runs later - or that nothing does.
@@ -1178,14 +1021,9 @@ pub mod baseline {
 
     /// One way of bringing a target up, named.
     ///
-    /// # Why more than one
-    ///
-    /// **There is more than one way to bring a PS5 up, and they are not variations.** A payload
-    /// manager chain loads a dozen separate payloads in an order that matters. An etaHEN chain
-    /// loads one payload that already contains most of them - so advice written for the first
-    /// is not merely imprecise for the second, it is wrong: it would list beside etaHEN the
-    /// very things etaHEN starts, and a second FTP server fighting the first for 2121 is not a
-    /// better configuration than none.
+    /// Presets differ in kind: a payload manager chain loads many payloads in order, while an
+    /// etaHEN chain loads one that starts most of them itself, so listing those beside it would
+    /// start second copies.
     #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
     pub struct Preset {
         /// What to call it.
@@ -1193,65 +1031,34 @@ pub mod baseline {
         /// What it is, for somebody choosing between them.
         #[serde(default)]
         pub about: String,
-        /// **What a person ends up with**, in their words, before they agree to deploy it.
+        /// What a person ends up with, in words, before they agree to deploy it.
         ///
-        /// # Why this is text and not something computed
-        ///
-        /// The program prints it and understands none of it. A description assembled from the
-        /// entries could only ever say *these payloads, in this order* - which is the plan,
-        /// and the plan is already on the screen. What somebody needs before agreeing is the
-        /// consequence: what the console does after a restart, and what they give up. That is
-        /// a judgement about the chain, so it is written down beside the chain, and a chain
-        /// added to the file without touching this program explains itself.
+        /// Written text, not computed: it states the consequence after a restart, which the
+        /// entries alone cannot say.
         #[serde(default)]
         pub result: String,
         /// What goes in it.
         pub entries: Vec<Placed>,
         /// Where this chain keeps its startup lists.
         ///
-        /// # Why this is not in the program
-        ///
-        /// It was: four paths written into the binary, unchangeable by the person holding the
-        /// console. That is the wrong shape twice over. It cannot express a chain whose lists
-        /// live somewhere else - and the scene moves, so there will be one - and it cannot be
-        /// corrected by the only person who can see which file their machine actually reads.
-        ///
-        /// **A chain that names no lists contributes none**, rather than falling back to
-        /// something this program would prefer. What the screen offers is the union of what the
-        /// chains declare, so a path is on it because a file said so.
+        /// Declared as data so a person can correct it without a rebuild. A chain that names no
+        /// lists contributes none; the chooser offers the union of what chains declare.
         #[serde(default)]
         pub lists: Vec<Held>,
         /// Files this chain carries verbatim, to be put back exactly as they were read.
         ///
-        /// # Why a chain has files at all, and why they are not modelled
-        ///
-        /// A chain is a list of payloads in an order, but a console that runs it also has
-        /// **settings** beside that list - the manager's own, and whatever else somebody's setup
-        /// keeps - and none of that is expressible as an ordered list of names. Exporting the
-        /// list alone loses it: the payload order comes back, the behaviour around it does not.
-        ///
-        /// So a chain can carry a copy of any file, as **bytes with a path and nothing more**.
-        /// This program reads none of it - it does not know a settings file from a note - which
-        /// is deliberate: the filesystem those files live on is somebody else's, the names on it
-        /// move, and a program that understood the contents would be a program that broke when
-        /// they changed. What it can do without understanding is put a file back where it was.
-        ///
-        /// **Which files these are is not decided here.** [`Capture`] declares the paths worth
-        /// reading, in the same tracked file the lists are declared in, so the set is corrected
-        /// by editing data rather than by a rebuild. This field is only the result: a copy of
-        /// what was found. It is empty for a shipped preset - shipping a console's settings would
-        /// bake one machine's habits into the program - and populated for one exported off a
-        /// target.
+        /// Settings beside a list (the manager's own, above all) are carried as a path and
+        /// bytes, never parsed, because their format belongs to someone else. [`Capture`]
+        /// declares which paths are read. Empty for a shipped preset; filled for one exported
+        /// off a target.
         #[serde(default)]
         pub files: Vec<Captured>,
     }
 
     /// A file a chain carries: where it was read, and the bytes that were there.
     ///
-    /// **Text, not raw bytes.** The files this captures are configuration a person reads and
-    /// edits - lines of `key=value` - and everything else here that touches them treats them as
-    /// text. A file that is not text has no business in a chain a person reviews before deploying,
-    /// and storing it as a string says so.
+    /// Text, not raw bytes: captured files are `key=value` configuration a person reviews
+    /// before deploying.
     #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
     pub struct Captured {
         /// What it is, carried over from the [`Capture`] that named it, for somebody reviewing
@@ -1266,15 +1073,8 @@ pub mod baseline {
 
     /// A path worth copying off a target when a chain is written down, declared as data.
     ///
-    /// # Why this is a declaration and not a constant
-    ///
-    /// The one path this began with - the manager's settings - is measured, and a measured path
-    /// could be a constant (principle 2). But *which files are worth carrying* is not one fact,
-    /// it is a list that grows: a setup that keeps a second settings file, a target whose
-    /// filesystem has moved a name. A constant would answer today's list and need a rebuild for
-    /// tomorrow's. So it is here, beside the lists it sits next to on a real machine, and both
-    /// are corrected the same way - by editing the tracked file, by the person who can see what
-    /// their console actually keeps.
+    /// Data rather than a constant, because the set of files worth carrying grows per setup and
+    /// is corrected by editing the tracked file, like the lists beside it.
     #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
     pub struct Capture {
         /// What to call it, for somebody reviewing what an export copied.
@@ -1291,34 +1091,25 @@ pub mod baseline {
     /// One startup list a chain uses, as the chain declares it.
     #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
     pub struct Held {
-        /// What to call it in the chooser.
-        ///
-        /// Written out in full, `(internal)` and all, so that what somebody reads is what
-        /// somebody wrote rather than something assembled here out of parts.
+        /// What to call it in the chooser, written out in full, `(internal)` and all.
         pub label: String,
         /// Whether it is an autoloader's list rather than the manager's own.
         ///
-        /// Not decoration: the two are audited by opposite rules. The loader is kept out of an
-        /// autoloader's list outright, and whatever runs lists is required in it.
+        /// The two are audited by opposite rules: the loader is kept out of an autoloader's
+        /// list, and the list runner is required in it.
         #[serde(default)]
         pub autoloader: bool,
         /// Whether this program will write to it.
         ///
-        /// **Left off means read only**, which is the safe way round for a field somebody adds
-        /// by hand. A list on removable storage is the way back in when the internal setup is
-        /// broken, and a tool that can damage the recovery path is worse than one that only
-        /// reads it.
+        /// Defaults to read only: a list on removable storage is the way back in when the
+        /// internal setup is broken.
         #[serde(default)]
         pub editable: bool,
         /// Every place this list may be, highest priority first.
         ///
-        /// More than one because the autoloader's own documentation gives more than one, and
-        /// because what it means on a removable device is read two ways by people who have both
-        /// looked at it. Listing both readings costs a line in a file; picking one in code cost
-        /// an argument that could not be settled without a rebuild.
-        ///
-        /// `{device}` stands for a removable device's mount point and is expanded over every one
-        /// a target can have, so a chain describes a stick once rather than ten times.
+        /// The autoloader's documentation gives more than one location, and its meaning on a
+        /// removable device has two readings; both are listed. `{device}` is expanded over
+        /// every removable mount point a target can have.
         pub at: Vec<String>,
     }
 
@@ -1336,17 +1127,11 @@ pub mod baseline {
     impl Preset {
         /// Its entries, earliest first, for a list of this kind.
         ///
-        /// **The rank is a rank, not an index**, so this sorts rather than trusting the order
-        /// the file happens to be written in - a line moved by hand should change nothing. And
-        /// it is asked per kind, because at least one entry belongs in a different place
-        /// depending on which list it is going into - see [`Placed::manager_order`].
+        /// Sorted by rank, not file order, and per kind - see [`Placed::manager_order`].
         #[must_use]
         pub fn in_order(&self, kind: super::Kind) -> Vec<Placed> {
-            // **An entry can be excluded from one kind outright**, and two are: the loader from
-            // an autoloader's list (the autoloader already loads it), and the manager from its
-            // own list (the list it reads cannot start itself). Each is one flag, and each keeps
-            // a payload out of exactly the one list it would collide in - see
-            // [`Placed::autoloader`] and [`Placed::manager`].
+            // Entries flagged out of this kind are dropped: see [`Placed::autoloader`] and
+            // [`Placed::manager`].
             let mut all: Vec<Placed> = self
                 .entries
                 .iter()
@@ -1363,8 +1148,8 @@ pub mod baseline {
         }
     }
 
-    /// The default for [`Placed::autoloader`]: an entry belongs in both lists unless it says
-    /// otherwise, because that is true of every entry but one.
+    /// The default for [`Placed::autoloader`] and [`Placed::manager`]: an entry belongs in both
+    /// lists unless it says otherwise.
     const fn yes() -> bool {
         true
     }
@@ -1382,17 +1167,13 @@ pub mod baseline {
         pub presets: Vec<Preset>,
         /// Paths worth copying off a target when a chain is written down.
         ///
-        /// Top-level rather than per-preset, because a chain being exported is a chain being
-        /// *read off a console*, and which console it is may not match any preset here - so the
-        /// set of files worth grabbing cannot depend on knowing that. See [`Capture`].
+        /// Top-level, because an exported target may match no preset. See [`Capture`].
         #[serde(default)]
         pub capture: Vec<Capture>,
     }
 
-    /// Where somebody's own presets go.
-    ///
-    /// Beside the target registry, like everything else this program keeps - and read at
-    /// startup, so a preset can be added or corrected without a rebuild.
+    /// Where somebody's own presets go: `chains.json` beside the target registry, read at
+    /// startup.
     #[must_use]
     pub fn path() -> Option<std::path::PathBuf> {
         let mut path = crate::target::directory()?;
@@ -1404,8 +1185,7 @@ pub mod baseline {
     ///
     /// # Panics
     ///
-    /// Panics if the compiled-in `data/chain.json` is not valid JSON - which cannot happen for
-    /// a build of this crate, since it is parsed from the same file at build time.
+    /// Panics if the compiled-in `data/chain.json` is not valid; the tests parse the same file.
     #[must_use]
     pub fn document() -> Document {
         let text = include_str!("../data/chain.json");
@@ -1416,9 +1196,7 @@ pub mod baseline {
     ///
     /// # Panics
     ///
-    /// If the file in this repository is not valid. That is a build-time mistake in a file
-    /// under version control, not a condition a target can produce, so it is not an error a
-    /// caller could do anything about.
+    /// If the tracked `data/chain.json` is not valid, which no target or caller can cause.
     #[must_use]
     pub fn shipped() -> Vec<Preset> {
         document().presets
@@ -1438,11 +1216,10 @@ pub mod baseline {
             .any(|one| one.name.eq_ignore_ascii_case(name))
     }
 
-    /// Every preset: the ones shipped here, with somebody's own custom presets added.
+    /// Every preset: the ones shipped here, with somebody's own custom presets added, and the
+    /// reason the user file was not read, if it was not.
     ///
-    /// **Shipped presets cannot be customized or replaced by user configuration files.**
-    /// Any user preset matching a shipped preset's name is ignored. Custom names are kept
-    /// and sit alongside the shipped presets.
+    /// A user preset with a shipped preset's name is ignored.
     #[must_use]
     pub fn all() -> (Vec<Preset>, Option<String>) {
         let mut presets = shipped();
@@ -1480,13 +1257,7 @@ pub mod baseline {
     }
 
     /// Every path worth copying off a target: the ones shipped here, plus any a person declared
-    /// in their own file.
-    ///
-    /// **Read from the same two files the presets are**, and for the same reason: the set of
-    /// files a chain should carry is a fact about somebody else's machine, so a person who can
-    /// see one this program has not heard of can name it without a rebuild. A `capture` block in
-    /// a `chains.json` beside the registry adds to what is shipped; a shipped entry is not
-    /// replaced, because there is nothing there to disagree about - a path is a path.
+    /// in the `capture` block of their own `chains.json`. User entries add; they never replace.
     #[must_use]
     pub fn captures() -> Vec<Capture> {
         let mut found = document().capture;
@@ -1511,8 +1282,7 @@ pub mod baseline {
     ///
     /// # Panics
     ///
-    /// If this repository ships no presets at all, which would be a build-time mistake in a
-    /// tracked file rather than anything a target or a person could produce.
+    /// If the tracked `data/chain.json` ships no presets.
     #[must_use]
     pub fn first() -> Preset {
         shipped()
@@ -1521,37 +1291,13 @@ pub mod baseline {
             .expect("data/chain.json ships at least one preset")
     }
 
-    /// Writes down a chain a target is actually running, as a preset.
+    /// Writes down a chain a target is running, as a preset, with notes on what it could not
+    /// know.
     ///
-    /// # Why a recording instrument rather than a generator
-    ///
-    /// The shipped `payload-manager` preset was **taken from a working console**, because a
-    /// chain is a thing that runs somewhere and the honest way to write one down is to copy one
-    /// that does. That was done by hand, once, by reading a list off a target and typing it in.
-    /// This is that job done by the program, so somebody with a console that works can keep
-    /// what it does instead of retyping it.
-    ///
-    /// # What it will not invent
-    ///
-    /// Two things, and it says so rather than filling them in:
-    ///
-    /// - **`why`.** This file's own rule is that it says what breaks if an entry runs later, or
-    ///   states plainly that nothing does. That is a judgement about the payload, not something
-    ///   a position in a list can produce. Where a preset already explains an entry its words
-    ///   are carried over; where none does, the entry says nobody has written one.
-    /// - **The rank belonging to the other kind of list.** A manager's list was observed at
-    ///   manager positions and says nothing about where those payloads go in an autoloader's. A
-    ///   known preset's rank is kept for that; where none is known the observed rank stands for
-    ///   both, which is the assumption every ordinary entry already makes.
-    ///
-    /// Both come back as notes beside the preset, because an export somebody believes is
-    /// complete is worse than one that lists what it could not know.
-    ///
-    /// # It records rather than corrects
-    ///
-    /// If a target's autoloader list names the loader - which the autoloader's own README says
-    /// never to do - that is what gets written down, because this answers *what does this
-    /// console do*. The audit is what says whether it should, and it is still there to say it.
+    /// It records rather than corrects; the audit judges the result. It invents neither an
+    /// entry's `why` (carried from a preset that explains it, otherwise marked unwritten) nor
+    /// the rank for the other kind of list (kept from a known preset, otherwise the observed
+    /// rank stands for both). Each gap is returned as a note.
     #[must_use]
     pub fn from_list(
         name: &str,
@@ -1578,12 +1324,8 @@ pub mod baseline {
                 |one| one.why.clone(),
             );
 
-            // **The observed rank goes in whichever field the kind of list actually governs.**
-            // For every ordinary entry those are the same field; only an entry a preset marks
-            // as belonging in two places, at a **different** rank in each, has to have them told
-            // apart - and only that is a rank here that was not measured. A `manager_order` says
-            // so outright; an entry merely kept out of one list (`autoloader: false`, the eight
-            // ordinary payloads) belongs in exactly one place and needs none of this.
+            // The observed rank goes in the field this kind of list governs. Only an entry with
+            // a `manager_order` has two ranks, and then the other one is kept, not measured.
             let two_places = known
                 .as_ref()
                 .is_some_and(|one| one.manager_order.is_some());
@@ -1618,24 +1360,17 @@ pub mod baseline {
         let preset = Preset {
             name: name.to_owned(),
             about: format!("Taken from {taken_from}."),
-            // **Left saying it is not written down.** `result` is what somebody is told they
-            // will end up with before they agree to deploy it. A chain copied off a console has
-            // not been designed, so the only true thing to say about it is where it came from -
-            // and a sentence made up here would be read as a promise about a restart.
+            // A copied chain was not designed, so `result` says only where it came from.
             result: format!(
                 "Not written down. This chain was copied from {taken_from} rather than \
                  designed, so what you end up with is whatever that target does. Say what you \
                  know by editing this line in the file."
             ),
             entries: placed,
-            // **No lists.** This records what a target loads, in order. Where that target
-            // keeps its lists is what was already on the screen to read it - a fact about the
-            // chain that was deployed, not something this copy learnt - and inventing one here
-            // would let an exported chain quietly redirect where a later deploy writes.
+            // No lists: an exported chain must not redirect where a later deploy writes.
             lists: Vec::new(),
-            // **Empty here, filled by whoever measured the target.** This builder is pure - it
-            // reads no console - and a captured file is bytes read off one. The caller that has
-            // the target reads the declared paths and sets them; see [`Capture`].
+            // This builder reads no target; the caller that has one fills in the captured files
+            // (see [`Capture`]).
             files: Vec::new(),
         };
         (preset, notes)
@@ -1643,21 +1378,13 @@ pub mod baseline {
 
     /// Keeps a preset in somebody's own file, replacing one of that name.
     ///
-    /// # Why the rest of the file is read as text and put back untouched
-    ///
-    /// The shipped file carries an `about` block that nothing in this program models, and
-    /// somebody's own file may carry anything else. Reading it into the document this module
-    /// deserialises and writing that back
-    /// would silently drop every field this program does not know about - the same
-    /// failure as a list entry naming a file nobody can resolve, arriving in somebody's own
-    /// configuration instead of on a console.
-    ///
-    /// So the array is edited and everything around it is left exactly as it was.
+    /// Only the `presets` array is edited, as untyped JSON, so fields this program does not
+    /// model survive the write.
     ///
     /// # Errors
     ///
-    /// When there is nowhere to keep it; when the existing file is not JSON, which is refused
-    /// rather than replaced, because overwriting a file somebody typed by hand is not a repair;
+    /// When the name is a shipped preset's; when there is nowhere to keep it; when the existing
+    /// file is not a JSON object with a `presets` array, which is refused rather than replaced;
     /// or when the write fails.
     pub fn keep(preset: &Preset) -> Result<std::path::PathBuf, String> {
         if is_shipped_name(&preset.name) {
@@ -1692,7 +1419,6 @@ pub mod baseline {
             .as_array_mut()
             .ok_or_else(|| format!("{} has `presets`, but it is not an array", path.display()))?;
 
-        // Replaced if already there, added if not.
         let serialised = serde_json::to_value(preset)
             .map_err(|why| format!("could not write {} as JSON: {why}", preset.name))?;
         if let Some(existing) = presets.iter_mut().find(|one| {
@@ -1725,11 +1451,8 @@ pub mod baseline {
         "`why` should say what breaks if an entry runs later, or say plainly that nothing does. An entry written here by `export chain` says so when nobody has written one.",
     ];
 
-    /// What some preset says about one entry, matched by name.
-    ///
-    /// **Any of them**, because this answers *why is this payload here* for a list somebody is
-    /// looking at, and that list was not necessarily built from the preset they have selected -
-    /// it may not have been built from any of them.
+    /// What any preset, or else the baseline requirements, says about one entry, matched by
+    /// name. Any preset, because the list being looked at may not come from the selected one.
     #[must_use]
     pub fn about(entry: &str) -> Option<Placed> {
         let in_presets = all().0.into_iter().find_map(|preset| {
@@ -1771,11 +1494,7 @@ pub mod baseline {
 mod baseline_tests {
     use super::baseline;
 
-    /// **A chain read off a target keeps the words somebody already wrote for its entries.**
-    ///
-    /// The alternative is an exported preset where every `why` says nothing was known, which
-    /// would be true of the export and false of the payloads - the reasons exist, they are in
-    /// the file this is being written beside.
+    /// An exported entry keeps the `why` a shipped preset already gives it.
     #[test]
     fn an_exported_entry_carries_the_reason_a_preset_already_gives_it() {
         let read = ["kstuff-lite".to_owned(), "ftpsrv".to_owned()];
@@ -1788,7 +1507,7 @@ mod baseline_tests {
         assert!(notes.is_empty(), "nothing here was unknown: {notes:?}");
     }
 
-    /// **A payload no preset explains says so, rather than being given a reason.**
+    /// A payload no preset explains is marked unwritten, with a note.
     #[test]
     fn an_entry_nobody_explains_says_nobody_has() {
         let read = ["somebodys-own-payload".to_owned()];
@@ -1797,13 +1516,7 @@ mod baseline_tests {
         assert_eq!(notes.len(), 1, "and it is said out loud: {notes:?}");
     }
 
-    /// **The rank that was not observed is kept, not overwritten with the one that was.**
-    ///
-    /// The loader sits last in the manager's own list and early in an autoloader's. Reading a
-    /// manager's list measures the first and says nothing about the second, so an export that
-    /// wrote the observed position into both would turn a correct preset into one that puts the
-    /// loader last in an autoloader's list - where the autoloader's README says it should not
-    /// appear at all.
+    /// Exporting a manager's list keeps the loader's unobserved autoloader rank.
     #[test]
     fn exporting_a_managers_list_does_not_claim_an_autoloader_position() {
         let shipped = baseline::about("elfldr").expect("the loader is in a shipped preset");
@@ -1830,7 +1543,7 @@ mod baseline_tests {
         );
     }
 
-    /// **The list a target loads is the list that comes back**, in the same order.
+    /// An exported list comes back in the order it was read.
     #[test]
     fn the_order_read_is_the_order_written() {
         let read = [
@@ -1847,10 +1560,7 @@ mod baseline_tests {
         assert_eq!(back, read);
     }
 
-    /// **Every entry says what breaks, or says that nothing does.**
-    ///
-    /// The second is the normal case and has to be stated: a file where every line invents a
-    /// constraint is a file nobody believes, and the lines that matter get lost among them.
+    /// Every shipped entry states why it is where it is.
     #[test]
     fn every_recommendation_carries_its_reason() {
         let presets = baseline::shipped();
@@ -1873,11 +1583,7 @@ mod baseline_tests {
         }
     }
 
-    /// **A preset that contains a payload does not also list it beside itself.**
-    ///
-    /// This is the whole reason presets exist rather than one list with exceptions: etaHEN
-    /// starts the loader, FTP and the kernel log itself, and a chain that lists those beside it
-    /// is a second copy of each fighting the first for a port.
+    /// The etaHEN chain does not list what etaHEN starts itself.
     #[test]
     fn the_etahen_chain_does_not_list_what_etahen_already_starts() {
         let etahen = baseline::named("etaHEN").expect("it is a shipped preset");
@@ -1897,7 +1603,7 @@ mod baseline_tests {
         );
     }
 
-    /// The two shipped chains are genuinely different, not one renamed.
+    /// The two shipped chains differ.
     #[test]
     fn the_shipped_chains_differ() {
         let manager = baseline::first();
@@ -1906,8 +1612,7 @@ mod baseline_tests {
         assert!(manager.entries.len() > etahen.entries.len());
     }
 
-    /// **The one the whole file exists for.** kstuff patches the kernel so unsigned code can
-    /// run, so it precedes everything that needs that - which is measured, not assumed.
+    /// The kernel patch precedes the payloads that need executable memory.
     #[test]
     fn the_kernel_patch_comes_before_what_needs_it() {
         let kstuff = baseline::about("kstuff-lite_v1.09.elf").expect("it is in the list");
@@ -1916,14 +1621,9 @@ mod baseline_tests {
         assert!(kstuff.why.contains("executable"), "{}", kstuff.why);
     }
 
-    /// The manager goes last, because it runs a list of its own once it is up.
+    /// The manager is last in an autoloader's list, because it then runs its own list.
     #[test]
     fn the_manager_is_last() {
-        // **Of an autoloader's list**, which is the list the claim is about: the manager runs
-        // a list of its own once it is up, so anything that list is going to do should be done
-        // before it starts. Asked of the entries rather than of a list, this compared ranks
-        // that belong to two different files - and the loader's, which is only ever in the
-        // other one.
         for preset in baseline::shipped() {
             let listed = preset.in_order(super::Kind::Autoloader);
             let Some(at) = listed.iter().position(|one| one.name == "pldmgr") else {
@@ -1939,8 +1639,7 @@ mod baseline_tests {
         }
     }
 
-    /// **Matched with a version on the end**, the same as everywhere else these names are
-    /// compared - a recommendation that only matched a bare name would match nothing real.
+    /// A versioned filename finds its recommendation.
     #[test]
     fn a_versioned_filename_finds_its_recommendation() {
         assert!(baseline::about("ftpsrv_v0.21.elf").is_some());
@@ -1958,7 +1657,7 @@ mod baseline_tests {
         assert!(err.contains("cannot be overwritten"), "{err}");
     }
 
-    /// Required for Prosperous is declared in data/chain.json with a format version.
+    /// `data/chain.json` carries a format version and the required payloads.
     #[test]
     fn required_for_prosperous_is_declared_with_version() {
         let doc = baseline::document();
@@ -1981,7 +1680,7 @@ mod baseline_tests {
         );
     }
 
-    /// Even a custom empty preset audits the baseline `required_for_prosperous` payloads.
+    /// An empty custom preset is still audited for the baseline required payloads.
     #[test]
     fn custom_preset_still_audits_required_for_prosperous() {
         let custom = baseline::Preset {

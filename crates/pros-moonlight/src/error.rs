@@ -1,9 +1,4 @@
-//! What can go wrong in the bridge, told apart.
-//!
-//! The GameStream handshake has many steps and each fails its own way; a single opaque error
-//! would turn "the client sent a challenge that was not a whole AES block" and "the certificate on
-//! disk will not parse" into the same line. They are different faults in different places, so they
-//! are different variants.
+//! What can go wrong in the bridge, one variant per kind of fault.
 
 use std::fmt;
 
@@ -16,8 +11,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     /// A block cipher input was not a whole number of 16-byte blocks.
     ///
-    /// Every GameStream pairing message is block-aligned by construction, so this means the peer
-    /// sent something malformed rather than that a length was miscomputed here.
+    /// Every pairing message is block-aligned by construction, so this means the peer sent
+    /// something malformed.
     NotBlockAligned {
         /// How many bytes arrived.
         len: usize,

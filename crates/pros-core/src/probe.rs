@@ -1,21 +1,10 @@
-//! Launching a title and following what it says: the probe loop's steps, shared by both shims.
+//! Launching a title and following its log: the probe loop's steps, shared by both shims.
 //!
-//! # Why this is here and not in the command
-//!
-//! `pros probe` ran the whole loop in `pros-cli` - close, restore, launch, follow - and the window
-//! then wanted the same launch-and-follow for a title picked from a list. Principle 3: a capability
-//! in only one shim is one that drifts, so the steps both need live here and each shim only says
-//! what it saw. The restore stays in the command, because a title picked off the target has no
-//! local build to restore from.
-//!
-//! # The ordering, which is the whole reason this is fiddly
-//!
-//! **Attach to the log before launching.** A probe does its whole job in the first second or two
-//! and then parks, so a follower attached *after* the launch misses all of it: the output lands in
-//! the gap between the launch returning and the stream opening, and the run succeeds with an empty
-//! capture (measured). The connection is the subscription - klogsrv buffers what it emits once the
-//! socket is open - so following first and launching second is the fix, and
-//! [`SUBSCRIBE_SETTLE`](crate::probe::SUBSCRIBE_SETTLE) is insurance on top of it.
+//! The restore step stays in the command, since a title picked off the target has no local
+//! build. The log is attached before the launch: a probe does its work in the first second or
+//! two and then parks, so a follower attached after the launch captures nothing (measured).
+//! The klogsrv connection is the subscription, and
+//! [`SUBSCRIBE_SETTLE`](crate::probe::SUBSCRIBE_SETTLE) is margin on top of that ordering.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,21 +13,18 @@ use std::time::{Duration, Instant};
 /// How long a shell command is given to answer.
 const SETTLE: Duration = Duration::from_millis(1200);
 
-/// A beat between attaching the log follower and issuing the launch.
+/// A pause between attaching the log follower and issuing the launch.
 ///
-/// **The ordering is the mechanism; this is the margin.** Measured need is sub-second; this is
-/// deliberately more, because missing the subscription loses the whole run.
+/// The measured need is under a second; this is more, because a missed subscription loses the
+/// whole run.
 pub const SUBSCRIBE_SETTLE: Duration = Duration::from_secs(3);
 
 /// What a payload prints immediately before it parks, from oops-sdk's
 /// `oops_system_park_until_closed`.
 ///
-/// **The tag goes inside the brackets, not before the message.** oops-sdk's klog renders
-/// `[<app id>:<tag>] <message>`, so the line on the wire is `[GLPB00001:park] work done` and a
-/// payload with no app id set prints `[park] work done`. This matched `park: work done` when it
-/// first shipped and therefore matched nothing: the sentinel was printed on 2026-09-21 at 11:47Z
-/// and the watch ran to its cap anyway. Matching from the closing bracket covers both spellings
-/// and cannot collide with a title whose own log says "work done".
+/// oops-sdk's klog renders `[<app id>:<tag>] <message>`, so the line is
+/// `[GLPB00001:park] work done`, or `[park] work done` with no app id. Matching from the
+/// closing bracket covers both and does not collide with a title's own "work done".
 pub const PARK_SENTINEL: &str = "park] work done";
 
 /// Whether a log line is a payload saying it has finished and is about to park.
@@ -49,9 +35,9 @@ pub fn is_park(line: &str) -> bool {
 
 /// Ends every process a title owns, best-effort, and says how many there were.
 ///
-/// **Best-effort on purpose.** A parked big-app ignores every signal (measured; oops-mesa's
-/// b1e4), so this ends a killable process and no more - the launch that follows is what says
-/// whether the slot is still held. A `ps` that will not answer reads as nothing running.
+/// A parked big-app ignores every signal (measured), so this ends what can be ended and the
+/// following launch shows whether the slot is still held. A `ps` that does not answer reads
+/// as nothing running.
 #[must_use]
 pub fn close(link: &pros_link::Link, id: &str) -> usize {
     let listing = pros_link::shell::run(link, "ps", SETTLE).unwrap_or_default();
@@ -121,16 +107,11 @@ impl Ending {
 /// Streams an already-attached log until the title parks, leaves the process list, `seconds`
 /// elapse, or `stop` is raised - handing each line to `each`.
 ///
-/// **The follower is attached by the caller, before the launch** - see the module note. This takes
-/// the open stream rather than opening it, so the subscription is already live by the time the
-/// title prints anything.
-///
-/// **Two connections, two services, on purpose.** The stream is klogsrv and the poll is shsrv, so
-/// they do not contend: a background watcher runs `ps` once a second while this drains the log,
-/// and shutting the stream is what ends the drain. The watcher waits for the title to *appear*
-/// before treating its absence as an exit, so the gap between a launch and the process showing is
-/// never read as a crash. Raising `stop` is noticed by that watcher within a second; to end a
-/// quiet log sooner, shut the stream with the [`pros_link::log::Stopper`] too.
+/// The caller attaches the stream before the launch (see the module note). The stream is
+/// klogsrv and the poll is shsrv, so they do not contend: a background watcher runs `ps` once
+/// a second and shuts the stream to end the drain. The watcher treats absence as an exit only
+/// after the title has appeared. Raising `stop` is noticed within a second; to end a quiet log
+/// sooner, also shut the stream with the [`pros_link::log::Stopper`].
 pub fn follow<I>(
     stopper: &Arc<pros_link::log::Stopper>,
     stream: I,
@@ -185,11 +166,9 @@ where
         let Ok(text) = read else {
             break;
         };
-        // **The payload saying it is done.** A homebrew title cannot exit - `exit`, `_Exit` and
-        // `sceKernelExit` are absent, `_exit` raises `SIGSYS` under a big-app's credentials, and
-        // returning from the entry point faults at zero - so the conforming ending is to park,
-        // and a finished probe is indistinguishable from a working one by the process list
-        // alone. This line lets a watcher end without waiting out its whole cap.
+        // A homebrew title cannot exit (`exit`, `_Exit` and `sceKernelExit` are absent, `_exit`
+        // raises `SIGSYS` under big-app credentials, and returning from the entry faults), so
+        // it parks, and only this line tells a finished probe from a working one.
         let parked = is_park(&text);
         each(text);
         if parked {
@@ -216,8 +195,7 @@ where
 
 /// What is installed, by name - what `pros titles` lists.
 ///
-/// A title whose description will not read is kept, with no name, rather than dropped: it is
-/// installed, and the identifier is true about it.
+/// A title whose description does not read is kept with no name rather than dropped.
 ///
 /// # Errors
 ///
@@ -243,7 +221,7 @@ pub fn installed(link: &pros_link::Link) -> Result<Vec<crate::titles::Metadata>,
 mod tests {
     use super::{Ending, is_park};
 
-    /// Both spellings oops-sdk prints: with an app id and without one.
+    /// The park line is recognised with and without an app id.
     #[test]
     fn the_park_line_is_recognised_with_or_without_an_app_id() {
         assert!(is_park("[GLPB00001:park] work done"));
@@ -251,7 +229,7 @@ mod tests {
         assert!(!is_park("[NVRB00001:stderr] level work done"));
     }
 
-    /// A stop is said as a stop, not as a title that is still running at a cap nobody reached.
+    /// A stopped follow is described as stopped, not as reaching the cap.
     #[test]
     fn a_stopped_follow_says_it_was_stopped() {
         assert!(

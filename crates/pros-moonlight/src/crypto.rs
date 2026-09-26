@@ -1,10 +1,6 @@
-//! The pairing primitives, kept in one place because the handshake is the one part of the bridge
-//! where a byte in the wrong order fails silently.
-//!
-//! Everything here mirrors what Sunshine's `nvhttp.cpp` does on the server side, so that a client
-//! which pairs with Sunshine pairs with this. Nothing is invented: SHA-256 over concatenations,
-//! AES-128 in ECB with no padding (every input is a whole number of blocks), and RSA PKCS#1 v1.5
-//! signatures over the SHA-256 of the data.
+//! The pairing primitives: SHA-256 over concatenations, AES-128-ECB with no padding (every input
+//! is whole blocks), and RSA PKCS#1 v1.5 signatures over SHA-256. They follow the server side of
+//! Sunshine's `nvhttp.cpp`, so a client that pairs with Sunshine pairs with this.
 
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
@@ -28,9 +24,8 @@ pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
 
 /// Derive the pairing AES key: the first 16 bytes of `SHA-256(salt || pin)`.
 ///
-/// `salt` is the 16 random bytes the client sent; `pin` is the digits the user typed here, as
-/// ASCII. Modern clients (generation 7 and up, every current one) choose SHA-256, so that is what
-/// this uses - matching the `appversion` the bridge reports.
+/// `salt` is the 16 random bytes the client sent; `pin` is the digits the user typed, as ASCII.
+/// Clients of generation 7 and up use SHA-256, matching the `appversion` the bridge reports.
 #[must_use]
 pub(crate) fn pairing_key(salt: &[u8; BLOCK], pin: &str) -> [u8; BLOCK] {
     let mut material = Vec::with_capacity(BLOCK + pin.len());
@@ -46,8 +41,7 @@ pub(crate) fn pairing_key(salt: &[u8; BLOCK], pin: &str) -> [u8; BLOCK] {
 ///
 /// # Errors
 ///
-/// [`Error::NotBlockAligned`] if `data` is not a multiple of [`BLOCK`]. The handshake only ever
-/// encrypts block-aligned buffers, so this failing means the caller built the wrong thing.
+/// [`Error::NotBlockAligned`] if `data` is not a multiple of [`BLOCK`].
 pub(crate) fn aes_ecb_encrypt(key: &[u8; BLOCK], data: &[u8]) -> Result<Vec<u8>> {
     if !data.len().is_multiple_of(BLOCK) {
         return Err(Error::NotBlockAligned { len: data.len() });
@@ -66,8 +60,7 @@ pub(crate) fn aes_ecb_encrypt(key: &[u8; BLOCK], data: &[u8]) -> Result<Vec<u8>>
 ///
 /// # Errors
 ///
-/// [`Error::NotBlockAligned`] if `data` is not a multiple of [`BLOCK`] - which, from a peer, means
-/// it sent something that was never a valid ciphertext.
+/// [`Error::NotBlockAligned`] if `data` is not a multiple of [`BLOCK`].
 pub(crate) fn aes_ecb_decrypt(key: &[u8; BLOCK], data: &[u8]) -> Result<Vec<u8>> {
     if !data.len().is_multiple_of(BLOCK) {
         return Err(Error::NotBlockAligned { len: data.len() });
@@ -92,9 +85,8 @@ pub(crate) fn sign(key: &RsaPrivateKey, data: &[u8]) -> Vec<u8> {
 
 /// Whether `signature` is a valid RSA PKCS#1 v1.5 SHA-256 signature over `data` for `key`.
 ///
-/// This is phase four's whole decision: the client proves it holds the private key for the
-/// certificate it presented, and a bad signature is a client that does not - so the pairing is
-/// refused rather than completed.
+/// Phase four refuses the pairing when this is false: the client has not proved it holds the
+/// private key for the certificate it presented.
 #[must_use]
 pub(crate) fn verify(key: &RsaPublicKey, data: &[u8], signature: &[u8]) -> bool {
     let Ok(signature) = Signature::try_from(signature) else {
@@ -110,6 +102,7 @@ mod tests {
     use super::{BLOCK, aes_ecb_decrypt, aes_ecb_encrypt, pairing_key, sha256, sign, verify};
     use rsa::RsaPrivateKey;
 
+    /// ECB decrypt inverts ECB encrypt.
     #[test]
     fn a_block_round_trips_through_ecb() {
         let key = [7_u8; BLOCK];
@@ -119,24 +112,25 @@ mod tests {
         assert_eq!(aes_ecb_decrypt(&key, &cipher).unwrap(), clear);
     }
 
+    /// Input that is not whole blocks is an error, not padded.
     #[test]
     fn ecb_refuses_a_partial_block() {
         let key = [0_u8; BLOCK];
         assert!(aes_ecb_encrypt(&key, b"not a block").is_err());
     }
 
+    /// The pairing key is the first 16 bytes of `SHA-256(salt || pin)`.
     #[test]
     fn the_pairing_key_is_the_first_sixteen_bytes_of_the_salted_hash() {
-        // A fixed vector so a change to the derivation is caught rather than absorbed.
         let salt = [0_u8; BLOCK];
         let key = pairing_key(&salt, "0000");
         let expected = &sha256(&[salt.as_slice(), b"0000"].concat())[..BLOCK];
         assert_eq!(&key, expected);
     }
 
+    /// A signature verifies for its own message and fails for another.
     #[test]
     fn a_signature_verifies_and_a_tampered_one_does_not() {
-        // Small key: this is a round-trip test of the wiring, not a strength test.
         let mut rng = rand::thread_rng();
         let private = RsaPrivateKey::new(&mut rng, 2048).unwrap();
         let public = private.to_public_key();

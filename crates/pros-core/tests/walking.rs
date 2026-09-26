@@ -1,17 +1,7 @@
 //! Walking a local folder before any of it is sent.
 //!
-//! # Why this is worth its own file
-//!
-//! `transfer::contents` carries a doc comment saying it is *"separated from the sending so
-//! it can be tested, and so a caller can show what is about to go before any of it does"* -
-//! and then nothing tested it. A seam introduced for testability and left untested is the
-//! cost of the seam without the benefit.
-//!
-//! It is also the half of a restore that decides what a restore *is*. `upload` takes a live
-//! session and cannot be exercised without a target; this decides the file list that session
-//! is then handed, so a folder missed here is a file that never goes back - and a restore
-//! that quietly missed one is worse than none, because it will be trusted at the moment it
-//! matters.
+//! `transfer::contents` decides the file list a restore hands to its session, so a file it
+//! misses is a file that never goes back. These tests cover it without a target.
 
 use pros_core::transfer::contents;
 use std::path::{Path, PathBuf};
@@ -43,11 +33,7 @@ fn listed(root: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Every file is listed, by a path relative to the folder rather than an absolute one.
-///
-/// Relative because the caller is about to join each onto a path on the target. An absolute
-/// one would carry this machine's own directory across, and the restore would land somewhere
-/// nobody asked for.
+/// Every file is listed by a path relative to the folder, never an absolute one.
 #[test]
 fn every_file_is_listed_relative_to_the_folder_it_was_found_in() {
     let root = scratch("flat");
@@ -76,11 +62,7 @@ fn a_nested_folder_is_walked_and_keeps_its_shape() {
     );
 }
 
-/// The list is sorted, so two runs of a restore describe themselves the same way.
-///
-/// A directory read is in whatever order the filesystem gives, which differs between
-/// machines and between runs on one. A caller showing "what is about to go" would otherwise
-/// shuffle its own list every time it was opened.
+/// The list is sorted, independent of the filesystem's order.
 #[test]
 fn the_list_is_ordered_the_same_way_every_time() {
     let root = scratch("ordering");
@@ -97,11 +79,7 @@ fn the_list_is_ordered_the_same_way_every_time() {
     assert_eq!(once, sorted, "and the order is not the filesystem's");
 }
 
-/// Directories are walked, not listed.
-///
-/// A restore makes directories on the way down as it needs them, so a directory in the file
-/// list would be sent as though it were a file - and an empty one carries nothing worth
-/// sending anyway.
+/// Directories are walked, not listed, and an empty one contributes nothing.
 #[test]
 fn directories_are_walked_rather_than_listed() {
     let root = scratch("dirs");
@@ -117,9 +95,7 @@ fn directories_are_walked_rather_than_listed() {
     );
 }
 
-/// A folder with nothing in it is an empty list rather than a failure.
-///
-/// The ordinary case for a title that has been installed and not yet played.
+/// An empty folder is an empty list rather than a failure.
 #[test]
 fn an_empty_folder_is_an_empty_list() {
     let root = scratch("empty");
@@ -129,11 +105,7 @@ fn an_empty_folder_is_an_empty_list() {
     );
 }
 
-/// A folder that is not there is reported rather than treated as empty.
-///
-/// **The distinction a restore rests on.** "Nothing to send" and "I could not look" produce
-/// the same empty list, and one of them means the restore did nothing while reporting
-/// success.
+/// A folder that is not there is an error, not an empty list.
 #[test]
 fn a_folder_that_cannot_be_read_is_an_error_and_not_an_empty_list() {
     let missing = scratch("missing").join("not-here");
@@ -144,11 +116,7 @@ fn a_folder_that_cannot_be_read_is_an_error_and_not_an_empty_list() {
     );
 }
 
-/// A folder nested past the bound stops rather than running.
-///
-/// **A bound rather than a belief.** Save folders are shallow; something that is not one
-/// should stop. The files above the limit are still listed, so what is returned stays a true
-/// statement about part of the tree rather than becoming a failure about all of it.
+/// A tree deeper than the bound stops there, still listing what is within it.
 #[test]
 fn a_tree_deeper_than_the_bound_stops_instead_of_running() {
     let root = scratch("deep");
@@ -173,10 +141,7 @@ fn a_tree_deeper_than_the_bound_stops_instead_of_running() {
     );
 }
 
-/// A file at exactly the deepest level allowed is still found.
-///
-/// The boundary the bound is written at. Off by one here either loses a legitimate file or
-/// walks one level further than the rule says, and neither shows up on a shallow folder.
+/// A file at exactly the deepest allowed level is still found.
 #[test]
 fn a_file_at_the_deepest_allowed_level_is_still_found() {
     let root = scratch("boundary");

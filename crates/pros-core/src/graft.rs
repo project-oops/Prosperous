@@ -1,45 +1,13 @@
 //! Putting one save's contents into another save's container.
 //!
-//! # The problem this solves
+//! A save made for one edition of a game (for example `PPSA21564` versus `PPSA21567`) does not
+//! load under another, because of the keystone under `sce_sys`: a static per-edition value
+//! keyed by the vendor, not computable here, and covering neither the contents, the parameter
+//! file, the title identifier nor the account. So a graft keeps the container's `sce_sys`
+//! whole and replaces only the game's own data with the donor's.
 //!
-//! A save made for one edition of a game will not load under another. Astro Bot is
-//! `PPSA21564` in America and `PPSA21567` in Europe; Grand Theft Auto V is `PPSA03420`
-//! digital in America, `PPSA01721` digital in Europe and `PPSA04263` on a European disc. Four
-//! containers, one game, and a save from any of them is inert under the others.
-//!
-//! # Why the obvious fix does not work, and what does
-//!
-//! The obvious fix is to edit the title identifier and be done. It fails on the **keystone**:
-//! ninety-six bytes beside every save, of which thirty-two are
-//! `HMAC-SHA256(key, package_passcode)`. The passcode belongs to the edition, so every edition
-//! has a different keystone, and nothing here can compute one - the key is Sony's.
-//!
-//! What *is* known, from two independent open implementations, is what the keystone does
-//! **not** cover: not the save contents, not the parameter file, not the title identifier, not
-//! the account. It is a static per-edition value. That is why a save tool can ship a database
-//! of them, and it is why the answer is not to forge one but to **keep one you already have.**
-//!
-//! So: start from a save made by *your own copy* of the game, and replace only the parts that
-//! are the game's own data. The container stays yours - keystone, parameter file, everything
-//! under `sce_sys` - and the contents come from elsewhere.
-//!
-//! ```text
-//! yours/                     theirs/                    result/
-//!   sce_sys/keystone    <-- kept                          sce_sys/keystone    (yours)
-//!   sce_sys/param.sfo   <-- kept                          sce_sys/param.sfo   (yours)
-//!   memory.dat                    memory.dat  --> taken   memory.dat          (theirs)
-//! ```
-//!
-//! # What this does not do
-//!
-//! **It does not touch encryption.** A save on a target is an opaque `sdimg_` container, and
-//! getting one open or closed is a payload's job. This works on saves that are already open -
-//! which is the form they arrive in when somebody shares one, and the form a save manager
-//! hands back.
-//!
-//! **It does not promise the game will accept the result.** The cryptography does not stand in
-//! the way; a game checking its own build or region internally still might. That is a fact
-//! about each game and nothing here can answer it in advance.
+//! This works on saves that are already decrypted, as folders; opening and closing the
+//! `sdimg_` container is a payload's job. A game may still check its build or region itself.
 
 use std::path::{Path, PathBuf};
 
@@ -51,7 +19,7 @@ pub const SYSTEM: &str = "sce_sys";
 /// The parameter file inside it.
 pub const PARAMS: &str = "sce_sys/param.sfo";
 
-/// The per-edition blob this whole design is arranged around.
+/// The per-edition keystone, which a graft keeps from the container.
 pub const KEYSTONE: &str = "sce_sys/keystone";
 
 /// A save that is already open, as a folder of files.
@@ -61,12 +29,9 @@ pub struct Open {
     pub root: PathBuf,
     /// What its parameter file says, when it has one. Empty when it has none.
     pub params: selfish_title::sfo::Sfo,
-    /// Everything that is not under `sce_sys` - the game's own data.
+    /// Everything that is not under `sce_sys`: the game's own data.
     pub contents: Vec<PathBuf>,
-    /// Whether a keystone is present.
-    ///
-    /// **Presence, not contents.** What is in it is Sony's business; whether it is there
-    /// decides whether this is a container a game will mount.
+    /// Whether a keystone is present; without one a game will not mount the container.
     pub has_keystone: bool,
 }
 
@@ -75,9 +40,8 @@ impl Open {
     ///
     /// # Errors
     ///
-    /// When the folder cannot be walked. **A missing parameter file is not an error** - a save
-    /// exported without one is still a folder of contents, and saying so is more useful than
-    /// refusing to look at it.
+    /// When the folder cannot be walked. A missing parameter file is not an error; the
+    /// parameters are then empty.
     pub fn read(root: &Path) -> Result<Self, String> {
         let mut contents = Vec::new();
         walk(root, root, &mut contents)?;
@@ -115,7 +79,6 @@ fn walk(root: &Path, at: &Path, into: &mut Vec<PathBuf>) -> Result<(), String> {
         let entry = entry.map_err(|why| why.to_string())?;
         let path = entry.path();
         let relative = path.strip_prefix(root).unwrap_or(&path).to_owned();
-        // The container's own description, which is the half that stays behind.
         if relative.starts_with(SYSTEM) {
             continue;
         }
@@ -133,22 +96,18 @@ fn walk(root: &Path, at: &Path, into: &mut Vec<PathBuf>) -> Result<(), String> {
 pub enum Note {
     /// The two saves are for the same title, so nothing needed retargeting.
     SameTitle(String),
-    /// They are for different titles, which is the case this exists for.
+    /// They are for different titles.
     Retargeted {
-        /// The container's title - the one the result will be.
+        /// The container's title, which the result has.
         keeping: String,
-        /// The contents' title - the one they came from.
+        /// The contents' title.
         from: String,
     },
-    /// The donor has a file the container did not.
-    ///
-    /// **Copied anyway, and said.** A game that writes a file only sometimes would otherwise
-    /// look like a mismatch; a genuine mismatch looks the same and is worth a person's eye.
+    /// The donor has a file the container did not. Copied, and reported because it may be a
+    /// mismatch.
     Extra(String),
-    /// The container had a file the donor does not, so the old one is left in place.
-    ///
-    /// Left rather than removed: it is the container owner's data, and a donor that simply
-    /// never wrote that file should not delete it.
+    /// The container had a file the donor does not. Left in place: a donor that never wrote a
+    /// file does not delete the container's.
     Kept(String),
     /// The container has no keystone, so it is not one a game will mount.
     NoKeystone,
@@ -185,8 +144,8 @@ pub struct Done {
 
 /// Puts the donor's contents into a copy of the container, at `into`.
 ///
-/// The container is copied whole first - **including everything under `sce_sys`** - and then
-/// the donor's contents are written over it. Nothing is written to either input.
+/// The container is copied whole first, including `sce_sys`, and then the donor's contents
+/// are written over it. Nothing is written to either input.
 ///
 /// # Errors
 ///
@@ -207,7 +166,6 @@ pub fn graft(container: &Open, donor: &Open, into: &Path) -> Result<Done, String
         notes.push(Note::NoKeystone);
     }
 
-    // The container first, whole. Its `sce_sys` is the point of it.
     copy_tree(&container.root, into)?;
 
     let mut taken = Vec::new();
@@ -252,16 +210,9 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 
 /// Rewrites the account in a save's parameter file, so a target will take it as its own.
 ///
-/// # Why this is here and the encryption is not
-///
-/// On this platform "resigning" a save is not a signature at all: the account is a field, and
-/// changing it is a write. What makes a save the target's is the encryption around it, which
-/// the target does when the container is closed - so a tool that rewrites this field and hands
-/// the folder back to a save manager has done the whole of its half.
-///
-/// **A save shared publicly usually has this zeroed.** That is a privacy convention and not a
-/// wildcard: an identifier of zero matches no account, and every tool that handles these
-/// rewrites it rather than relying on it.
+/// Re-signing a decrypted save is this field write; the target applies the encryption when
+/// the container is closed. A publicly shared save usually has the account zeroed, which
+/// matches no account.
 ///
 /// # Errors
 ///
@@ -320,10 +271,7 @@ mod tests {
         out
     }
 
-    /// **The container's `sce_sys` survives and the contents are replaced.**
-    ///
-    /// This is the whole method in one assertion: the keystone that came with the container is
-    /// the keystone in the result, because it is the only one that will mount.
+    /// The container's `sce_sys` survives and its contents are replaced by the donor's.
     #[test]
     fn the_container_keeps_its_own_description_and_takes_the_others_data() {
         let mine = save("mine", Some("PPSA21564"), &[("memory.dat", b"my progress")]);
@@ -356,8 +304,7 @@ mod tests {
         }));
     }
 
-    /// **Neither input is written to.** A graft that damaged the save somebody started from
-    /// would take the one container they had.
+    /// Neither input is written to.
     #[test]
     fn the_saves_it_was_given_are_left_alone() {
         let mine = save("keep-mine", Some("PPSA21564"), &[("memory.dat", b"mine")]);
@@ -383,7 +330,7 @@ mod tests {
         );
     }
 
-    /// A file the container did not have is added, and said.
+    /// A file the container did not have is added and reported.
     #[test]
     fn a_file_the_container_never_had_is_taken_and_reported() {
         let mine = save("host-thin", Some("PPSA03420"), &[("memory.dat", b"a")]);
@@ -412,8 +359,7 @@ mod tests {
         );
     }
 
-    /// A file the donor does not have is **left**, not deleted - a donor that never wrote it
-    /// is not a donor saying to remove it.
+    /// A file the donor does not have is left in place, not deleted.
     #[test]
     fn a_file_the_donor_lacks_is_left_where_it_was() {
         let mine = save(
@@ -449,8 +395,7 @@ mod tests {
         );
     }
 
-    /// **A container with no keystone is called out**, because a game will not mount it and
-    /// the result would look like a save that simply refuses to load.
+    /// A container with no keystone is reported.
     #[test]
     fn a_container_without_a_keystone_is_not_one_a_game_will_take() {
         let root = std::env::temp_dir().join("prosperous-graft-bare");

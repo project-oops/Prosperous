@@ -1,34 +1,13 @@
-//! Holding one file out for the target to take, and stopping.
+//! Holding one file out for the target to fetch, then stopping.
 //!
-//! # Why this program listens at all, having said it would not
+//! The only listener in this project. `pkg_install` takes a url and fetches it itself; a path
+//! on the target's own disk gives the same empty answer as a missing file (measured on a
+//! target), and nothing on the target serves files, so the package is served from here.
 //!
-//! Everything else here connects. This is the one thing that waits to be connected to, and it
-//! exists because of a measurement rather than a preference.
-//!
-//! `pkg_install` takes a url and fetches it itself. A path on the target's own disk does not
-//! work - measured, with a real package in `/data/pkg`, producing the identical empty answer a
-//! missing file gives. Nor is there anything already running on the target that could hand it
-//! one: the payload manager's web server has no file route and restricts what it will touch to
-//! payload extensions under its own directories, and the homebrew server was not running.
-//!
-//! So either the package is served from here, or packages are not installable. This module was
-//! written after that was established and not before.
-//!
-//! # A handover, not a file server
-//!
-//! The difference is the whole design.
-//!
-//! - **One file.** Not a directory, not a root. There is no path handling, so there is no path
-//!   traversal to get wrong - every request gets the same bytes whatever it asks for.
-//! - **It stops.** After the file has been taken, or after a deadline, whichever is first.
-//!   Something that stays listening is a service, and this project does not run one.
-//! - **It binds to the one interface the target can reach**, discovered by connecting to the
-//!   target and looking at which address that connection went out from. Not guessed, not
-//!   `0.0.0.0`, not enumerated - **asked**, in the only way that cannot be wrong.
-//!
-//! That last point matters more than it sounds. A machine with a virtual adapter, a container
-//! bridge and a wireless card has several addresses, most of which the target cannot route to.
-//! Picking one and building a url out of it produces a link that looks right and times out.
+//! A handover, not a file server: every request gets the same one file whatever path it names,
+//! so there is no path handling to get wrong; it stops when dropped or after a deadline; and it
+//! binds the interface a connection to the target actually went out from, never `0.0.0.0` or a
+//! guessed address.
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -39,15 +18,13 @@ use std::time::{Duration, Instant};
 
 /// How long a handover waits to be taken before giving up.
 ///
-/// **Generous, because the target is doing the work.** It fetches the whole package before it
-/// says anything, and a large one over a slow link is minutes. A window that gave up first
-/// would report a failure over an install that was going fine.
+/// Generous: the target fetches the whole package before it answers, and a large one over a
+/// slow link takes minutes.
 const PATIENCE: Duration = Duration::from_mins(10);
 
 /// What the target should ask for, when it asks for anything.
 ///
-/// The name is in the url only so a person reading a log can see what went across. Nothing
-/// dispatches on it.
+/// The name is in the url only so a log shows what went across; nothing dispatches on it.
 fn url_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || "file".to_owned(),
@@ -62,38 +39,23 @@ pub struct Handover {
     pub url: String,
     /// How many times the file has been handed over.
     taken: Arc<Mutex<usize>>,
-    /// The first line of each request, in order.
-    ///
-    /// **Kept because the traffic did not make sense.** One install of a sixty-two megabyte
-    /// package produced nine complete fetches. Whether that is ranges, retries, or something
-    /// else cannot be told from a count - so what was asked is recorded, and the question
-    /// becomes a fact rather than a guess about a number.
+    /// The request line and range/user-agent headers of each request, in order, so repeated
+    /// fetches can be told apart from a count alone.
     asked: Arc<Mutex<Vec<String>>>,
     /// Set to stop the thread waiting for a connection.
     stopping: Arc<AtomicBool>,
-    /// A connection to itself is how the accept loop is woken to notice that.
+    /// Where to connect to wake the accept loop so it sees `stopping`.
     address: SocketAddr,
 }
 
 impl Handover {
     /// Starts holding `file` out on the interface that reaches `target`.
     ///
-    /// # The server has to run somewhere the target can reach back to
+    /// This binds the interface that routes to the target, which is unreachable from the
+    /// target when this machine is behind NAT (WSL2's default networking gives `172.24.x.x`).
+    /// The failure is quiet: the target never sends a request, and [`Handover::taken`] stays
+    /// zero. Run the sender on the host, or with `networkingMode=mirrored`.
     ///
-    /// This binds the interface that routes to the target, which is the right answer for the
-    /// machine it runs on - and the wrong one when that machine is behind NAT. Under WSL2's
-    /// default networking the chosen address is `172.24.x.x`: correct from inside WSL, and
-    /// unreachable from a console on the LAN.
-    ///
-    /// The failure is quiet, which is the part worth warning about. The target never sends a
-    /// request, so there is nothing in a log and no error from the loader - only
-    /// [`Handover::taken`] returning zero. **`taken() == 0` means the target never came**, so
-    /// whatever was being installed was never judged and nothing about it is implicated.
-    ///
-    /// Run the sender where the target can reach it (on Windows rather than in WSL, or with
-    /// `networkingMode=mirrored`). Measured against a real console: from WSL, zero fetches; from
-    /// the host, the same package fetched repeatedly with `libhttp/12.40 (PlayStation 5)` range
-    /// requests. (obSCEne hardware session, 2026-08-27)
     /// # Errors
     ///
     /// When the file cannot be read, the target cannot be reached to work out which interface
@@ -102,8 +64,7 @@ impl Handover {
         let bytes = std::fs::read(file).map_err(|why| format!("{}: {why}", file.display()))?;
         let mine = facing(target)?;
 
-        // Port zero: the system picks one that is free. A fixed port is one more thing to
-        // collide with something else on this machine.
+        // Port zero: the system picks a free one, so nothing on this machine collides.
         let listener = TcpListener::bind((mine, 0)).map_err(|why| why.to_string())?;
         let address = listener.local_addr().map_err(|why| why.to_string())?;
         let url = format!("http://{address}/{}", url_name(file));
@@ -144,9 +105,8 @@ impl Handover {
 
     /// How many times it has been fetched.
     ///
-    /// **Zero after an install is the useful finding.** It means the target never came for the
-    /// file, which is a different problem from a package it fetched and disliked - and the two
-    /// are indistinguishable from the target's reply alone.
+    /// Zero after an install means the target never came for the file, which the target's
+    /// reply alone cannot distinguish from a package it fetched and rejected.
     #[must_use]
     pub fn taken(&self) -> usize {
         self.taken.lock().map(|count| *count).unwrap_or_default()
@@ -154,9 +114,8 @@ impl Handover {
 
     /// What was asked for, in order.
     ///
-    /// The request line and any header that would explain repeated fetches. Recorded rather
-    /// than parsed: **nothing here dispatches on a request**, and the moment it did there
-    /// would be a path to get wrong.
+    /// The request line and any header that would explain repeated fetches, recorded rather
+    /// than parsed.
     #[must_use]
     pub fn asked(&self) -> Vec<String> {
         self.asked
@@ -169,22 +128,16 @@ impl Handover {
 impl Drop for Handover {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::Relaxed);
-        // The thread is blocked in accept and will not look at the flag until something
-        // connects. Knocking is how it is woken to notice - the same trick the fake target
-        // uses, and for the same reason.
+        // The thread is blocked in accept and sees the flag only when something connects.
         let _ = TcpStream::connect(self.address);
     }
 }
 
 /// What part of the file a request asked for.
 ///
-/// **Measured, not assumed.** A target fetching a package sends
-/// `Range: bytes=0-65535`, then `bytes=65536-524287`, in sixty-four kilobyte steps, from
-/// `libhttp/12.40 (PlayStation 5)`.
-///
-/// Answering all of those with the whole file and a `200` made it ask for the first chunk
-/// **eight times** before continuing - so this is not only nine times the traffic, it is a
-/// client retrying because it did not get what it asked for.
+/// Measured on a target: its package fetcher (`libhttp/12.40`) sends `Range: bytes=0-65535`,
+/// then `bytes=65536-524287`, and so on. Answered with the whole file and a `200`, it retries
+/// the first chunk repeatedly.
 fn range_in(request: &str, len: usize) -> Option<(usize, usize)> {
     let at = request.to_ascii_lowercase().find("range: bytes=")?;
     let spec = request.get(at + "range: bytes=".len()..)?;
@@ -192,26 +145,23 @@ fn range_in(request: &str, len: usize) -> Option<(usize, usize)> {
     let (from, to) = spec.split_once('-')?;
 
     let from: usize = from.trim().parse().ok()?;
-    // An open-ended range - `bytes=N-` - means the rest of the file.
+    // An open-ended range, `bytes=N-`, means the rest of the file.
     let to: usize = match to.trim() {
         "" => len.saturating_sub(1),
         end => end.parse().ok()?,
     };
-    // A range past the end is clamped rather than refused: the last chunk of a file is
-    // routinely asked for by a client that rounded up.
+    // Clamped rather than refused: clients round the last chunk up past the end.
     let to = to.min(len.saturating_sub(1));
     (from <= to && from < len).then_some((from, to))
 }
 
 /// Reads the request, keeps a note of it, and sends what it asked for.
 ///
-/// **The request is read rather than not read at all**: a client that has not finished sending
-/// when the reply arrives can see a reset instead of the response, and the symptom is a fetch
-/// that fails for no reason anybody can see.
+/// The request is read in full because a client still sending when the reply arrives can see
+/// a reset instead of the response.
 ///
-/// The only thing acted on is the range. **The path is still ignored entirely** - there is one
-/// file and every request gets it, which is why no path can be asked for that this could get
-/// wrong. A range is an offset into that one file and cannot name another.
+/// Only the range is acted on. The path is ignored: a range is an offset into the one file and
+/// cannot name another.
 fn hand_over(mut stream: TcpStream, bytes: &[u8]) -> std::io::Result<String> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
 
@@ -271,12 +221,11 @@ fn hand_over(mut stream: TcpStream, bytes: &[u8]) -> std::io::Result<String> {
 
 /// Which of this machine's addresses faces the target.
 ///
-/// Found by opening a connection to it and asking the socket where it went out from. A machine
-/// with a virtual adapter, a container bridge and a wireless card has several addresses and
-/// most of them the target cannot route to; **this is the only one it has demonstrably
-/// reached**, because the connection proving it is in hand.
+/// Found by connecting to it and asking the socket which local address it went out from. A
+/// machine with virtual adapters and bridges has several addresses, most unroutable from the
+/// target; this one is demonstrably reachable.
 fn facing(target: &str) -> Result<std::net::IpAddr, String> {
-    // The file service, because it is the one a target running any of this will have.
+    // The file service, which every target this program talks to runs.
     let to = if target.contains(':') {
         target.to_owned()
     } else {
@@ -329,10 +278,7 @@ mod tests {
         assert_eq!(url_name(Path::new("/a/b/thing.pkg")), "thing.pkg");
     }
 
-    /// **Every request gets the same bytes**, whatever it asks for.
-    ///
-    /// That is what makes path traversal impossible here rather than merely guarded against:
-    /// there is no path handling to get wrong.
+    /// Every request gets the same file whatever path it names, so no path can escape.
     #[test]
     fn whatever_is_asked_for_the_one_file_comes_back() {
         let file = std::env::temp_dir().join("prosperous-handover.bin");
@@ -370,10 +316,7 @@ mod tests {
         let _ = std::fs::remove_file(&file);
     }
 
-    /// **Nothing is listening once it is dropped.**
-    ///
-    /// A handover that outlived its install would be a file quietly available on the network
-    /// for as long as the window stayed open.
+    /// Nothing is listening once the handover is dropped.
     #[test]
     fn it_stops_when_it_is_let_go() {
         let file = std::env::temp_dir().join("prosperous-handover-stop.bin");
@@ -408,8 +351,7 @@ mod tests {
         let _ = std::fs::remove_file(&file);
     }
 
-    /// A target that cannot be reached says so, rather than binding something nothing can
-    /// fetch from.
+    /// An unreachable target is an error, not a listener nothing can fetch from.
     #[test]
     fn a_target_that_cannot_be_reached_is_not_served_to() {
         let file = std::env::temp_dir().join("prosperous-handover-nowhere.bin");
@@ -422,7 +364,7 @@ mod tests {
         let _ = std::fs::remove_file(&file);
     }
 
-    /// **The range a target actually sends**, read back.
+    /// The ranges a target sends are parsed.
     #[test]
     fn the_range_a_target_asks_for_is_understood() {
         let asked = "get /thing.pkg http/1.1\nrange: bytes=0-65535\nuser-agent: libhttp/12.40\n";
@@ -441,9 +383,7 @@ mod tests {
         );
     }
 
-    /// **A range past the end is clamped, not refused.** The last chunk of a file is routinely
-    /// asked for by a client that rounded up, and refusing it would fail the final fetch of
-    /// every transfer.
+    /// A range past the end is clamped, not refused.
     #[test]
     fn a_range_running_past_the_end_is_trimmed_to_it() {
         assert_eq!(
@@ -452,7 +392,7 @@ mod tests {
         );
     }
 
-    /// A request with no range at all gets the whole file, which is what the `None` says.
+    /// A request with no range asks for the whole file.
     #[test]
     fn a_request_without_a_range_asks_for_everything() {
         assert_eq!(super::range_in("get / http/1.1\nhost: x\n", 1000), None);

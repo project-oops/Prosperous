@@ -1,26 +1,12 @@
 //! Where payloads come from.
 //!
-//! # Nothing is shipped, only described
+//! This project distributes no payload binaries, only descriptions: redistributing a binary
+//! obliges offering its source, and a moved URL is a text edit rather than a release.
 //!
-//! This project distributes **no payload binaries**. Three reasons, in order of weight: the
-//! payloads are licensed such that redistributing a binary obliges you to offer its source
-//! and pointing at the upstream obliges nothing; URLs rot, and a rotted URL should be a text
-//! edit rather than a release; and obSCEne's own build already refuses to track a `.elf`, a
-//! habit worth inheriting rather than arguing with.
-//!
-//! # The schema is copied rather than invented
-//!
-//! The payload manager on the target keeps a repository description with exactly the right
-//! fields already. Copying it costs nothing and buys something real: **a target that is
-//! already configured is already described**, so its own repository can be read as a source
-//! instead of being typed in again.
-//!
-//! # The shape of that file has not been measured, and this does not pretend otherwise
-//!
-//! The field names are known. Whether the document is a list, or an object keyed by name,
-//! or a wrapper around either, is not. So this recognises the shapes that are plausible and
-//! **names what it found** when it recognises none - rather than assuming one, and reporting
-//! an empty repository for a file that was full.
+//! The schema is the target payload manager's own repository format, so a configured
+//! target's repository reads as a source. A list, an object keyed by name, and a wrapper
+//! around a list are all recognised; any other document is refused with a description of what
+//! it is, never read as empty.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -32,10 +18,8 @@ use crate::checksum::{Checksum, Unreadable};
 
 /// One payload, described.
 ///
-/// Every field beyond a name is optional because this is somebody else's document and a
-/// missing description is not a reason to refuse the entry. The one field whose absence
-/// *does* matter is the checksum, and that is refused where it is used rather than here -
-/// see [`Payload::checksum`].
+/// Every field beyond a name is optional because the document belongs to another tool. A
+/// missing checksum is refused where it is used; see [`Payload::checksum`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Payload {
     /// What the payload is called.
@@ -63,9 +47,8 @@ pub struct Payload {
     pub last_update: Option<String>,
     /// The digest the file should have, exactly as the document states it.
     ///
-    /// Kept as text rather than parsed on the way in, so a manifest carrying a digest this
-    /// cannot check still **loads** and still **reports** - and fails at the point somebody
-    /// tries to trust it, where the message can say what to do.
+    /// Kept as text, so a manifest with a digest this cannot check still loads and reports,
+    /// and fails only where the digest is trusted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,
     /// How the publisher groups it.
@@ -82,47 +65,22 @@ pub struct Payload {
     pub asset_pattern: Option<String>,
     /// The port it listens on once it is running, if it listens.
     ///
-    /// # This field is ours, and the rest are not
-    ///
-    /// Everything above was copied from the file a payload manager keeps on the target.
-    /// That file is **one tool's cache**, not a standard: this project has seen exactly one
-    /// instance of it and has no evidence of a consensus behind it. Copying it bought
-    /// interoperability with the thing that exists, which was worth more than a format of
-    /// our own.
-    ///
-    /// This one is an addition, and it buys something nothing else can: **presence.** Whether
-    /// a payload is running is answered by connecting to a port, so without one the answer
-    /// is *nothing here can tell* - which is honest and is not useful. Five services have
-    /// ports this project measured; every other entry is unknowable until something says.
-    ///
-    /// A description that mentions a port in prose is not this. Reading a number out of
-    /// somebody's sentence is guessing at meaning, and a wrong guess here reports one
-    /// payload's state as another's.
-    ///
-    /// **It survives a merge with a target's repository**, because that repository does not
-    /// carry the field and an absence is not a correction. See [`Manifest::merged_with`].
+    /// This project's addition to the payload manager's format: presence is measured by
+    /// connecting to a port, so without one it is unknown. A port mentioned in a description
+    /// is never parsed. It survives a merge with a target's repository, which does not carry
+    /// it; see [`Manifest::merged_with`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
     /// What becomes possible once this answers.
     ///
-    /// **Only meaningful beside [`Self::port`]**, since without one there is nothing to be
-    /// answering. It is the third column of the check: a reader told *8082 is open* has a
-    /// worse tool than one told *saves can be decrypted*.
-    ///
-    /// Absent, a declared service still appears, described as itself. That is worse prose and
-    /// the same fact, which is the right way round for an optional field.
+    /// Only meaningful beside [`Self::port`]. It is the third column of the check; absent, a
+    /// declared service is described by its name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unlocks: Option<String>,
     /// Whether there is no workflow at all without this.
     ///
-    /// **This is the field that can block a check**, so it defaults to absent rather than to
-    /// `false`: declaring something required is a claim about somebody else's workflow, and
-    /// the only person who can make it is the one editing the list.
-    ///
-    /// A required payload that is missing blocks exactly as a compiled-in one does. Before
-    /// this existed, a declared payload was probed and its result was kept somewhere the
-    /// verdict never looked - so the tool could know a required thing was down and still
-    /// report *ready*.
+    /// A missing required payload blocks a check exactly as a compiled-in service does. Absent
+    /// rather than `false` by default: only the person editing the list can declare it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
 }
@@ -133,9 +91,8 @@ impl Payload {
     /// # Errors
     ///
     /// [`Unreadable::Absent`] when the entry states none, and the other variants when it
-    /// states one this cannot check. **Both are errors**, because a payload that is about to
-    /// be run with kernel-adjacent privileges and cannot be checked is exactly the case a
-    /// silent pass would hide.
+    /// states one this cannot check. Both are errors: a payload runs with elevated privileges
+    /// on the target and must not pass unchecked.
     pub fn checksum(&self) -> Result<Checksum, Unreadable> {
         match self.checksum.as_deref() {
             None => Err(Unreadable::Absent),
@@ -145,11 +102,9 @@ impl Payload {
 
     /// Takes the facts that change from another description of the same payload.
     ///
-    /// Fields the other side does not state are left alone: **an absence is not a
-    /// correction**, and somebody's hand-written description should survive a repository
-    /// that carries none.
+    /// Fields the other side does not state are left alone: an absence is not a correction.
     fn take_facts_from(&mut self, other: &Self) {
-        // Ordered as they are in the file, so a reader can check none is missed.
+        // In field order, so a missing one is easy to spot.
         if other.filename.is_some() {
             self.filename.clone_from(&other.filename);
         }
@@ -189,8 +144,6 @@ impl Payload {
         if other.port.is_some() {
             self.port = other.port;
         }
-        // The same rule as `port`, and for the same reason: a target's own repository does not
-        // carry these, so its silence about them is not a correction.
         if other.unlocks.is_some() {
             self.unlocks.clone_from(&other.unlocks);
         }
@@ -201,8 +154,7 @@ impl Payload {
 
     /// This entry as a service to be probed, when it says enough to be one.
     ///
-    /// **A port is the whole requirement.** Without one there is nothing to connect to, and
-    /// presence is unanswerable - which is honest and is not a service.
+    /// A port is the whole requirement: without one there is nothing to connect to.
     #[must_use]
     pub fn as_service(&self) -> Option<pros_link::service::Service> {
         let port = self.port?;
@@ -213,9 +165,8 @@ impl Payload {
                 .clone()
                 .unwrap_or_else(|| format!("use {}", self.name)),
             self.required.unwrap_or(false),
-            // **Never from here.** Whether a service is a way back into a target is this
-            // program's judgement about its own recovery, not a fact a payload repository has
-            // an opinion about - so it is stated in `catalogue`, in a file this project owns.
+            // Recovery roles are this program's judgement, stated in `catalogue`, never taken
+            // from a payload repository.
             false,
             false,
         ))
@@ -223,8 +174,7 @@ impl Payload {
 
     /// Whether this entry can be verified at all, without saying anything about a file.
     ///
-    /// For reporting on a manifest as a whole - which entries are usable and which need
-    /// somebody to find a digest - rather than for deciding whether to send anything.
+    /// For reporting on a manifest as a whole, not for deciding whether to send anything.
     #[must_use]
     pub fn is_verifiable(&self) -> bool {
         self.checksum().is_ok()
@@ -233,31 +183,17 @@ impl Payload {
 
 /// Where the payload manager keeps its repository.
 ///
-/// **Measured against a target on 2026-08-26**, along with what is in it: a plain JSON
-/// array of 25 entries carrying `name`, `filename`, `url`, `source`, `source_direct`,
-/// `version`, `last_update`, `checksum`, `category` and `description` - the schema this
-/// project copied rather than invented, confirmed to have been worth copying.
+/// Measured on a target: a plain JSON array of entries carrying `name`, `filename`, `url`,
+/// `source`, `source_direct`, `version`, `last_update`, `checksum`, `category` and
+/// `description`. Its digests are 64 bare hexadecimal characters, SHA-256.
 ///
-/// Its digests are **64 bare hexadecimal characters**, which is SHA-256, which is the one
-/// algorithm this project verifies. That was an open question until a target answered it.
-///
-/// It is a constant rather than a parameter for the same reason the boot list's path is:
-/// somebody looked. (D013)
+/// A constant rather than a parameter because it was measured. (D013)
 pub const TARGET_REPOSITORY: &str = "/data/pldmgr/repository_cache.json";
 
 /// The payloads this project expects a target to be running.
 ///
-/// # What it claims, and what it deliberately does not
-///
-/// Names, urls and digests, read off a target's own payload-manager repository.
-///
-/// **This used to state neither url nor digest**, on the grounds that nothing here had
-/// measured them. That was right until a target handed the measurements over; keeping the
-/// stub afterwards would have been a different dishonesty - pretending not to know something
-/// that had been checked end to end.
-///
-/// Equivalent to `Tracked::Payloads.shipped()`, kept because it is the older name and reads
-/// better at call sites that only ever mean payloads.
+/// Names, urls and digests, read off a target's own payload-manager repository. Equivalent
+/// to `Tracked::Payloads.shipped()`, for call sites that only mean payloads.
 #[must_use]
 pub fn recommended() -> Manifest {
     Tracked::Payloads.shipped()
@@ -265,32 +201,16 @@ pub fn recommended() -> Manifest {
 
 /// A kind of thing this project can track, fetch, verify and send.
 ///
-/// # One mechanism, five lists
+/// Every kind shares one mechanism (describe, fetch, check the digest, keep, send); what a
+/// list may contain differs per kind:
 ///
-/// Describe, fetch, check the digest, keep, send: none of it cares what kind of thing it is
-/// moving, so every kind gets all of it for nothing. What differs is what an honest list can
-/// contain, and that is decided per kind rather than by whether anybody got round to it:
-///
-/// - **Payloads** are published as files by the people who write them, with digests. The
-///   shipped list came off a target's own repository.
-/// - **Packages** and **titles** are the same artifact - zip bundles launched through the
-///   homebrew server, installed under `/data/homebrew`. The split between them is this
-///   project's convenience, not an upstream distinction, and nothing depends on it being
-///   right. `.pkg` files are a different thing, they do exist, and none are listed here
-///   because no public source of them with digests was found - which is a gap in what has
-///   been measured, not a claim that the format is unused.
-/// - **Titles carries no commercial games and never will.** A list of urls for commercial
-///   titles is a list of pirated games. Open-source engines, published by their own authors,
-///   are a different thing and are listed.
-/// - **Cheats** are published as files too, pinned to a commit so their digests cannot go
-///   stale under them.
-/// - **Saves ship an empty list on purpose.** On this platform a save is signed for the
-///   target that wrote it, so a downloaded save is a file the target rejects - a list of
-///   them would be a list of things that do not work, each entry looking exactly like one
-///   that does. The section still has two sides to copy between, which is the whole job.
-///
-/// Every kind has a file so that the format is documented and an empty one can say why it is
-/// empty rather than looking broken.
+/// - Payloads are published as files by their authors, with digests.
+/// - Packages and titles are both zip bundles installed under `/data/homebrew`; the split is
+///   this project's convenience.
+/// - Titles lists open-source engines published by their own authors, never commercial games.
+/// - Cheats are pinned to a commit so their digests cannot go stale.
+/// - Saves ship empty: a save is signed for the target that wrote it, so a downloaded one is
+///   rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tracked {
     /// Things a loader runs.
@@ -328,13 +248,11 @@ impl Tracked {
 
     /// The list this project ships for this kind.
     ///
-    /// **Compiled in so a fresh install is useful before it has seen a target**, and written
-    /// out to disk on first use so a correction needs a text editor rather than a rebuild.
+    /// Compiled in so a fresh install is useful before it has seen a target.
     ///
     /// # Panics
     ///
-    /// Never in a build that passed its tests: a shipped list that does not parse is caught by
-    /// `every_shipped_list_reads`, not discovered by somebody at runtime.
+    /// Never in a build that passed its tests: `every_shipped_list_reads` parses every list.
     #[must_use]
     pub fn shipped(self) -> Manifest {
         let text = match self {
@@ -358,16 +276,11 @@ impl Tracked {
 
     /// The list on disk, or the one this project ships.
     ///
-    /// **A machine that has never run this still gets an answer.** The alternative - an empty
-    /// section until somebody finds a list - tells a newcomer to already know what they came
-    /// here to find out.
-    ///
-    /// A file on disk always wins, including an empty one somebody emptied on purpose.
+    /// A file on disk is merged with the shipped list and written back when that changes it.
     ///
     /// # Errors
     ///
-    /// Only when a file exists and cannot be read as a manifest - which is worth reporting,
-    /// because somebody wrote it.
+    /// Only when a file exists and cannot be read as a manifest.
     pub fn read(self) -> Result<Manifest, NotAManifest> {
         match self.path().filter(|path| path.exists()) {
             Some(path) => {
@@ -387,8 +300,7 @@ impl Tracked {
 
 /// Where this project keeps its own manifest when nobody names one.
 ///
-/// Beside the registry, for the same reason the registry is not under the per-user
-/// application data directory: a file somebody cannot find is worse than no file.
+/// Beside the registry, where a person can find it.
 #[must_use]
 pub fn default_path() -> Option<std::path::PathBuf> {
     let mut path = crate::target::directory()?;
@@ -398,22 +310,9 @@ pub fn default_path() -> Option<std::path::PathBuf> {
 
 /// Where a fetched payload is kept before it is sent.
 ///
-/// **Separate from the manifest on purpose.** The manifest is a description and is worth
-/// editing by hand; this holds binaries, which are not, and which this project never ships.
-///
-/// # Why this is the data directory and not the cache one
-///
-/// It was the cache directory, on the reasoning that anything here carries a url and a digest
-/// and can therefore be fetched again - which is a good rule and was the wrong answer, because
-/// **the payloads screen never agreed to it**. Every other section takes its local folder from
-/// `data_root()/<section>`, and the payloads section is a section: the listing behind its
-/// `run`, `send` and `delete here` buttons was reading `data_root()/payloads` while downloads,
-/// the size column, and every *is it here already* question were reading the cache one.
-///
-/// So a payload fetched through this program landed in a directory the same screen did not
-/// list, and the button that would have sent it said it was not on this machine. One name, two
-/// directories, and the half of the screen that measured disagreeing with the half that acted -
-/// which is this project's own defect, in the folder its files live in.
+/// Separate from the manifest, which is a hand-editable description; this holds binaries.
+/// It is the data directory's `payloads` folder, the same `<section>` folder every other
+/// section uses, so fetching, listing and sending all see one directory.
 #[must_use]
 pub fn staging() -> Option<std::path::PathBuf> {
     let mut path = crate::target::directory()?;
@@ -440,10 +339,7 @@ impl Manifest {
         &self.payloads
     }
 
-    /// One entry by name.
-    /// **Case-insensitively**, because a repository writing `nanoDNS` and a list writing
-    /// `nanodns` are describing one payload. Matching exactly produced both, side by side,
-    /// which is the duplication this project was asked to stop having.
+    /// One entry by name, case-insensitively: `nanoDNS` and `nanodns` are one payload.
     #[must_use]
     pub fn find(&self, name: &str) -> Option<&Payload> {
         self.payloads
@@ -453,9 +349,7 @@ impl Manifest {
 
     /// Replaces one description, or adds it when the list has never heard of it.
     ///
-    /// **Matched by name, case-insensitively**, the same as everywhere else these are
-    /// compared. A list holding `elfldr` and an update naming `ELFLDR` are one payload, and
-    /// keeping both would leave two entries fighting over one filename.
+    /// Matched by name, case-insensitively, as everywhere else these are compared.
     pub fn absorb(&mut self, one: Payload) {
         match self
             .payloads
@@ -469,9 +363,7 @@ impl Manifest {
 
     /// Entries whose checksum cannot be used, with the reason.
     ///
-    /// **The point of having this at all.** A manifest reports on itself, so a person can
-    /// see which entries are trustworthy before a workflow discovers it one payload at a
-    /// time, half way through a job.
+    /// So a person sees which entries are trustworthy before a workflow needs them.
     #[must_use]
     pub fn unverifiable(&self) -> Vec<(&str, Unreadable)> {
         self.payloads
@@ -487,10 +379,8 @@ impl Manifest {
     ///
     /// # Errors
     ///
-    /// [`Unreadable`] describing what the document turned out to be, when it is not a shape
-    /// this recognises.
-    ///
-    /// [`Unreadable`]: NotAManifest
+    /// [`NotAManifest`] describing what the document turned out to be, when it is not a
+    /// shape this recognises.
     pub fn from_json(text: &str) -> Result<Self, NotAManifest> {
         let document: serde_json::Value =
             serde_json::from_str(text).map_err(|error| NotAManifest::NotJson {
@@ -517,30 +407,20 @@ impl Manifest {
     ///
     /// # Errors
     ///
-    /// Propagates a serialisation failure, which for this shape means somebody has put
-    /// something unrepresentable in a field.
+    /// Propagates a serialisation failure.
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(&self.payloads)
     }
 
     /// Takes everything another manifest knows that this one does not.
     ///
-    /// # Why merging rather than replacing
+    /// A target's repository is curated; a local file may have hand edits. Entries are
+    /// matched by name, case-insensitively:
     ///
-    /// A target's repository is curated and updated; a local file may have been edited by
-    /// hand. Replacing loses the edits, and keeping both means two lists that disagree and a
-    /// person choosing between them every time - which is how nine entries becoming
-    /// twenty-five reads as an explosion rather than as **finding out about sixteen more**.
-    ///
-    /// So: one list. Entries are matched by name.
-    ///
-    /// - **The other side wins for facts that change** - url, digest, version, when it was
-    ///   updated, category. Those are what a repository is for, and a stale digest is worse
-    ///   than no digest because it fails a download that was fine.
-    /// - **This side keeps anything the other does not say.** A description somebody wrote
-    ///   is not overwritten by an absence.
-    /// - Entries only one side has are kept, both ways. Nothing is dropped for being
-    ///   unfamiliar.
+    /// - The other side wins for every field it states (url, digest, version, category...);
+    ///   a stale digest fails a good download.
+    /// - This side keeps anything the other does not state.
+    /// - Entries only one side has are kept, both ways.
     #[must_use]
     pub fn merged_with(&self, other: &Self) -> Self {
         let mut payloads = self.payloads.clone();
@@ -551,8 +431,7 @@ impl Manifest {
                 .find(|existing| existing.name.eq_ignore_ascii_case(&incoming.name))
             {
                 Some(existing) => {
-                    // The repository's spelling wins, because it is the one every other
-                    // tool reading that file shows and the one its own urls are built from.
+                    // The repository's spelling wins: every other tool reading it shows that.
                     existing.name.clone_from(&incoming.name);
                     existing.take_facts_from(incoming);
                 }
@@ -565,8 +444,7 @@ impl Manifest {
 
     /// What changed between two manifests, for saying so out loud.
     ///
-    /// **A merge that silently altered a file is a merge nobody can review.** Returns how
-    /// many were added and how many were filled in.
+    /// Returns how many entries were added and how many changed, so a merge can be reviewed.
     #[must_use]
     pub fn difference_from(&self, before: &Self) -> (usize, usize) {
         let added = self
@@ -590,8 +468,7 @@ impl Manifest {
     ///
     /// # Errors
     ///
-    /// Propagates the write, and reports a machine with no home directory - at which point
-    /// there is nowhere for any of this to live.
+    /// Propagates the write, and reports a machine with no home directory.
     pub fn save(&self) -> Result<std::path::PathBuf, String> {
         let path = default_path().ok_or("no home directory, so there is nowhere to keep it")?;
         if let Some(parent) = path.parent() {
@@ -622,9 +499,7 @@ impl Manifest {
             }
         }
 
-        // An object keyed by name, where each value is an entry. Recognised by its values
-        // rather than asserted: a single non-entry value means this is a different document
-        // that happens to be an object, and guessing would report it as empty.
+        // An object keyed by name, recognised only when every value is an entry.
         let named: BTreeMap<&String, &serde_json::Value> = fields.iter().collect();
         if !named.is_empty()
             && named.values().all(|value| {
@@ -635,12 +510,8 @@ impl Manifest {
         {
             let mut payloads = Vec::with_capacity(named.len());
             for (name, value) in named {
-                // **The key is the name, and it is supplied before the entry is read.**
-                //
-                // The alternative - making the name optional and filling it in afterwards -
-                // would also let a *list* entry through with no name at all, and a payload
-                // that cannot be named cannot be asked for. Strict where it matters, and
-                // this shape simply carries the name somewhere else.
+                // The key supplies the name before the entry is read, so `name` stays
+                // required and a list entry without one is still refused.
                 let mut entry = value.clone();
                 if let Some(fields) = entry.as_object_mut() {
                     fields
@@ -704,9 +575,7 @@ pub enum NotAManifest {
     },
     /// The document is JSON, and is not a manifest.
     ///
-    /// **Names what it found.** The failure this avoids is reporting an empty repository for
-    /// a file that was full but shaped differently, which looks like a target with no
-    /// payloads configured rather than like a tool that did not understand the file.
+    /// Names what it found, rather than reading an unrecognised shape as an empty repository.
     Unexpected {
         /// What it turned out to be.
         found: String,
@@ -753,7 +622,7 @@ mod tests {
         }
     ]"#;
 
-    /// The shape this project writes.
+    /// A list of entries, the shape this project writes, reads.
     #[test]
     fn a_list_of_entries_reads() {
         let manifest = Manifest::from_json(ONE).expect("a list is a manifest");
@@ -763,7 +632,7 @@ mod tests {
         assert!(found.is_verifiable());
     }
 
-    /// A file keyed by name, which is a plausible shape for the target's own repository.
+    /// An object keyed by name reads, taking names from the keys.
     #[test]
     fn an_object_keyed_by_name_reads_and_takes_its_names_from_the_keys() {
         let text = r#"{
@@ -779,8 +648,7 @@ mod tests {
         );
     }
 
-    /// A payload that cannot be named cannot be asked for, so a list entry without one is
-    /// refused rather than stored with an empty name.
+    /// A list entry with no name is refused.
     #[test]
     fn a_list_entry_with_no_name_is_refused() {
         assert!(matches!(
@@ -789,7 +657,7 @@ mod tests {
         ));
     }
 
-    /// A wrapper around a list.
+    /// A wrapper around a list reads.
     #[test]
     fn a_wrapped_list_reads() {
         let text = format!(r#"{{ "version": 2, "payloads": {ONE} }}"#);
@@ -797,10 +665,7 @@ mod tests {
         assert_eq!(manifest.payloads().len(), 1);
     }
 
-    /// Something else is named, not reported as empty.
-    ///
-    /// The failure this pins is the quiet one: a full file in an unrecognised shape read as
-    /// a target with nothing configured.
+    /// An unrecognised document is named, never read as empty.
     #[test]
     fn a_document_that_is_not_a_manifest_says_so_rather_than_reading_as_empty() {
         let error = Manifest::from_json(r#"{"status":"ok","count":25}"#)
@@ -816,8 +681,7 @@ mod tests {
         }
     }
 
-    /// Unknown fields are kept in the sense that they do not stop the read - the file
-    /// belongs to another tool and is allowed to carry more than this knows about.
+    /// Unknown fields do not stop the read.
     #[test]
     fn an_entry_with_extra_fields_still_reads() {
         let text = r#"[{ "name": "x", "url": "u", "something_new": 42 }]"#;
@@ -830,8 +694,7 @@ mod tests {
         );
     }
 
-    /// A manifest reports on its own trustworthiness before a workflow discovers it one
-    /// payload at a time, half way through a job.
+    /// A manifest names its entries that cannot be verified.
     #[test]
     fn a_manifest_says_which_entries_cannot_be_verified() {
         let text = r#"[
@@ -849,10 +712,7 @@ mod tests {
         );
     }
 
-    /// The list this project ships reads, and covers every service a check asks about.
-    ///
-    /// A recommended set that omitted one of them would let a target pass a check while
-    /// the list said nothing was missing.
+    /// The shipped list covers every service a check asks about.
     #[test]
     fn the_built_in_list_covers_every_service() {
         let manifest = super::recommended();
@@ -865,17 +725,7 @@ mod tests {
         }
     }
 
-    /// **Every entry can be fetched and every entry can be checked.**
-    ///
-    /// This inverts what it used to assert. The list shipped here once carried no url and no
-    /// checksum, on the grounds that this project had measured neither and a list stating
-    /// them would be asserting facts nobody established. That was right at the time and is
-    /// no longer true: the entries were read off a target's own repository, and one of them
-    /// was fetched and verified end to end.
-    ///
-    /// So the guarantee is now the useful one. A url with no digest is the dangerous
-    /// combination - it invites a download that cannot be checked - and this makes shipping
-    /// one impossible rather than merely discouraged.
+    /// Every shipped payload has a url and a checkable digest.
     #[test]
     fn every_entry_shipped_can_be_fetched_and_verified() {
         for payload in super::recommended().payloads() {
@@ -892,10 +742,7 @@ mod tests {
         }
     }
 
-    /// Every entry says what it is for and what kind of thing it is.
-    ///
-    /// A list of bare names is a worse answer than the reader already had, and an entry with
-    /// no category falls into the group nobody is looking for.
+    /// Every shipped payload has a description and a category.
     #[test]
     fn the_built_in_list_says_what_each_one_is() {
         for payload in super::recommended().payloads() {
@@ -918,11 +765,7 @@ mod tests {
         }
     }
 
-    /// **The list is big enough to be the answer rather than a sample of one.**
-    ///
-    /// It shipped with nine entries and a note saying to read a target for the rest, which
-    /// made a fresh install useless until somebody had target. Pinning a floor stops that
-    /// quietly coming back if the file is ever regenerated from something thinner.
+    /// The shipped payload list is the target repository's whole list, all verifiable.
     #[test]
     fn the_built_in_list_is_the_whole_list() {
         let manifest = super::recommended();
@@ -938,7 +781,7 @@ mod tests {
         );
     }
 
-    /// **One list, not two.** The target knows more; this takes what it knows.
+    /// A merge fills in what the target knows and keeps local descriptions.
     #[test]
     fn merging_fills_in_what_the_target_knows() {
         let mine = Manifest::from_json(r#"[{ "name": "elfldr", "description": "my own note" }]"#)
@@ -965,12 +808,7 @@ mod tests {
         );
     }
 
-    /// **Two spellings of one name are one payload.**
-    ///
-    /// A real repository writes `nanoDNS` and this project's own list wrote `nanodns`.
-    /// Matching exactly kept both, which is precisely the duplication a merge is for
-    /// avoiding - and the repository's spelling is the one that wins, because it is what
-    /// every other tool reading that file shows.
+    /// Names differing only in case merge into one entry with the repository's spelling.
     #[test]
     fn a_difference_of_case_is_not_a_different_payload() {
         let mine = Manifest::from_json(r#"[{ "name": "nanodns" }]"#).expect("reads");
@@ -983,11 +821,7 @@ mod tests {
         assert_eq!(merged.payloads()[0].version.as_deref(), Some("0.4"));
     }
 
-    /// **A field this project added survives a merge with a repository that lacks it.**
-    ///
-    /// The target's file has no `port`. If a merge treated its absence as a correction,
-    /// every port anybody wrote down would be erased by the next read - and the erasing
-    /// would look exactly like the repository being authoritative.
+    /// A `port` survives a merge with a repository that does not carry one.
     #[test]
     fn a_field_the_target_does_not_carry_is_not_erased_by_it() {
         let mine = Manifest::from_json(r#"[{ "name": "websrv", "port": 8080 }]"#).expect("reads");
@@ -1010,8 +844,7 @@ mod tests {
         );
     }
 
-    /// A merge says what it did, because one that silently rewrote a file is one nobody can
-    /// review.
+    /// A merge reports how many entries it added and changed.
     #[test]
     fn a_merge_says_how_much_it_changed() {
         let mine = Manifest::from_json(r#"[{ "name": "elfldr" }]"#).expect("reads");
@@ -1048,14 +881,10 @@ mod tests {
         }
     }
 
-    /// **A kind nobody has described is empty, not broken.**
-    ///
-    /// This project ships a payload list because a target handed one over. It ships none
-    /// for the rest, and an empty section somebody can fill in is what that honestly is.
+    /// Reading a kind whose file is absent succeeds.
     #[test]
     fn a_kind_with_no_list_yet_reads_as_empty() {
         use super::Tracked;
-        // Whatever is on this machine, reading must not fail for a file that is not there.
         for kind in [Tracked::Packages, Tracked::Cheats] {
             let read = kind.read();
             assert!(read.is_ok(), "{kind:?} failed rather than being empty");
@@ -1074,15 +903,7 @@ mod tests {
         assert_eq!(Manifest::from_json(&text).expect("reads back"), manifest);
     }
 
-    /// **Every field this reads is described in the schema, and nothing extra is.**
-    ///
-    /// A schema is a document, and documents drift away from the code that they describe
-    /// without anything going red. This makes that go red: add a field to [`Payload`] and
-    /// forget the schema, or leave a field in the schema after removing it here, and the
-    /// build says so.
-    ///
-    /// The check is by serialisation rather than by a list written out here, because a list
-    /// written out here would be a third thing to keep in step.
+    /// The schema describes exactly the fields [`Payload`] serialises.
     #[test]
     fn the_schema_describes_exactly_the_fields_that_are_read() {
         let everything = Payload {
@@ -1128,11 +949,7 @@ mod tests {
         );
     }
 
-    /// **The ports in the shipped list agree with the table this project probes.**
-    ///
-    /// Two statements of the same fact now exist - the compiled table and an editable file -
-    /// and two statements of one fact disagree eventually. This is the one that notices,
-    /// without needing a target to notice it.
+    /// The ports in the shipped list agree with the compiled service table.
     #[test]
     fn the_shipped_ports_agree_with_the_services_this_project_probes() {
         for payload in super::recommended().payloads() {
@@ -1151,8 +968,7 @@ mod tests {
         }
     }
 
-    /// And the shipped list is an instance of the schema in the most basic sense: every entry
-    /// carries the one field the schema requires.
+    /// Every shipped entry carries `name`, the schema's only required field.
     #[test]
     fn the_shipped_list_carries_what_the_schema_requires() {
         let text = std::fs::read_to_string(SCHEMA).expect("the schema is where the docs say");
@@ -1168,11 +984,7 @@ mod tests {
         }
     }
 
-    /// **Every list this project ships parses.**
-    ///
-    /// [`Tracked::shipped`] panics on a list that does not read, which is right - a broken
-    /// shipped list is a build fault, not a runtime condition. This is what makes that panic
-    /// unreachable rather than merely documented as unreachable.
+    /// Every shipped list parses, so the panic in [`Tracked::shipped`] is unreachable.
     #[test]
     fn every_shipped_list_reads() {
         for kind in Tracked::ALL {
@@ -1186,10 +998,7 @@ mod tests {
         }
     }
 
-    /// **Nothing ships with a url it cannot check.**
-    ///
-    /// A url with no digest is the one combination that invites an unverifiable download.
-    /// Applied across every kind, so a list added later cannot quietly arrive without them.
+    /// Every shipped entry of every kind has a url and a checkable digest.
     #[test]
     fn every_shipped_entry_can_be_fetched_and_verified() {
         for kind in Tracked::ALL {
@@ -1209,15 +1018,7 @@ mod tests {
         }
     }
 
-    /// **Saves ship empty, and that is the finding rather than an oversight.**
-    ///
-    /// A save on this platform is signed for the target that wrote it, so a downloaded one is
-    /// a file the target rejects. A list of them would be a list of things that do not work,
-    /// each entry indistinguishable from one that does.
-    ///
-    /// Pinned by a test because "we never got round to it" and "this cannot honestly exist"
-    /// look identical in an empty file, and only one of them should survive somebody tidying
-    /// up later.
+    /// The saves list ships empty: a save is signed for the target that wrote it.
     #[test]
     fn saves_ship_empty_on_purpose() {
         assert!(
@@ -1226,11 +1027,7 @@ mod tests {
         );
     }
 
-    /// **Cheat urls are pinned to a commit, never to a branch.**
-    ///
-    /// A branch url serves whatever is there today. The moment anybody pushes, the digest
-    /// recorded here stops matching - and a digest mismatch reads as a corrupted download,
-    /// which sends somebody hunting a network fault that does not exist.
+    /// Cheat urls are pinned to a commit, so their digests cannot go stale.
     #[test]
     fn cheat_urls_cannot_change_under_their_digests() {
         for payload in Tracked::Cheats.shipped().payloads() {
@@ -1249,14 +1046,7 @@ mod tests {
         }
     }
 
-    /// **Every title is published by whoever wrote it.**
-    ///
-    /// Titles is the one list where the wrong entry is not merely unhelpful. A commercial game
-    /// url makes this a piracy index, so the list is open-source engines and nothing else.
-    ///
-    /// This cannot test intent, so it tests the property that follows from it: every entry is
-    /// published from its own project's release, which is not where commercial games come
-    /// from.
+    /// Every title comes from its own open-source project's release, never a commercial game.
     #[test]
     fn every_title_comes_from_its_own_publisher() {
         for payload in Tracked::Titles.shipped().payloads() {
@@ -1269,11 +1059,7 @@ mod tests {
         }
     }
 
-    /// **Every field used by every shipped list is one the schema describes.**
-    ///
-    /// The earlier test compares the schema to the type. This compares it to the data, which
-    /// is a different way to drift: a list can be hand-edited with a field the schema never
-    /// mentioned, and it would be kept and ignored rather than rejected.
+    /// Every field used by every shipped list is one the schema describes.
     #[test]
     fn the_shipped_lists_use_only_fields_the_schema_describes() {
         let text = std::fs::read_to_string(SCHEMA).expect("the schema is where the docs say");

@@ -6,25 +6,14 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# **One dependency, argued for the same way obSCEne argues for each of its own.**
+# One dependency, justified individually because obSCEne keeps a deliberate dependency list.
+# `tracing` gives the transport wire-level diagnostics. In obSCEne's tree it costs four
+# packages and no proc-macro: `attributes` (`#[instrument]`, unused here) stays off because it
+# pulls a proc-macro chain and a second `syn`. A consumer can compile every call out with
+# `tracing/max_level_off`. (D025)
 #
-# This table was empty on the grounds that obSCEne takes this crate and keeps a small,
-# individually-justified dependency list. That reasoning stopped holding: obSCEne also takes
-# `pros-core`, two lines further down its own manifest, which brings `serde`, `serde_json` and
-# `sha2`. The boundary this emptiness protected was already crossed deliberately, so keeping it
-# empty bought a rule rather than a benefit.
-#
-# What it cost: this is the transport, the layer where a wire-level diagnostic is worth most,
-# and it was the only layer that could not produce one.
-#
-# The measured price, in obSCEne's own tree: **four packages and no proc-macro**. `attributes`
-# is off - that is `#[instrument]`, unused here, and it drags in a proc-macro chain and a second
-# copy of `syn`. A consumer that wants none of it can compile every call out statically with
-# `tracing/max_level_off`, so the empty table was never the only way to pay nothing. (D010)
-#
-# Everything *else* that needs a dependency - hashing a downloaded payload, reading a manifest -
-# still lives one layer up in `pros-core`. That split is unchanged and still the reason the
-# layers fall where they do. See docs/DESIGN.md.
+# Anything else that needs a dependency (hashing, manifests) lives in `pros-core`. See
+# docs/DESIGN.md.
 [dependencies]
 tracing = { workspace = true }
 

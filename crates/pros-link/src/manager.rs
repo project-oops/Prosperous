@@ -1,26 +1,13 @@
 //! Reading from the payload manager's own web service.
 //!
-//! # What it is for here
+//! The manager loaded everything else and describes where each payload came from, in the
+//! same shape as this project's manifest, so a configured target can be read as a source.
 //!
-//! The manager is the thing that loaded everything else, and it keeps a description of
-//! where each payload came from. That description is the same shape as the manifest this
-//! project ships, on purpose - so a target that is already configured is already
-//! described, and can be read as a source rather than re-entered by hand.
+//! No endpoint path is a constant here: the caller passes the path it knows, and measured
+//! paths belong in `pros-core` beside the code that interprets the reply.
 //!
-//! # No endpoint paths are written down in this crate
-//!
-//! Not an omission. Which paths that service answers on has not been measured, and a
-//! plausible-looking constant would be a guess wearing the clothes of a fact - the exact
-//! failure the sibling projects grade evidence to avoid. A caller passes the path it knows.
-//! When the paths are measured they belong with the code that interprets what comes back,
-//! one layer up, where the manifest already lives.
-//!
-//! # A deliberately small subset
-//!
-//! One method, no bodies, no redirects, no compression, no security layer. The server is a
-//! small embedded one on the local network, and the client that talks to it should be
-//! readable in a sitting. What it does **not** do quietly is the part that matters: a
-//! response it cannot frame is an error rather than a body with the framing left in it.
+//! The client is a small HTTP/1.1 subset: `GET` only, no redirects, compression or TLS. A
+//! response it cannot frame is an error, never a body with the framing left in.
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::TcpStream;
@@ -40,19 +27,17 @@ const QUIET: Duration = Duration::from_secs(15);
 
 /// The largest response this will assemble.
 ///
-/// A cap rather than trust: the length arrives from the other end, and a client that
-/// believes an arbitrary one has agreed to allocate whatever it is told to. Sixteen
-/// megabytes is far above any description of a payload repository and far below anything
-/// that hurts.
+/// The length comes from the server, so it is capped rather than trusted. Sixteen megabytes
+/// is far above any payload repository description.
 const CEILING: u64 = 16 * 1024 * 1024;
 
 /// Fetches a path as text.
 ///
 /// # Errors
 ///
-/// [`Error::Refused`] when the manager is not answering - which, note, it does even when
-/// the loader beneath it is dead, since it is a separate listener. [`Error::Rejected`] for
-/// any status that is not a success, carrying what the server called it.
+/// [`Error::Refused`] when the manager is not answering; it is a separate listener, so it
+/// can answer while the loader is down. [`Error::Rejected`] for any non-success status,
+/// carrying the server's status line.
 pub fn get(address: &str, path: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&fetch(address, path)?).into_owned())
 }
@@ -79,9 +64,8 @@ pub fn fetch_at(address: &str, port: u16, path: &str) -> Result<Vec<u8>> {
     stream.set_write_timeout(Some(QUIET))?;
     let mut connection = BufReader::new(stream);
 
-    // `Connection: close` asks the server to end the body by ending the conversation,
-    // which is the simplest framing there is. Asking is not the same as being obeyed,
-    // though, so the reply is framed by what it actually says - see `read_body`.
+    // `Connection: close` asks the server to end the body by closing, but the reply is
+    // framed by what its headers say. See `read_body`.
     let request = format!(
         "GET {path} HTTP/1.1\r\nHost: {address}:{port}\r\nUser-Agent: pros\r\nConnection: close\r\nAccept: */*\r\n\r\n"
     );
@@ -109,17 +93,13 @@ enum Framing {
     Length(u64),
     /// A sequence of sized pieces, ending with one of size zero.
     Chunked,
-    /// Until the connection closes.
-    ///
-    /// What `Connection: close` produces, and the only framing available to a server that
-    /// does not know the length before it starts.
+    /// Until the connection closes, as `Connection: close` produces.
     UntilClosed,
 }
 
 /// Reads the status line, returning the code and the line itself.
 ///
-/// The whole line is carried because the number alone is a worse error message than the
-/// number with the server's own words after it.
+/// The line carries the server's own reason phrase for the error message.
 fn read_status(connection: &mut BufReader<TcpStream>, path: &str) -> Result<(u16, String)> {
     let line = read_line(connection, path)?;
     let code = line
@@ -146,9 +126,7 @@ fn read_headers(connection: &mut BufReader<TcpStream>, path: &str) -> Result<Fra
         };
         let name = name.trim().to_ascii_lowercase();
         let value = value.trim();
-        // Chunked wins over a length if both appear, which is what the specification says
-        // and also the safer reading: a stated length that disagrees with the chunk sizes
-        // would truncate.
+        // Chunked wins over a length if both appear, as the specification says.
         if name == "transfer-encoding" && value.to_ascii_lowercase().contains("chunked") {
             framing = Framing::Chunked;
         } else if name == "content-length"
@@ -177,8 +155,7 @@ fn read_body(
                     ),
                 });
             }
-            // Exactly that many, and short counts as a failure. A body that arrives half
-            // finished and is returned anyway is a file that parses to something wrong.
+            // A short body is a failure, never returned as if complete.
             body.resize(usize::try_from(length).unwrap_or(0), 0);
             connection.read_exact(&mut body)?;
         }
@@ -192,13 +169,7 @@ fn read_body(
 
 /// Reassembles a chunked body.
 ///
-/// # Why this is implemented rather than refused
-///
-/// A small server that streams a generated description does not know its length in advance
-/// and has no other way to send it. The alternative to reading it properly is returning the
-/// chunk headers inside the data, where they look like content and corrupt whatever parses
-/// it - success reported for a body that is wrong, which is the defect class this project
-/// keeps meeting.
+/// A server streaming a generated description does not know its length in advance.
 fn read_chunks(
     connection: &mut BufReader<TcpStream>,
     body: &mut Vec<u8>,
@@ -206,8 +177,7 @@ fn read_chunks(
 ) -> Result<()> {
     loop {
         let header = read_line(connection, path)?;
-        // A chunk size may be followed by extensions after a semicolon, which nothing here
-        // needs but which must not be parsed as part of the number.
+        // Chunk extensions after a semicolon are not part of the size.
         let size_field = header.split(';').next().unwrap_or_default().trim();
         let size = u64::from_str_radix(size_field, 16).map_err(|_| Error::Unintelligible {
             doing: format!("fetching {path}"),
@@ -226,7 +196,7 @@ fn read_chunks(
         let start = body.len();
         body.resize(start + usize::try_from(size).unwrap_or(0), 0);
         connection.read_exact(&mut body[start..])?;
-        // Each chunk is followed by its own line ending, which is framing rather than data.
+        // The line ending after each chunk is framing, not data.
         read_line(connection, path)?;
     }
 }

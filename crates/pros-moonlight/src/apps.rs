@@ -1,9 +1,7 @@
 //! The apps a client sees, one per target.
 //!
-//! A Moonlight client picks what to stream from an app list. The bridge maps that onto the thing a
-//! person actually chooses - **which console** - by offering one app per registered target
-//! (`docs/VIDEO.md` part four): choosing the app in the client is choosing the target, and nothing
-//! new is invented for selection.
+//! A client picks what to stream from an app list. The bridge offers one app per registered
+//! target, so choosing an app in the client is choosing the target.
 
 /// One entry in the app list: a target, as the client sees it.
 #[derive(Debug, Clone)]
@@ -73,6 +71,7 @@ fn escape(text: &str) -> String {
 mod tests {
     use super::Apps;
 
+    /// Each title becomes one app, with ids counting from one.
     #[test]
     fn one_app_per_title_numbered_from_one() {
         let apps = Apps::from_titles(["ps5 in the lounge", "ps5 on the bench"]);
@@ -83,6 +82,7 @@ mod tests {
         assert!(xml.contains("<ID>2</ID>"));
     }
 
+    /// A title with XML metacharacters does not break the document.
     #[test]
     fn a_title_with_an_ampersand_is_escaped() {
         let apps = Apps::from_titles(["tom & jerry"]);

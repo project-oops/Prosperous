@@ -1,20 +1,13 @@
 //! Files and the manager's web service, against a target that is not one.
 //!
-//! Same rule as the other test file: each of these is about something awkward rather than
-//! about a happy path. The awkward things here are a transfer that happens on a *second*
-//! connection the server names itself, and a body whose length nobody stated.
+//! The awkward parts here are a transfer on a second connection the server names, and a
+//! body with no stated length.
 
 use pros_link::fake::{Behaviour, Fake, Store};
 use pros_link::files::{Kind, Session};
 use pros_link::{Error, manager};
 
-/// The address in a passive reply is ignored in favour of the one already in hand.
-///
-/// **The single most important test in this file.** The fake claims to live on `10.0.0.1`
-/// while listening on loopback, which is exactly what a small server behind any kind of
-/// translation does. A client that dials what it was told reaches a machine on somebody
-/// else's network, or nothing at all - and it works perfectly on a bench, which is how the
-/// bug survives to the point where it is somebody's evening.
+/// The address in a passive reply (here a claimed `10.0.0.1`) is ignored for the one dialled.
 #[test]
 fn the_address_a_server_claims_is_not_the_one_that_is_dialled() {
     let contents = Store::new(&[("report.txt", b"measured\n")]);
@@ -24,11 +17,7 @@ fn the_address_a_server_claims_is_not_the_one_that_is_dialled() {
     assert_eq!(got, b"measured\n");
 }
 
-/// A server that will not do binary fails the session outright.
-///
-/// Continuing in text mode would rewrite line endings in transit. The transfer still
-/// completes, the byte count still looks right, and the payload at the other end no longer
-/// runs - with nothing anywhere recording that anything was changed.
+/// A server that will not do binary mode fails the session outright.
 #[test]
 fn a_server_that_refuses_binary_mode_is_not_used_at_all() {
     let contents = Store::new(&[("payload.elf", b"\x7fELF")]);
@@ -48,8 +37,7 @@ fn a_stored_file_arrives_byte_for_byte() {
     let contents = Store::new(&[]);
     let fake = files_fake(&contents, [127, 0, 0, 1], true);
 
-    // A line ending, a lone carriage return and a zero: the three things a helpful
-    // transfer mode would tidy up.
+    // A line ending, a lone carriage return and a zero, which text mode would rewrite.
     let payload: &[u8] = b"\x7fELF\r\n\r\x00\x01\x02end";
     let mut session = Session::open_at(fake.address(), fake.port()).expect("the fake logs in");
     session
@@ -64,10 +52,7 @@ fn a_stored_file_arrives_byte_for_byte() {
     );
 }
 
-/// A file that is not there is a refusal, not a broken link.
-///
-/// A caller browsing a filesystem meets several of these per session, and treating them
-/// as the connection failing would have it reconnecting to fix a typo.
+/// A file that is not there is a refusal carrying the server's words, not a broken link.
 #[test]
 fn a_missing_file_is_a_refusal_rather_than_a_failure() {
     let contents = Store::new(&[("here.txt", b"yes")]);
@@ -83,15 +68,10 @@ fn a_missing_file_is_a_refusal_rather_than_a_failure() {
     }
 }
 
-/// A listing line that was not understood is kept and marked, not dropped.
-///
-/// The fake sends a header line that is not a file. A parser that discards what it cannot
-/// read would report a directory as emptier than it is, which is worse than reporting a
-/// line it does not understand.
+/// A listing keeps and marks a line it could not read, and skips its own header.
 #[test]
 fn a_listing_keeps_what_it_could_not_read() {
-    // Absolute keys, as a real client stores them - the fake lists a directory by its members'
-    // basenames, so a listing of `/` shows these two files.
+    // Absolute keys: the fake lists `/` by its members' basenames.
     let contents = Store::new(&[("/one.txt", b"1"), ("/two.txt", b"22")]);
     let fake = files_fake(&contents, [127, 0, 0, 1], true);
 
@@ -109,10 +89,7 @@ fn a_listing_keeps_what_it_could_not_read() {
         names.contains(&"a directory"),
         "a name with a space in it was truncated: {names:?}"
     );
-    // The header is part of the format and is not an entry; a line that is neither is kept
-    // and marked. Telling those apart is the point - reporting the header as unreadable
-    // would name it in every listing ever taken, which is how a real warning stops being
-    // read.
+    // The header is not an entry; a line that is neither is kept and marked.
     assert!(
         entries
             .iter()
@@ -134,11 +111,7 @@ fn a_listing_keeps_what_it_could_not_read() {
     );
 }
 
-/// One session answers more than one command without losing its place.
-///
-/// The failure this pins is a desynchronised control connection: a multi-line reply read
-/// as one line leaves the rest in the buffer, where it becomes the answer to the *next*
-/// command and every answer after that is one behind.
+/// One session answers several commands without its replies falling one behind.
 #[test]
 fn a_session_does_several_things_without_losing_its_place() {
     let contents = Store::new(&[("first.txt", b"one"), ("second.txt", b"two")]);
@@ -155,10 +128,7 @@ fn a_session_does_several_things_without_losing_its_place() {
     assert_eq!(second, b"two", "the second answer is one behind");
 }
 
-/// A body sent in pieces with no stated length arrives whole.
-///
-/// The alternative to reading this properly is handing back the piece sizes inside the
-/// data, where they look like content - success reported for a body that is wrong.
+/// A chunked body arrives whole, with no chunk sizes left in the data.
 #[test]
 fn a_body_sent_in_pieces_is_reassembled() {
     let body = "{\"payloads\":[{\"name\":\"elfldr\",\"checksum\":\"abc\"}]}";
@@ -188,11 +158,7 @@ fn a_body_with_a_length_arrives_at_that_length() {
     assert_eq!(got.len(), body.len(), "the body was cut short or ran on");
 }
 
-/// A status that is not success is a refusal carrying what the server called it.
-///
-/// Returning the error page as a body would be the worst outcome available: a caller
-/// parses it, gets nothing useful, and reports a problem with the data rather than with
-/// the request.
+/// A non-success status is a refusal carrying the status line, never a body.
 #[test]
 fn a_status_that_is_not_success_carries_the_servers_own_words() {
     let fake = Fake::start(Behaviour::Serves {
@@ -214,9 +180,6 @@ fn a_status_that_is_not_success_carries_the_servers_own_words() {
 }
 
 /// A stored file's size reads back, and a missing one is a refusal.
-///
-/// This is what a copy compares against to know a `STOR` actually landed rather than only being
-/// acknowledged - the check the restore-that-claimed-success bug needed and did not have.
 #[test]
 fn a_stored_files_size_reads_back() {
     let contents = Store::new(&[]);
@@ -241,9 +204,7 @@ fn a_stored_files_size_reads_back() {
     session.close();
 }
 
-/// The target answers `MKD` with `226 Directory created`, and that is a made directory, not a
-/// refusal. `pros restore` read the non-standard `226` as an error once and called a clean upload
-/// incomplete over it (oops-apps REQ-20260911T1030Z-c14f); `make_directory` accepts any 2xx.
+/// The target's non-standard `226 Directory created` reply to `MKD` is success.
 #[test]
 fn a_directory_the_target_makes_with_226_is_not_a_refusal() {
     let contents = Store::new(&[]);

@@ -1,22 +1,9 @@
 //! Payloads kept here, ready to be sent.
 //!
-//! # Why this exists before any way of fetching does
-//!
-//! This project ships no payload binaries and cannot yet download one, because reaching a
-//! public mirror needs a security layer that has not been argued for. That leaves an obvious
-//! gap and a much less obvious fact: **a person who already has the file needs nothing from
-//! that decision at all.** They downloaded it themselves, from the project that publishes
-//! it, which is where the manifest was going to point anyway.
-//!
-//! So staging is the whole of the workflow that can exist today - put the file here, have it
-//! checked against what the manifest says it should be, send it. Fetching, when it arrives,
-//! becomes a way of filling this directory rather than a new path through the program.
-//!
-//! # Nothing arrives here unverified
-//!
-//! A payload is about to be run with kernel-adjacent privileges. **The digest is checked on
-//! the way in**, not on the way out, so that everything in this directory is already known
-//! to be what it claims - and a file somebody dropped in by hand is not.
+//! Staging is the path from a file a person already has, or one [`crate::fetch`] downloaded,
+//! to a send: the file is checked against the manifest's digest on the way in, so everything
+//! in the staging directory is already known to be what it claims. A file dropped in by hand
+//! has not been checked.
 
 use std::path::{Path, PathBuf};
 
@@ -25,8 +12,8 @@ use crate::manifest::{Payload, staging};
 
 /// Where a payload would be if it were staged.
 ///
-/// `None` when the entry names no file, which is a description somebody has not finished
-/// rather than a payload that is missing.
+/// `None` when the entry names no file, which is an unfinished description rather than a
+/// missing payload.
 #[must_use]
 pub fn path_for(payload: &Payload) -> Option<PathBuf> {
     let mut path = staging()?;
@@ -40,18 +27,11 @@ pub fn is_staged(payload: &Payload) -> bool {
     path_for(payload).is_some_and(|path| path.exists())
 }
 
-/// Copies of this payload that are here under some **other** version's filename.
+/// Copies of this payload that are here under some other version's filename.
 ///
-/// # Why this is not the same question as [`is_staged`]
-///
-/// A staged file is found by the filename the description gives, and those filenames carry
-/// versions - `elfldr_v0.24.elf`, `elfldr_v0.25.elf`. So when a list moves on, the copy fetched
-/// last month stops being found by anything: [`is_staged`] says no, the size column says `-`,
-/// and a whole payload that is sitting on the disk reads as one nobody has.
-///
-/// **The difference decides what the button should say.** Getting a file for the first time and
-/// replacing an older one with a newer one are not the same act, and a control that calls both
-/// of them *download* is describing only the first.
+/// Filenames carry versions (`elfldr_v0.24.elf`, `elfldr_v0.25.elf`), so when a manifest moves
+/// on, [`is_staged`] no longer finds the older copy. This finds it, so a caller can offer to
+/// replace an older copy rather than to download for the first time.
 #[must_use]
 pub fn older_here(payload: &Payload) -> Vec<PathBuf> {
     let Some(dir) = staging() else {
@@ -69,12 +49,12 @@ pub fn older_here(payload: &Payload) -> Vec<PathBuf> {
             let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                 return false;
             };
-            // Not the described file itself - that one is `is_staged`'s answer, not this one.
+            // The described file itself is `is_staged`'s answer.
             if name.eq_ignore_ascii_case(wanted) {
                 return false;
             }
-            // The same matching every other part of this project uses for *is this that
-            // payload*, so a second rule here cannot disagree with the startup list's.
+            // The startup list's own matching, so the two cannot disagree about which payload
+            // a file is.
             crate::chain::Chain::parse(name)
                 .position(&payload.name)
                 .is_some()
@@ -82,26 +62,10 @@ pub fn older_here(payload: &Payload) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Copies a file in, having checked it is the one described.
-///
-/// # Errors
-///
-/// [`NotStaged::Unverifiable`] when the manifest states no digest this can check - the file
-/// is **not** copied, because a payload nobody can verify is one that should not be sitting
-/// in a directory whose whole promise is that everything in it was checked.
-///
-/// [`NotStaged::Mismatched`] when it is the wrong file, carrying both digests.
 /// Copies a checked file into a directory the caller names.
 ///
-/// # Why a caller gets to say where
-///
-/// [`accept`] puts things in one directory whose whole promise is that everything in it was
-/// verified. That is right for payloads, which are sent by name from one place.
-///
-/// It is wrong for a window that shows a folder and offers to fill it. **A download that
-/// lands somewhere other than the folder the pane names is a download that appears not to
-/// have happened** - the file is on disk, verified, and invisible where somebody is looking
-/// for it. The verification is identical; only the destination differs.
+/// For a window that shows a folder and offers to fill it: the file must land in the folder
+/// being shown. The verification is the same as [`accept`]'s.
 ///
 /// # Errors
 ///
@@ -133,9 +97,8 @@ pub fn accept_into(payload: &Payload, from: &Path, dir: &Path) -> Result<PathBuf
 ///
 /// # Errors
 ///
-/// [`NotStaged::Unverifiable`] when the manifest states no digest this can check - the file
-/// is **not** copied, because a payload nobody can verify is one that should not be sitting
-/// in a directory whose whole promise is that everything in it was checked.
+/// [`NotStaged::Unverifiable`] when the manifest states no digest this can check; the file is
+/// not copied, because everything in the staging directory is checked.
 ///
 /// [`NotStaged::Mismatched`] when it is the wrong file, carrying both digests.
 pub fn accept(payload: &Payload, from: &Path) -> Result<PathBuf, NotStaged> {
@@ -161,10 +124,8 @@ pub fn accept(payload: &Payload, from: &Path) -> Result<PathBuf, NotStaged> {
 
 /// Copies a local build into staging or a named directory.
 ///
-/// If the manifest specifies a checksum and it matches, the file is verified.
-/// If it differs or the manifest states no checksum, it is accepted as a local
-/// development build with a warning, rather than refusing to stage a build the developer
-/// just compiled on this machine.
+/// A matching manifest checksum verifies it. A differing or absent checksum is accepted with
+/// a warning, as a development build just compiled on this machine.
 ///
 /// # Errors
 ///
@@ -270,11 +231,7 @@ mod tests {
     use super::{NotStaged, accept, accept_into};
     use crate::manifest::Payload;
 
-    /// **A file lands in the directory the caller named, under the name the entry gives it.**
-    ///
-    /// Worth pinning because the failure is silent: the download succeeds, the digest matches,
-    /// the file is written - somewhere else. Nothing errors, and the pane that offered the
-    /// download goes on offering it, because the folder it lists is still empty.
+    /// A file lands in the directory the caller named, under the entry's filename.
     #[test]
     fn a_download_lands_where_the_caller_said() {
         let dir = std::env::temp_dir().join("prosperous-accept-into");
@@ -300,11 +257,7 @@ mod tests {
         let _ = std::fs::remove_file(&from);
     }
 
-    /// And the wrong file is refused there too, leaving the directory empty.
-    ///
-    /// The check is the same check; only the destination differs. A version of this that
-    /// verified less because the caller chose the folder would be worse than no check at all,
-    /// because the folder is where somebody goes looking for things they trust.
+    /// The wrong file is refused for a named directory too, leaving it empty.
     #[test]
     fn the_wrong_file_is_not_written_to_the_named_directory_either() {
         let dir = std::env::temp_dir().join("prosperous-accept-into-wrong");
@@ -332,8 +285,7 @@ mod tests {
         let _ = std::fs::remove_file(&from);
     }
 
-    /// The wrong file is refused, and both digests are said so a person can tell which of
-    /// the two is wrong - the download or the description.
+    /// The wrong file is refused with both digests.
     #[test]
     fn the_wrong_file_is_not_staged() {
         let payload = Payload {
@@ -358,11 +310,7 @@ mod tests {
         }
     }
 
-    /// **An entry nobody can verify does not get a file staged for it.**
-    ///
-    /// The promise of this directory is that everything in it was checked. A payload with a
-    /// digest in an algorithm this cannot read would break that promise quietly, which is
-    /// worse than refusing loudly.
+    /// An entry whose digest cannot be checked gets nothing staged.
     #[test]
     fn a_payload_that_cannot_be_verified_is_not_staged_at_all() {
         let payload = Payload {
@@ -382,8 +330,7 @@ mod tests {
         );
     }
 
-    /// An entry with no file name has nowhere to go, and that is a description somebody has
-    /// not finished rather than a failure of the file.
+    /// An entry with no filename has nowhere to go.
     #[test]
     fn an_entry_with_no_filename_has_nowhere_to_go() {
         let payload = Payload {
@@ -396,8 +343,7 @@ mod tests {
         let scratch = std::env::temp_dir().join(format!("pros-stage-{}", std::process::id()));
         std::fs::create_dir_all(&scratch).expect("a scratch directory");
         let file = scratch.join("some.elf");
-        // The bytes that match the digest above, so the refusal is about the name and not
-        // about the contents.
+        // Bytes matching the digest above, so the refusal is about the name.
         std::fs::write(&file, b"abc").expect("written");
 
         assert!(matches!(accept(&payload, &file), Err(NotStaged::Nowhere)));

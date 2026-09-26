@@ -1,19 +1,10 @@
 //! Running a command on the target without loading a payload.
 //!
-//! # Raw TCP, despite what it is called
+//! The service is raw TCP with no telnet option negotiation. A telnet client's opening `IAC`
+//! bytes would land in the shell as typed input, so this sends plain bytes.
 //!
-//! The service describes itself as telnet-like, and it is not telnet. There is no option
-//! negotiation anywhere in it: bytes in, bytes out.
-//!
-//! That matters because a real telnet client works only by accident. It opens by sending
-//! `IAC` option negotiation, which this server reads as somebody typing, and the junk
-//! lands in the shell. So this speaks the protocol that is actually there, which is none.
-//!
-//! # Quiet, not closed
-//!
-//! The server does not close after a command and sends no end marker, so the only signal
-//! that a response has finished is that nothing more arrives. Reading until quiet is the
-//! honest implementation of an interface with no framing.
+//! The server neither closes after a command nor sends an end marker, so a response is
+//! complete when nothing more arrives.
 
 use std::io::Write as _;
 use std::time::Duration;
@@ -21,10 +12,10 @@ use std::time::Duration;
 use crate::error::Result;
 use crate::wire;
 
-/// Port the shell listens on.
-/// Which service an override names when it moves this off its usual port.
+/// Service name a port override uses to move the shell off its usual port.
 const SERVICE: &str = "shsrv";
 
+/// Port the shell listens on.
 const PORT: u16 = 2323;
 
 /// How long to wait for the connection.
@@ -35,16 +26,13 @@ const BANNER: Duration = Duration::from_millis(600);
 
 /// Runs one command and returns what it printed.
 ///
-/// `settle` is how long silence has to last before the answer is considered complete.
-/// Generous is the right bias: guessing short truncates output, guessing long costs a
-/// moment.
+/// `settle` is how long silence lasts before the answer counts as complete. Too short
+/// truncates output; too long only costs a moment.
 ///
 /// # Errors
 ///
-/// [`crate::Error::Refused`] when the shell is not loaded. It is optional - its absence means
-/// commands have to go through a payload instead, not that nothing can be done.
-///
-/// [`Error`]: crate::Error
+/// [`crate::Error::Refused`] when the shell is not loaded. The shell is optional; without it
+/// commands go through a payload instead.
 pub fn run(link: &crate::Link, command: &str, settle: Duration) -> Result<String> {
     run_at(&link.address, link.port(SERVICE, PORT), command, settle)
 }
@@ -59,15 +47,11 @@ pub fn run(link: &crate::Link, command: &str, settle: Duration) -> Result<String
 pub fn run_at(address: &str, port: u16, command: &str, settle: Duration) -> Result<String> {
     let mut stream = wire::connect(address, port, CONNECT)?;
 
-    // Let the greeting land before typing over it.
     wire::drain_banner(&mut stream, BANNER);
 
     stream.write_all(command.as_bytes())?;
-    // **A bare `\n`, not `\r\n`.** This service is raw TCP, not FTP, and it was measured to take a
-    // single newline; it does not strip a carriage return, so a `\r\n` leaves the `\r` on the line
-    // and the command stops resolving - `launch <id>\r` finds no such title, and nothing runs. That
-    // regression shipped once (a CRLF "fix" borrowed from the FTP control channel, where CRLF is
-    // right); the terminator here is one `\n`, on purpose.
+    // A bare `\n`, not `\r\n`: the shell does not strip `\r`, so `launch <id>\r` finds no such
+    // title. CRLF is right only on the FTP control channel.
     stream.write_all(b"\n")?;
     stream.flush()?;
 

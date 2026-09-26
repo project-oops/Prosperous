@@ -1,30 +1,11 @@
 //! Editing and comparing a save's parameter file, over SELFish's reader for the format.
 //!
-//! # The format is SELFish's; this is only what Prosperous adds
-//!
-//! A save is encrypted and signed for the account that wrote it, so sending one to a target it
-//! did not come from needs it decrypting and re-signing first. The account is written down in
-//! the save's own metadata: `ACCOUNT_ID` sits in the `.sfo` parameter file the target keeps
-//! beside the save, and reading it is better than anything this project could record for
-//! itself - it is true for a save that arrived from anywhere, not only one this tool copied.
-//!
-//! And it is not always there. Measured on a target with three saves: one carried `.sfo` files,
-//! two carried only icons. So it answers *sometimes*, which is why it is one source among three
-//! in [`crate::origin::needed`], in order of authority.
-//!
-//! # Why the parser is gone
-//!
-//! `param.sfo` is a platform format, and principle 6 says Prosperous reads the platform's
-//! formats from SELFish and invents none of its own. This module used to carry its own `\0PSF`
-//! parser - the exact duplication [`selfish_title`] exists to prevent - and it is gone: the
-//! reading is [`selfish_title::sfo::Sfo`] now, and what stays here is only what Prosperous adds
-//! on top of it. (D028)
-//!
-//! - `account_in` and `account_id` render `ACCOUNT_ID` as hex, the shape an identifier is
-//!   *compared* in rather than displayed - never as a number, which would read differently on a
-//!   machine of the other endianness for no gain.
-//! - `set` rewrites one parameter **in place**, which SELFish's whole-file writer deliberately
-//!   is not, and which `graft` depends on. See its own note for why nothing is rebuilt.
+//! A save is encrypted and signed for the account that wrote it, and that account is the
+//! `ACCOUNT_ID` in the `.sfo` file the target keeps beside the save. Not every save has one
+//! (measured: one of three saves on a target carried `.sfo` files), so it is one source among
+//! several in [`crate::origin::needed`]. Parsing is [`selfish_title::sfo::Sfo`] (D028); this
+//! module adds hex rendering of the account for comparison, and `set`, which rewrites one
+//! parameter in place for `graft`.
 
 /// Where the header ends and the index entries start.
 const INDEX: usize = 20;
@@ -32,12 +13,10 @@ const INDEX: usize = 20;
 /// How long one index entry is.
 const ENTRY: usize = 16;
 
-/// An identifier rendered for comparison rather than display: lowercase hex, two characters a
-/// byte.
+/// An identifier rendered for comparison: lowercase hex, two characters a byte.
 ///
-/// The one rendering every account reader here shares, so two ids compare equal exactly when
-/// their bytes do. Not a number: an eight-byte user id read as an integer would come back
-/// different on a machine of the other endianness, for a value nobody does arithmetic on.
+/// Every account reader here uses it, so two ids compare equal exactly when their bytes do.
+/// Not an integer, which would depend on the host's endianness.
 #[must_use]
 pub fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
@@ -49,9 +28,8 @@ pub fn hex(bytes: &[u8]) -> String {
 
 /// The account a parsed parameter file names, as hex, or `None` when it carries none.
 ///
-/// Goes through [`selfish_title::sfo::Sfo::bytes`], which answers with the value's raw bytes
-/// whichever variant the parse chose - so an id that happens to decode as text is still read as
-/// the eight bytes it is, not the string it looked like.
+/// Uses [`selfish_title::sfo::Sfo::bytes`], which returns the raw bytes whichever variant the
+/// parse chose, so an id that happens to decode as text is still read as its eight bytes.
 #[must_use]
 pub fn account_id(sfo: &selfish_title::sfo::Sfo) -> Option<String> {
     sfo.bytes("ACCOUNT_ID").map(hex)
@@ -59,9 +37,8 @@ pub fn account_id(sfo: &selfish_title::sfo::Sfo) -> Option<String> {
 
 /// The account a parameter file's bytes name, as hex - parse and read in one step.
 ///
-/// The operation `origin` and `saves` share: `None` when the bytes are not a parameter file, or
-/// are one that carries no account. Both are real states and neither is an error - two of three
-/// saves measured on a target had no parameter file at all.
+/// `None` when the bytes are not a parameter file or carry no account; both are ordinary
+/// states, not errors.
 #[must_use]
 pub fn account_in(bytes: &[u8]) -> Option<String> {
     account_id(&selfish_title::sfo::Sfo::parse(bytes).ok()?)
@@ -99,14 +76,11 @@ fn key_at_offset(bytes: &[u8], at: usize) -> Option<String> {
 pub enum NotChanged {
     /// The file does not carry that parameter.
     ///
-    /// **Not added.** Adding one means moving every offset after it, and a parameter file
-    /// this project rebuilt rather than edited is one where a mistake is invisible: it would
-    /// still parse, and the target would reject the save with no clue which byte was wrong.
+    /// Not added: adding one moves every later offset (see [`set`]).
     Absent(String),
     /// The new value is longer than the room the file left for it.
     ///
-    /// Each entry records how much space it has. Writing past it would overwrite whatever
-    /// comes next, which is another parameter.
+    /// Writing past the room would overwrite the next parameter.
     TooLong {
         /// What was being written.
         key: String,
@@ -136,18 +110,11 @@ impl std::error::Error for NotChanged {}
 
 /// Replaces one parameter's bytes, in place.
 ///
-/// # Why in place, and never by rebuilding
-///
-/// A parameter file is a table of offsets. Rewriting it means recomputing every one of them,
-/// and a file this project assembled rather than edited would still parse - so a mistake in
-/// it is invisible until a target refuses the save, with nothing pointing at which byte.
-///
-/// **So nothing moves.** A value is written over the old one, within the room the file already
-/// left for it, and everything this code does not understand is untouched by construction.
-/// The cost is that a longer value is refused rather than accommodated, which is the right
-/// way round: refusing is visible and corrupting is not. It is also why this stays here rather
-/// than moving to SELFish with the reader: [`selfish_title::sfo::Sfo::to_bytes`] rebuilds the
-/// file, which is the opposite call, and `graft` wants this one.
+/// Nothing moves: the value is written within the room the file already has, and everything
+/// else is untouched. A rebuilt offset table with a mistake would still parse, and the target
+/// would reject the save with nothing pointing at the byte; so a longer value is refused
+/// instead. This is why it is not SELFish's [`selfish_title::sfo::Sfo::to_bytes`], which
+/// rebuilds the file.
 ///
 /// # Errors
 ///
@@ -172,8 +139,7 @@ pub fn set(bytes: &mut [u8], key: &str, value: &[u8], text: bool) -> Result<(), 
         if key_at_offset(bytes, keys + key_at as usize).as_deref() != Some(key) {
             continue;
         }
-        // Text is 0x0204; anything else here is bytes. A number is not editable this way and
-        // says so rather than being written as four arbitrary bytes.
+        // Text is 0x0204; anything else here is bytes. A number is not editable this way.
         if text != (kind == 0x0204) {
             return Err(NotChanged::WrongKind(key.to_owned()));
         }
@@ -192,14 +158,12 @@ pub fn set(bytes: &mut [u8], key: &str, value: &[u8], text: bool) -> Result<(), 
         let Some(slot) = bytes.get_mut(from..from + room) else {
             return Err(NotChanged::Absent(key.to_owned()));
         };
-        // The whole slot is cleared first: a shorter value would otherwise leave the tail of
-        // the old one behind it, which for text is a string that reads correctly here and
-        // wrongly wherever the length is taken from the file instead.
+        // Cleared first so a shorter value leaves no tail of the old one for a reader that
+        // reads to the terminator rather than the recorded length.
         slot.fill(0);
         slot[..value.len()].copy_from_slice(value);
 
-        // The recorded length follows the value. The room does not change - it is what the
-        // file was built with and is not this code's to alter.
+        // The recorded length follows the value; the room stays as the file was built.
         let length = u32::try_from(needed).unwrap_or(u32::MAX);
         bytes[at + 4..at + 8].copy_from_slice(&length.to_le_bytes());
         return Ok(());
@@ -227,9 +191,8 @@ mod tests {
     const BYTES: u16 = 0x0004;
 
     /// Builds a parameter file from `(key, kind, value-bytes)`, so the writer is tested against
-    /// the format rather than one target's file - which could not be committed here anyway,
-    /// carrying somebody's account identifier as it does. The recorded length and the room are
-    /// both the value's length, which is the tight case [`set`] refuses to grow past.
+    /// the format rather than a real file carrying an account identifier. The recorded length
+    /// and the room are both the value's length, the tight case [`set`] refuses to grow past.
     fn sfo(entries: &[(&str, u16, Vec<u8>)]) -> Vec<u8> {
         let mut keys: Vec<u8> = Vec::new();
         let mut data: Vec<u8> = Vec::new();
@@ -272,8 +235,7 @@ mod tests {
         bytes
     }
 
-    /// **The account comes out as hex, byte for byte** - read through SELFish, which is where
-    /// the parsing lives now.
+    /// The account is read through SELFish as hex, byte for byte.
     #[test]
     fn the_account_is_read_as_the_bytes_it_is() {
         let bytes = sfo(&[
@@ -292,8 +254,7 @@ mod tests {
         assert_eq!(sfo.text("TITLE_ID"), Some("PPSA01650"));
     }
 
-    /// **A save with no account says so**, rather than producing something that would compare
-    /// equal to another save with none.
+    /// A file without an account yields none, not a value that compares equal to another.
     #[test]
     fn a_file_without_an_account_offers_none() {
         let bytes = sfo(&[("TITLE_ID", TEXT, terminated("PPSA10528"))]);
@@ -307,14 +268,13 @@ mod tests {
         assert_eq!(account_in(&[]), None);
     }
 
-    /// `hex` renders lowercase and zero-padded, two characters a byte - the shape ids compare in.
+    /// `hex` renders lowercase and zero-padded, two characters a byte.
     #[test]
     fn hex_is_lowercase_and_padded() {
         assert_eq!(hex(&[0x00, 0x9f, 0x0a]), "009f0a");
     }
 
-    /// **A value is written over the old one and nothing moves**, verified by reading the
-    /// result back through SELFish.
+    /// A value is replaced in place without growing the file or disturbing its neighbours.
     #[test]
     fn a_parameter_is_replaced_without_disturbing_the_others() {
         let mut bytes = sfo(&[
@@ -336,11 +296,7 @@ mod tests {
         );
     }
 
-    /// **A shorter value does not leave the tail of the old one behind.**
-    ///
-    /// The slot is cleared first. Without that the bytes still read correctly through a parser
-    /// that takes the recorded length, and wrongly through anything that reads to the
-    /// terminator instead.
+    /// A shorter value leaves no tail of the old one in the file.
     #[test]
     fn a_shorter_value_does_not_leave_the_old_one_showing() {
         let mut bytes = sfo(&[("SUBTITLE", TEXT, terminated("Franklin and Lamar"))]);
@@ -348,14 +304,13 @@ mod tests {
 
         let sfo = Sfo::parse(&bytes).expect("still reads");
         assert_eq!(sfo.text("SUBTITLE"), Some("Prologue"));
-        // The old tail would be here if the slot had not been cleared.
         assert!(
             !String::from_utf8_lossy(&bytes).contains("Lamar"),
             "the old value is still in the file"
         );
     }
 
-    /// **A value too long for its room is refused**, rather than written over its neighbour.
+    /// A value too long for its room is refused and nothing is written.
     #[test]
     fn a_value_that_does_not_fit_is_refused() {
         let mut bytes = sfo(&[("TITLE_ID", TEXT, terminated("PPSA03420"))]);
@@ -371,7 +326,7 @@ mod tests {
         );
     }
 
-    /// **A parameter the file does not have is refused, not added.**
+    /// A parameter the file does not have is refused, not added.
     #[test]
     fn a_parameter_that_is_not_there_is_not_invented() {
         let mut bytes = sfo(&[("TITLE_ID", TEXT, terminated("PPSA03420"))]);
@@ -379,7 +334,7 @@ mod tests {
         assert!(matches!(refused, NotChanged::Absent(_)), "{refused:?}");
     }
 
-    /// The account is bytes, not text: writing it as text is refused, and as bytes it fits.
+    /// The value's kind must match: the account is bytes, so text is refused.
     #[test]
     fn the_kind_has_to_match() {
         let mut bytes = sfo(&[("ACCOUNT_ID", BYTES, vec![0; 8])]);

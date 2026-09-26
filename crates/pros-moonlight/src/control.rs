@@ -1,16 +1,14 @@
 //! The ENet control channel that carries input, on port 47999.
 //!
-//! **Adapted from Moonshine** (Hans Gaiser, BSD-2-Clause; see `THIRD-PARTY-LICENSES.md`), whose
-//! `control/mod.rs` runs the same channel. A Moonlight client opens an ENet connection here and
-//! sends its input as AES-128-GCM encrypted control messages; the bridge decrypts each, and when
-//! it is a controller update, decodes it ([`crate::input`]) and forwards it to the target's own
-//! input port (9806) as a `PPAD` record - which is exactly what Porthole's `feed` already sends.
+//! Adapted from Moonshine's `control/mod.rs` (BSD-2-Clause; see `THIRD-PARTY-LICENSES.md`). A
+//! client sends input as AES-128-GCM encrypted control messages over ENet; each controller update
+//! is decoded ([`crate::input`]) and forwarded to the target's input port (9806) as a `PPAD`
+//! record, the same record Porthole's `feed` sends.
 //!
-//! The wire framing is Moonlight's: an encrypted message is `type(0x0001) | length | sequence |
-//! 16-byte GCM tag | ciphertext`, the nonce is the sequence followed by zeros and the bytes `HC`,
-//! and the decrypted message is `type | length | payload` with controller input carrying type
-//! `0x0206`. Distinguishing controller input from keyboard and mouse by the inner event tag is a
-//! refinement; [`crate::input::decode`] already declines anything too short to be a pad.
+//! An encrypted message is `type(0x0001) | length | sequence | 16-byte GCM tag | ciphertext`; the
+//! nonce is the sequence, zeros, then `HC`; the decrypted message is `type | length | payload`,
+//! with controller input as type `0x0206`. Input is recognised by that type alone, and
+//! [`crate::input::decode`] declines anything too short to be a pad.
 
 use std::net::UdpSocket;
 use std::time::Duration;
@@ -73,7 +71,7 @@ pub(crate) fn run(
     Ok(())
 }
 
-/// The service loop, factored out so the ENet host's lifetime is tidy.
+/// The service loop: drain every pending ENet event, then sleep a millisecond.
 fn pump(
     mut host: Host<UdpSocket>,
     cipher: &Aes128Gcm,
@@ -152,8 +150,7 @@ mod tests {
     use aes_gcm::{Aes128Gcm, Nonce};
     use pros_link::pad::Button;
 
-    /// Encrypt a plaintext control message the way a client would, so the decrypt path can be
-    /// tested without a live ENet peer.
+    /// Encrypt a control message as a client does, to test decryption without an ENet peer.
     fn encrypt(key: &[u8; 16], sequence: u32, plaintext: &[u8]) -> Vec<u8> {
         let cipher = Aes128Gcm::new_from_slice(key).unwrap();
         let mut nonce = [0_u8; 12];
@@ -189,6 +186,7 @@ mod tests {
         message
     }
 
+    /// An encrypted input message decrypts and decodes to the pad it carries.
     #[test]
     fn an_encrypted_controller_message_decodes_to_a_pad() {
         let key = [3_u8; 16];
@@ -198,6 +196,7 @@ mod tests {
         assert!(update.pad.holds(Button::Cross));
     }
 
+    /// Unencrypted packets and non-input messages produce no pad.
     #[test]
     fn a_packet_that_is_not_encrypted_or_not_input_is_ignored() {
         let key = [3_u8; 16];
@@ -213,6 +212,7 @@ mod tests {
         assert!(decrypt_input(&cipher, &packet).is_none(), "not input");
     }
 
+    /// A packet under the wrong key fails the GCM tag and produces no pad.
     #[test]
     fn a_wrong_key_fails_the_tag_and_is_ignored() {
         let packet = encrypt(&[3_u8; 16], 1, &input_message(0x1000));

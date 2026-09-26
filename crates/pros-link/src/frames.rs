@@ -1,38 +1,14 @@
-//! Reading frames from a grabber on the target.
+//! Reading frames from a grabber on the target, for diffing an emulator's output against the
+//! hardware's (`docs/VIDEO.md` part two). Watching is part three and lives in `pros-core::watch`.
 //!
-//! # What this is for
+//! A payload holds the display open and answers `GRAB\n` with a header, the pixels and an
+//! FNV-1a checksum. The format and stride are reported and passed through, never assumed; a
+//! non-zero status means no pixels follow; `bytes` is authoritative and a short read is an
+//! error, never a smaller frame.
 //!
-//! Not watching. Watching is Porthole's job - the target serves its own encoded stream and
-//! `pros-core::watch` pipes it to a player, see `docs/VIDEO.md` part three.
-//!
-//! This is part two: **an instrument for diffing what an emulator drew against what a target
-//! drew.** A payload holds the display open and answers `GRAB\n` with one frame, and the whole
-//! value of it is that the numbers are trustworthy enough to subtract.
-//!
-//! # The four rules the header exists to enforce
-//!
-//! Every one of them is a way for a wrong answer to look like a right one:
-//!
-//! - **The format is reported, never assumed.** A diff against a frame whose stride was
-//!   guessed fails as *the emulator is wrong* rather than as *the client guessed*, and that is
-//!   a day lost to the wrong question.
-//! - **A non-zero status means no pixels follow.** *It did not work* and *it worked and
-//!   produced nothing* must not look the same.
-//! - **`bytes` is authoritative and a short read is an error.** A truncated transfer must not
-//!   arrive as a smaller frame, because a smaller frame diffs perfectly well and says nothing
-//!   true.
-//! - **The format field is passed through, not interpreted.** A payload that cannot determine
-//!   the format reports a status and sends nothing, rather than labelling pixels with a guess.
-//!
-//! # Why the checksum is not cryptographic
-//!
-//! The threat is a truncated or corrupted transfer over a local network, not somebody
-//! substituting a frame. FNV-1a catches everything actually likely and is six lines in
-//! freestanding C, which is what has to write it at the other end.
-//!
-//! This is the opposite call from the payload manifest, where a digest guards a download about
-//! to be executed with kernel-adjacent privileges. **Different threat, different answer**, and
-//! the difference is stated so neither gets changed to match the other.
+//! The checksum guards against truncation or corruption on a local network, not substitution,
+//! so it is not cryptographic and stays writable in freestanding C. The payload manifest uses a
+//! digest because it guards code about to run.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -47,31 +23,19 @@ pub const VERSION: u16 = 1;
 /// How long the header is.
 pub const HEADER: usize = 32;
 
-/// The whole request. Deliberately typeable, because most of what goes wrong here is
-/// diagnosed by hand with a socket and a keyboard.
+/// The whole request, typeable by hand for diagnosis over a raw socket.
 pub const REQUEST: &str = "GRAB\n";
 
 /// The port a target's frame grabber listens on.
 ///
-/// From `docs/VIDEO.md` part two. **Chosen and not measured**, like the two ports part three
-/// picks and unlike every other port this crate knows: adjacent to the loader so the two are
-/// memorable together, and outside every port the chain was measured using on 2026-08-25 -
-/// 9021, 2121, 3232, 2323, 8084, and 6967 for scripted input.
-///
-/// Named here rather than left in the document because [`grab`] takes a port, and a caller
-/// that has to read prose to learn which one is a caller that will eventually read it wrong.
-/// The parameter stays, for the same reason a registration can override any other port: a
-/// number that is right today is a default, not a fact about the target.
-///
-/// If it turns out to collide with something, this is a one-line change here and a note in
-/// that document saying what it collided with.
+/// Chosen in `docs/VIDEO.md` part two, not measured: next to the loader, and clear of the
+/// ports the chain uses (9021, 2121, 3232, 2323, 8084, and 6967 for scripted input). [`grab`]
+/// still takes the port as a parameter so a registration can override it.
 pub const PORT: u16 = 9022;
 
 /// What a frame says about itself.
 ///
-/// **Nothing here is interpreted.** `format` is whatever the platform called it and `stride`
-/// is what the platform reported, because a client that translated either would be answering
-/// a question the payload was asked.
+/// Nothing here is interpreted: `format` and `stride` are exactly what the platform reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {
     /// The version the payload wrote.
@@ -84,7 +48,7 @@ pub struct Header {
     pub height: u32,
     /// As the platform reports it, untranslated.
     pub format: u32,
-    /// Bytes per row, which is **not** width times four.
+    /// Bytes per row, which is not necessarily width times four.
     pub stride: u32,
     /// How many pixel bytes follow.
     pub bytes: u64,
@@ -96,8 +60,8 @@ impl Header {
     /// # Errors
     ///
     /// [`NotAFrame::NotAHeader`] when the magic is wrong, and [`NotAFrame::Version`] when it
-    /// is a version this does not read. **Distinct on purpose**: something else on the port
-    /// and a newer payload are different problems with different next steps.
+    /// is a version this does not read. They are distinct because something else on the port
+    /// and a newer payload need different next steps.
     pub fn read(raw: &[u8]) -> Result<Self, NotAFrame> {
         let Some(head) = raw.get(..HEADER) else {
             return Err(NotAFrame::Short {
@@ -135,12 +99,9 @@ impl Header {
         self.status == 0
     }
 
-    /// Whether the header agrees with itself.
+    /// Whether the header agrees with itself: stride times height equals `bytes`.
     ///
-    /// **A header that disagrees with its own payload cannot be trusted about anything else.**
-    /// Stride times height is the size a frame of this shape occupies, and a `bytes` that
-    /// differs means one of the two is wrong - which is worth finding out here rather than
-    /// after diffing two frames that were never the same shape.
+    /// A header that disagrees with its own size cannot be trusted about anything else.
     #[must_use]
     pub fn is_self_consistent(&self) -> bool {
         u64::from(self.stride) * u64::from(self.height) == self.bytes
@@ -165,12 +126,12 @@ pub enum NotAFrame {
     Version(u16),
     /// The payload reported it could not grab, and sent no pixels.
     ///
-    /// **Not a failure of the transfer.** The target answered; the answer was *no*.
+    /// Not a transfer failure: the target answered no.
     Refused(u16),
     /// Fewer bytes arrived than the header promised.
     ///
-    /// **The single most important error here.** A truncated transfer arriving as a smaller
-    /// frame would diff perfectly well against another frame and say nothing true.
+    /// A truncated transfer must never arrive as a smaller frame, which would diff cleanly and
+    /// mean nothing.
     Short {
         /// How many were promised.
         wanted: u64,
@@ -228,8 +189,7 @@ impl std::error::Error for NotAFrame {}
 
 /// FNV-1a over the pixel bytes.
 ///
-/// Matches what a freestanding payload can write in six lines. Not cryptographic, and see the
-/// module documentation for why that is the right call here and the wrong one for a download.
+/// Matches what a freestanding payload writes; not cryptographic (see the module header).
 #[must_use]
 pub fn fingerprint(bytes: &[u8]) -> u32 {
     /// The 32-bit offset basis.
@@ -247,8 +207,7 @@ pub fn fingerprint(bytes: &[u8]) -> u32 {
 
 /// Reads one frame from an already-open stream.
 ///
-/// Separated from connecting so the whole of it can be tested against bytes in memory, which
-/// is what lets a client exist before a payload does.
+/// Separate from connecting so it can be tested against bytes in memory.
 ///
 /// # Errors
 ///
@@ -288,9 +247,8 @@ pub fn read_frame(source: &mut impl Read) -> Result<Frame, NotAFrame> {
 
 /// Fills the buffer or says how far it got.
 ///
-/// **`read_exact` would report an error without saying how much arrived**, and how much
-/// arrived is the difference between a payload that died mid-frame and a network that never
-/// started.
+/// Unlike `read_exact`, the error carries how much arrived, which separates a payload that
+/// stopped mid-frame from a network that never started.
 fn read_exactly(source: &mut impl Read, into: &mut [u8]) -> Result<(), NotAFrame> {
     let mut at = 0;
     while at < into.len() {
@@ -328,24 +286,16 @@ pub fn grab(address: &str, port: u16, patience: Duration) -> Result<Frame, NotAF
         .map_err(|why| NotAFrame::Unreachable(why.to_string()))?;
 
     let mut buffered = BufReader::new(stream);
-    // The header may not be the first thing on the socket if a payload greets. Nothing in the
-    // specification says it does, so nothing here skips anything - a greeting would be a
-    // change to the format and should read as one.
+    // The format has no greeting, so nothing is skipped; a greeting would read as a bad header.
     let _ = buffered.fill_buf();
     read_frame(&mut buffered)
 }
 
 /// Why two frames cannot be compared.
 ///
-/// # Why this is a type rather than a sentence
-///
-/// It was a `String`, and it was the only error in this crate that was. Everything else here
-/// names what went wrong - and this is the one a diffing harness will actually branch on: a
-/// shape that changed because a title changed mode is a different situation from a format that
-/// changed because the grabber was rebuilt, and a caller that has to match on prose to tell
-/// them apart is a caller that stops telling them apart.
-///
-/// `docs/VIDEO.md` part two names this type in the signature it specifies.
+/// A type so a diffing harness can branch on it: a shape change (a title changed mode) and a
+/// format change (the grabber was rebuilt) need different handling. `docs/VIDEO.md` part two
+/// names this type in the signature it specifies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mismatch {
     /// They are different sizes.
@@ -382,12 +332,12 @@ impl std::fmt::Display for Mismatch {
 
 impl std::error::Error for Mismatch {}
 
-/// How two frames of the same shape differ.
+/// How many bytes differ between two frames of the same shape and format.
 ///
 /// # Errors
 ///
-/// When the two are not the same shape. **Comparing frames of different shapes is not a
-/// small error**: it produces a number, and a number is what somebody would act on.
+/// [`Mismatch`] when the two differ in shape or format, since a byte count between them would
+/// be a number with no meaning.
 pub fn differences(left: &Frame, right: &Frame) -> Result<usize, Mismatch> {
     if left.header.width != right.header.width || left.header.height != right.header.height {
         return Err(Mismatch::Shape {
@@ -432,7 +382,7 @@ mod tests {
         out
     }
 
-    /// A whole frame, read back as what was written.
+    /// A whole frame reads back as what was written.
     #[test]
     fn a_frame_reads_back_as_what_the_target_wrote() {
         let pixels: Vec<u8> = (0..64_u8).map(|at| at.wrapping_mul(3)).collect();
@@ -445,10 +395,7 @@ mod tests {
         assert_eq!(frame.pixels, pixels);
     }
 
-    /// **A short transfer is an error, not a smaller frame.**
-    ///
-    /// The one that matters most: a smaller frame diffs perfectly well against another and
-    /// says nothing true, so a truncated grab has to be impossible to mistake for a whole one.
+    /// A short transfer is an error that says how far it got, not a smaller frame.
     #[test]
     fn a_truncated_transfer_is_refused_rather_than_returned() {
         let pixels = vec![7_u8; 64];
@@ -460,16 +407,12 @@ mod tests {
             matches!(refused, NotAFrame::Short { .. }),
             "expected a short read: {refused}"
         );
-        // And it says how far it got, because a payload that died mid-frame and a network
-        // that never started are different problems.
         if let NotAFrame::Short { wanted, got } = refused {
             assert!(got < wanted, "{got} of {wanted}");
         }
     }
 
-    /// **A refusal is not an empty frame.** *It did not work* and *it worked and produced
-    /// nothing* must not look the same, and a frame of zeros diffs against another frame of
-    /// zeros perfectly.
+    /// A non-zero status is a refusal, not an empty or black frame.
     #[test]
     fn a_status_means_no_pixels_rather_than_a_black_frame() {
         let raw = wire(3, 1920, 1080, 7680, &[]);
@@ -526,10 +469,7 @@ mod tests {
         );
     }
 
-    /// **The instrument gets measured before it is used.**
-    ///
-    /// A frame diffed against itself is zero, and against a one-byte change is exactly one.
-    /// If that is not true, nothing measured with it means anything.
+    /// A frame against itself differs by zero, and against a one-byte change by exactly one.
     #[test]
     fn a_frame_against_itself_is_zero_and_one_change_is_one() {
         let pixels: Vec<u8> = (0..64_u8).collect();
@@ -543,8 +483,7 @@ mod tests {
         assert_eq!(differences(&frame, &changed).expect("same shape"), 1);
     }
 
-    /// **Two shapes do not have a difference**, and saying they differ by a number would be
-    /// handing somebody a figure to act on.
+    /// Frames of different shapes are refused with `Mismatch::Shape`, not given a count.
     #[test]
     fn frames_of_different_shapes_are_not_compared() {
         let header = |width: u32| Header {
@@ -572,18 +511,13 @@ mod tests {
                 right: (8, 4)
             }
         );
-        // The words still say it, for whoever reads the message rather than matching on it.
         assert!(
             refused.to_string().contains("not a difference"),
             "{refused}"
         );
     }
 
-    /// **A format that differs is its own answer**, not a shape difference by another route.
-    ///
-    /// This is what having a type buys: a harness branches on the two, because a shape changing
-    /// because a title changed mode and a format changing because the grabber was rebuilt call
-    /// for different things.
+    /// Frames of different formats are refused with `Mismatch::Format`, distinct from shape.
     #[test]
     fn frames_of_different_formats_are_refused_and_say_which() {
         let header = |format: u32| Header {
@@ -609,7 +543,7 @@ mod tests {
         );
     }
 
-    /// The port the design chose is the one the code names, rather than one in prose.
+    /// The grab port constant matches the design document.
     #[test]
     fn the_grab_port_is_the_one_the_design_chose() {
         assert_eq!(super::PORT, 9022);

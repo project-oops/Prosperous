@@ -1,9 +1,8 @@
 //! What the bridge tells a client about itself: the ports, the identity, and `serverinfo`.
 //!
-//! `serverinfo` is the first thing a Moonlight client reads, before pairing and before every
-//! session. It has to answer in the exact shape the client parses or the client decides there is
-//! no host here - so the fields below are the ones Sunshine returns, with the values a bridge in
-//! front of Porthole can honestly give: H.264 only, one target, on a LAN.
+//! A client reads `serverinfo` before pairing and before every session, and ignores a host whose
+//! reply it cannot parse. The fields are the ones Sunshine returns, with the values this bridge
+//! can give: H.264 only, one target, on a LAN.
 
 use std::net::Ipv4Addr;
 
@@ -18,8 +17,8 @@ pub const VIDEO_PORT: u16 = 47998;
 /// The UDP port the ENet control-and-input channel runs on.
 pub const CONTROL_PORT: u16 = 47999;
 
-/// The GameStream version the bridge reports. Clients gate behaviour on the major version
-/// (7 and up choose SHA-256 pairing and the modern control protocol), so this is 7.x deliberately.
+/// The GameStream version the bridge reports. Clients gate behaviour on the major version: 7 and
+/// up choose SHA-256 pairing and the encrypted control protocol.
 const APP_VERSION: &str = "7.1.431.0";
 /// The companion version string the client also reads.
 const GFE_VERSION: &str = "3.23.0.74";
@@ -33,7 +32,7 @@ pub struct Host {
     pub hostname: String,
     /// The address the client should reach this machine on.
     pub local_ip: Ipv4Addr,
-    /// A MAC-shaped identifier; the client stores it but does nothing that needs it to be real.
+    /// A MAC-shaped identifier; the client stores it but nothing needs it to be real.
     pub mac: String,
 }
 
@@ -51,8 +50,7 @@ impl Host {
 
     /// The `serverinfo` document, in the paired or unpaired state.
     ///
-    /// `paired` flips `PairStatus`, which is how a client decides whether to offer to pair or to
-    /// stream. Everything else is constant: one H.264 host on a LAN.
+    /// `paired` sets `PairStatus`, which decides whether a client offers to pair or to stream.
     #[must_use]
     pub fn serverinfo(&self, paired: bool) -> String {
         let pair_status = u8::from(paired);
@@ -87,7 +85,7 @@ impl Host {
     }
 }
 
-/// A random UUID string (version-4 shaped). Its only job is to be stable and unique per host.
+/// A random version-4-shaped UUID string.
 fn random_uuid() -> String {
     let b = rand::random::<[u8; 16]>();
     format!(
@@ -130,6 +128,7 @@ mod tests {
     use super::Host;
     use std::net::Ipv4Addr;
 
+    /// `serverinfo` carries the hostname, the id and the requested pair status.
     #[test]
     fn serverinfo_reports_the_pair_status_and_is_well_formed() {
         let host = Host::new("prosperous-test".into(), Ipv4Addr::new(192, 168, 1, 50));
@@ -141,6 +140,7 @@ mod tests {
         assert!(paired.contains("<PairStatus>1</PairStatus>"));
     }
 
+    /// The generated id has the length and hyphens of a UUID.
     #[test]
     fn the_generated_uuid_is_uuid_shaped() {
         let host = Host::new("h".into(), Ipv4Addr::LOCALHOST);

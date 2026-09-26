@@ -1,19 +1,13 @@
 name: Deploy landing page to GitHub Pages
 
-# Publishes frontend/web/ to Pages on every push to main.
-#
-# `configure-pages` is asked to enable Pages itself, so a fresh clone of this
-# repository does not need somebody to visit Settings first - the one manual
-# step that is invisible until the deploy fails.
+# Publishes frontend/web/ and the rendered docs/ to Pages on every push to main.
+# `configure-pages` enables Pages itself, so no manual Settings step is needed.
 
 on:
   push:
     branches: [main]
     paths:
       - "frontend/web/**"
-      # `docs/**` because this workflow *renders* docs/ through the shared script - leaving it
-      # out meant editing documentation never rebuilt the site, so the published pages silently
-      # lagged the repository. A glossary added to docs/ 404'd on a site that reported success.
       - "docs/**"
       - "assets/logo.svg"
       - ".github/workflows/pages.yml"
@@ -31,21 +25,12 @@ concurrency:
 jobs:
   build:
     name: Build site bundle
-    # GitHub Pages does not serve a private repository on a free plan, and turning this
-    # repository private turned Pages off with it. Without this guard the workflow would fail on
-    # every push - a red mark that means nothing except that the site is deliberately not there.
-    # Gated rather than deleted: flip the repository back to public and the site returns.
+    # Pages does not serve a private repository on a free plan.
     if: github.event.repository.visibility == 'public'
     runs-on: ubuntu-latest
     steps:
-      # The standard OOPS preamble, the same three steps every workflow in the
-      # collection begins with: the collection, this repository *into* it, then the
-      # siblings this project needs. See docs/BUILDING.md.
-      #
-      # The docs render needs no build, so nothing here would fail without the layout
-      # today. It is the same shape anyway: orbistoun's Pages job *does* build rustdoc,
-      # it was the one workflow left on a flat checkout, and it broke the moment that
-      # project grew a path dependency. One shape means that cannot happen twice.
+      # The standard OOPS preamble: the collection, this repository inside it, then the
+      # siblings this project needs.
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/OOPS
@@ -61,7 +46,7 @@ jobs:
       - name: Siblings this build needs
         run: OOPS/bin/oops bootstrap prosperous
         env:
-          # Empty unless the org secret exists, and empty is the old behaviour.
+          # Empty unless the org secret exists.
           OOPS_CI_TOKEN: ${{ secrets.OOPS_CI_TOKEN }}
 
       - name: Assemble bundle

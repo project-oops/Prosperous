@@ -1,24 +1,12 @@
 //! Watching the stand-in stream: read it, count it, and pipe it to a player.
 //!
-//! # Why this both reads and does not decode
+//! Decoding stays out of this crate (`docs/VIDEO.md` part three): it would need a large C or
+//! C++ dependency through FFI in a workspace that forbids unsafe code. A player alone says
+//! "no picture" for several different faults, so the bytes pass through here on their way to
+//! the player's standard input, and the counts say which fault it is.
 //!
-//! `docs/VIDEO.md` part three hands encoded frames to a media player, because decoding here
-//! would mean a large C or C++ dependency reached through FFI in a workspace that **forbids**
-//! unsafe code - to show a picture `mpv` shows for free.
-//!
-//! But a player answers exactly one question and it is the wrong one. *No picture* is what it
-//! says whether nothing arrived, something arrived that was not video, or video arrived with
-//! no keyframe in it - and those are three different faults in three different places.
-//!
-//! So the bytes come **through** this rather than past it. One socket, read here, counted
-//! here, and written to the player's own input. The player shows the picture and this says
-//! what went by, and neither has to be trusted about the other's job.
-//!
-//! # Why a thread
-//!
-//! A stream is a socket that blocks, and a window that stops repainting is indistinguishable
-//! from one that has crashed. So the pump runs on its own thread and the window reads a
-//! snapshot of counters, which is the same arrangement every long job in this project uses.
+//! The pump runs on its own thread because the socket blocks; the window reads a snapshot of
+//! the counters.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -28,9 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// The port the stand-in serves video on.
+/// The port the stand-in serves video on (`docs/VIDEO.md` part three).
 ///
-/// From `docs/VIDEO.md` part three. **Ours to choose**, because both ends are ours.
+/// Both ends are ours, so the value is a choice rather than a measurement.
 pub const PORT: u16 = 9805;
 
 /// How long to wait for a target to accept.
@@ -38,26 +26,19 @@ pub const PATIENCE: Duration = Duration::from_secs(3);
 
 /// How much to read at once.
 ///
-/// A frame is far larger than this, so a read is a piece of one. Sized to be a useful write to
-/// a player rather than to match anything about the codec.
+/// Sized to be a useful write to a player, not to match anything about the codec.
 const MOUTHFUL: usize = 32 * 1024;
 
 /// How long a rate is measured over.
 ///
-/// **Short enough that a stall shows up while somebody is still looking**, long enough that a
-/// figure does not jitter with every read.
+/// Short enough that a stall shows while somebody is looking, long enough not to jitter.
 const WINDOW: Duration = Duration::from_secs(1);
 
 /// How long a read waits before looping.
 ///
-/// **Not a timeout in the sense of a failure.** A payload between frames produces exactly this
-/// and treating it as an end would close a working stream. It is short because the loop is
-/// also where the rate window closes, and a stalled stream should say so in about a second
-/// rather than in five.
-///
-/// The read reports it under two names: `WouldBlock` on Unix and `TimedOut` on Windows. The
-/// pump takes both as this pause, because taking only the first ended every Windows watch at
-/// its first half-second between frames.
+/// A timeout here is a pause, not a failure: a stream between frames produces it. It is short
+/// because the loop also closes the rate window, so a stall shows within about a second.
+/// The read reports it as `WouldBlock` on Unix and `TimedOut` on Windows; the pump takes both.
 const BREATH: Duration = Duration::from_millis(500);
 
 /// What the watcher is doing.
@@ -70,8 +51,7 @@ pub enum Status {
     Watching,
     /// It ended, for this reason.
     ///
-    /// **Includes ending cleanly.** A stream that stopped because the payload stopped is not a
-    /// failure, and it is not the same as one nobody started - so it says which.
+    /// Includes ending cleanly, which is distinct from never having started.
     Ended(String),
     /// It could not start at all.
     Failed(String),
@@ -113,20 +93,14 @@ pub struct Counts {
     pub player_alive: bool,
     /// Bytes a second, over the last window.
     ///
-    /// **`None` until a window has closed**, which is not the same as zero. A rate of nothing
-    /// is a stalled stream; no rate yet is a stream that has not been watched long enough to
-    /// have one, and showing the second as the first would accuse a healthy stream.
+    /// `None` until a window has closed, which is not the same as zero: zero is a stalled
+    /// stream, `None` is one not watched long enough to have a rate.
     pub rate: Option<Rate>,
 }
 
 /// How fast it is arriving, over one window.
 ///
-/// # Why cumulative counts are not enough
-///
-/// Bytes and units only ever climb, so a stream delivering sixty frames a second and one
-/// delivering a frame every four seconds look the same in a panel - both are *going up*. The
-/// difference between those two is the difference between a stream and a slideshow, and it is
-/// invisible without a rate.
+/// Cumulative counts climb for a stream and for a slideshow alike; only a rate separates them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rate {
     /// Bytes a second.
@@ -139,8 +113,7 @@ impl Rate {
     /// How to put it to somebody.
     #[must_use]
     pub fn describe(&self) -> String {
-        // A stalled stream says so in words rather than as `0.0/s`, which reads as a figure
-        // somebody has to interpret rather than a fault.
+        // A stall is said in words, because `0.0/s` reads as a figure rather than a fault.
         if self.units < 0.05 && self.bytes < 1.0 {
             return "nothing arriving".to_owned();
         }
@@ -149,9 +122,8 @@ impl Rate {
 
     /// Whether this is a stream rather than a slideshow.
     ///
-    /// **Ten a second**, which is well under any real frame rate and well over what raw grabs
-    /// could ever manage - so it separates the two designs in `docs/VIDEO.md` rather than
-    /// grading the picture.
+    /// Ten a second is well under any real frame rate and well over what raw grabs manage, so
+    /// it separates the two designs in `docs/VIDEO.md` rather than grading the picture.
     #[must_use]
     pub fn is_moving(&self) -> bool {
         self.units >= 10.0
@@ -173,16 +145,9 @@ fn size(bytes: f64) -> String {
 impl Counts {
     /// What to tell somebody looking at a window with no picture in it.
     ///
-    /// # The whole reason this counts anything
-    ///
-    /// A player says *no picture* for at least four different reasons and cannot tell them
-    /// apart. This can, because it saw the bytes:
-    ///
-    /// - nothing arrived at all - the payload is not sending
-    /// - bytes arrived and none of them framed - it is not this kind of stream
-    /// - units arrived with no keyframe - a decoder has nothing to start from, and this looks
-    ///   *exactly* like no stream at all
-    /// - everything arrived and the player is gone - the fault is on this side
+    /// Separates the causes a player cannot: nothing arrived; bytes arrived and none framed;
+    /// units arrived with no keyframe; everything arrived and the player is gone; or the
+    /// stream arrives too slowly to be one.
     #[must_use]
     pub fn diagnose(&self) -> Option<String> {
         if !self.status.is_watching() {
@@ -210,10 +175,8 @@ impl Counts {
         if let Some(rate) = self.rate
             && !rate.is_moving()
         {
-            // **The counts still climb here**, which is why this needs saying: everything
-            // above is satisfied and the thing on screen is a slideshow. This is exactly what
-            // the raw-grab fallback in `docs/VIDEO.md` part two looks like if it were ever
-            // mistaken for the stand-in - about two frames a second.
+            // Every check above passes and the counts still climb; this is what the raw-grab
+            // fallback in `docs/VIDEO.md` part two looks like, about two frames a second.
             return Some(format!(
                 "arriving at {} - that is not a stream, it is a slideshow",
                 rate.describe()
@@ -250,13 +213,8 @@ impl Watching {
 
     /// The same, with the rate window stated rather than assumed.
     ///
-    /// # Why this exists
-    ///
-    /// **A test whose verdict depends on how busy the machine is, is a test that lies.** The
-    /// claim *"a run shorter than a window has no rate"* was checked by serving frames with no
-    /// delay and trusting that to finish inside a second - which it does, until eleven other
-    /// socket tests run beside it, and then a window closes, a rate appears, and a correct
-    /// pump is reported as broken. Naming the window makes the premise true by construction.
+    /// A test that depends on a run finishing inside one window would depend on machine load;
+    /// naming the window makes that premise hold by construction.
     #[must_use]
     pub fn idle_measuring_over(window: Duration) -> Self {
         Self {
@@ -280,8 +238,8 @@ impl Watching {
 
     /// Asks the pump to stop.
     ///
-    /// **Asks rather than kills**, so the player is closed the way it expects and the socket
-    /// is shut rather than abandoned.
+    /// Asks rather than kills, so the player is closed the way it expects and the socket is
+    /// shut rather than abandoned.
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::Relaxed);
     }
@@ -312,19 +270,13 @@ impl Watching {
 
 /// Splits a configured command line into a program and its arguments.
 ///
-/// # Why this lives here now
-///
-/// It was in the module that launched a remote-play client, and Porthole borrowed it for the
-/// player. That module is gone - this project serves its own stream and does not drive
-/// somebody else's client - so the one piece of it Porthole actually used comes with it.
-///
-/// Split on spaces, which is the whole of it. **Not a shell**: no quoting, no expansion, no
-/// pipelines. A command that needs those needs a script, and a script is one word.
+/// Split on spaces only - not a shell: no quoting, no expansion, no pipelines. A command that
+/// needs those belongs in a script.
 ///
 /// # Errors
 ///
-/// When the line is empty once comments and spaces are gone - there is nothing to run, and
-/// launching nothing quietly would look exactly like launching something that failed.
+/// When the line is empty once comments and spaces are gone, since launching nothing quietly
+/// would look like launching something that failed.
 pub fn parts(template: &str, address: &str) -> Result<(String, Vec<String>), String> {
     let filled = template.replace("{address}", address);
     let mut words = filled.split_whitespace().map(str::to_owned);
@@ -362,8 +314,8 @@ pub fn configured() -> Option<String> {
 /// What to write into that file so somebody can edit it.
 #[must_use]
 pub fn example() -> String {
-    // `-` is the convention for reading from standard input, and the low-latency options are
-    // what stop a player buffering several seconds of a live stream before showing anything.
+    // `-` reads standard input; the low-latency options stop the player buffering seconds of
+    // a live stream before showing anything.
     "# The player the stand-in stream is piped into. One line, split on spaces.\n\
      #\n\
      # It reads the stream on its standard input, so the last word is usually a dash. The\n\
@@ -429,8 +381,8 @@ fn pump(
         .spawn()
     {
         Ok(child) => child,
-        // Naming the program matters: *could not start* almost always means it is not
-        // installed where the line says, and the line is the thing to edit.
+        // Named, because a failed start almost always means the program is not where the
+        // configured line says, and that line is the thing to edit.
         Err(why) => return give_up(counts, format!("could not run {program}: {why}")),
     };
     let Some(mut sink) = player.stdin.take() else {
@@ -452,8 +404,8 @@ fn pump(
         &mut || matches!(player.try_wait(), Ok(None)),
     );
 
-    // Closing the pipe is what tells a player the stream is over; killing it first would take
-    // the picture away before it had finished with what it already had.
+    // Closing the pipe tells the player the stream is over; killing it first would drop the
+    // frames it already holds.
     drop(sink);
     let _ = player.wait();
     if let Ok(mut held) = counts.lock() {
@@ -466,19 +418,9 @@ fn pump(
 ///
 /// Returns why it stopped, in words.
 ///
-/// # Why the ends are borrowed rather than owned
-///
-/// Because the interesting half of this is what it *counts*, and every one of the four faults
-/// [`Counts::diagnose`] distinguishes can be produced by a source that is not a socket and
-/// observed through a sink that is not a player.
-///
-/// A version of this that could only be exercised by opening a real connection and starting a
-/// real media player would be a version nobody exercised. **The claims that stream a player
-/// sees is byte-identical to the stream that arrived, and that a start code split across two
-/// reads is still one unit, are exactly the kind that go untested and turn out to be false.**
-///
-/// `alive` is asked rather than passed, because whether a player is still running is a
-/// question with an answer that changes while this runs.
+/// The ends are borrowed trait objects so that every fault [`Counts::diagnose`] separates can
+/// be produced and checked without a socket or a real player. `alive` is a closure because
+/// whether the player runs changes while this runs.
 fn carry(
     from: &mut dyn Read,
     to: &mut dyn Write,
@@ -496,17 +438,9 @@ fn carry(
 
     /// Records the last unit and reports the final counts.
     ///
-    /// # Why the ending needs its own step
-    ///
-    /// A unit is only known to be whole when the **next** start code arrives, so at any moment
-    /// the last one read is still being held. That is right while a stream is running - it is
-    /// one frame of lag in a counter nobody is timing against.
-    ///
-    /// At the end it is a lie, and a specific one. **A payload that sent a single keyframe and
-    /// stopped would be reported as having sent no keyframe**, which `diagnose` reads as *a
-    /// decoder has nothing to start from* - accusing a stream that was correct.
-    ///
-    /// Found by the fake payload on the first run against it, which is what it was built for.
+    /// A unit is known to be whole only when the next start code arrives, so the last one is
+    /// always held. At the end it must be flushed, or a stream that sent a single keyframe
+    /// would be reported as having sent none.
     macro_rules! settle {
         ($why:expr) => {{
             reader.finish();
@@ -529,29 +463,23 @@ fn carry(
             Ok(some) => {
                 let got = &buffer[..some];
                 reader.feed(got);
-                // **Written on before the counters are updated.** A frame delayed by
-                // bookkeeping is latency, and the counters are for a person reading a panel
-                // rather than for anything that has to be exact.
+                // Written on before the counters are updated: the frame's latency matters,
+                // the counters' does not.
                 if let Err(why) = to.write_all(got) {
                     bytes = bytes.saturating_add(some as u64);
                     settle!(format!("the player stopped reading: {why}"));
                 }
                 bytes = bytes.saturating_add(some as u64);
             }
-            // A read that timed out, under whichever name this platform gives it - Unix
-            // says `WouldBlock`, Windows says `TimedOut`. Matching only the first sent every
-            // Windows watch to `Ended` at its first quiet half-second, with a message about
-            // the connected party failing to respond that reads as the target's fault.
+            // A read timeout: `WouldBlock` on Unix, `TimedOut` on Windows.
             Err(why)
                 if matches!(
                     why.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
-                // Nothing this window. Not an end - a payload between frames looks exactly
-                // like this, and treating it as a stop would close a working stream. It still
-                // falls through to the bookkeeping below, so a stalled stream's rate goes to
-                // zero rather than freezing at whatever it last managed.
+                // A pause between frames, not an end. It falls through to the bookkeeping so a
+                // stalled stream's rate drops to zero rather than freezing.
             }
             Err(why) => settle!(why.to_string()),
         }
@@ -559,10 +487,8 @@ fn carry(
         let elapsed = window.elapsed();
         let rate = (elapsed >= over).then(|| {
             let seconds = elapsed.as_secs_f64();
-            // Through `u32` because that conversion cannot lose anything, where `u64` to
-            // `f64` can. A window is about a second, so saturating would need four gigabytes
-            // in one - and a figure that saturated would read as *very fast*, which at that
-            // point it would be.
+            // Through `u32`, which converts to `f64` losslessly where `u64` does not. Saturating
+            // would need four gigabytes in one window, and would still read as very fast.
             let over = |delta: u64| f64::from(u32::try_from(delta).unwrap_or(u32::MAX)) / seconds;
             let measured = Rate {
                 bytes: over(bytes - was_bytes),
@@ -580,8 +506,7 @@ fn carry(
             held.keyframes = reader.keyframes;
             held.pending = reader.pending();
             held.player_alive = alive();
-            // Kept when the window has not closed, so the figure on screen does not blink out
-            // between measurements.
+            // Kept between windows, so the figure on screen does not blink out.
             if rate.is_some() {
                 held.rate = rate;
             }
@@ -591,9 +516,8 @@ fn carry(
 
 /// Watches a stream that is already open, writing it somewhere that is not a player.
 ///
-/// **For tests and for anything that wants the counting without the picture.** It is the same
-/// pump the window uses, so what a test exercises is the code that runs in the window
-/// rather than a second implementation that agrees with it today.
+/// For tests and for anything that wants the counting without the picture. It is the same pump
+/// the window uses, not a second implementation.
 ///
 /// Blocks until the stream ends. Returns why it stopped.
 pub fn carry_into(from: &mut dyn Read, to: &mut dyn Write, watching: &Watching) -> String {
@@ -629,10 +553,7 @@ mod tests {
         assert_eq!(counts.diagnose(), None, "nothing has been tried");
     }
 
-    /// **Each reason for no picture is told apart from the others.**
-    ///
-    /// This is the whole argument for reading a stream nobody decodes: a player says *no
-    /// picture* for all four of these and cannot say which.
+    /// Each reason for no picture is told apart from the others.
     #[test]
     fn the_reasons_for_no_picture_are_distinguished() {
         let watching = |bytes, units, keyframes, player_alive| Counts {
@@ -642,7 +563,7 @@ mod tests {
             keyframes,
             pending: 0,
             player_alive,
-            // No window has closed yet, which is deliberately not the same as a rate of zero.
+            // No window has closed yet, which is not the same as a rate of zero.
             rate: None,
         };
 
@@ -652,7 +573,6 @@ mod tests {
         let said = watching(9_000, 0, 0, true).diagnose().expect("no framing");
         assert!(said.contains("none of it framed"), "{said}");
 
-        // The one that hides: a stream carrying data that decodes to nothing.
         let said = watching(9_000, 40, 0, true)
             .diagnose()
             .expect("no keyframe");
@@ -662,11 +582,10 @@ mod tests {
         let said = watching(9_000, 40, 2, false).diagnose().expect("no player");
         assert!(said.contains("player has gone"), "{said}");
 
-        // Everything working says nothing at all.
         assert_eq!(watching(9_000, 40, 2, true).diagnose(), None);
     }
 
-    /// **Ending is not the same as never having started.**
+    /// Ending is not the same as never having started.
     #[test]
     fn a_stream_that_ended_is_not_a_stream_nobody_began() {
         let ended = Status::Ended("the target closed the connection".to_owned());
@@ -688,11 +607,7 @@ mod tests {
         assert!(watching.stopping());
     }
 
-    /// **A stream and a slideshow are told apart**, even though every count is climbing.
-    ///
-    /// This is the fault that survives all four of the checks above: bytes arrive, they frame,
-    /// there are keyframes, the player is alive - and what is on screen is two frames a
-    /// second. Cumulative counters cannot see it, because both cases only ever go up.
+    /// A stream and a slideshow are told apart even though every count climbs.
     #[test]
     fn a_slideshow_is_not_a_stream() {
         let with = |rate| Counts {
@@ -705,7 +620,7 @@ mod tests {
             rate: Some(rate),
         };
 
-        // The raw-grab fallback's measured ceiling: about two frames a second.
+        // The raw-grab fallback's ceiling: about two frames a second.
         let crawling = super::Rate {
             bytes: 16_600_000.0,
             units: 2.0,
@@ -714,8 +629,7 @@ mod tests {
         let said = with(crawling).diagnose().expect("two a second is a fault");
         assert!(said.contains("slideshow"), "{said}");
 
-        // Note this is a *fast* slideshow. Sixteen megabytes a second and still wrong, which
-        // is why the rate that matters is units rather than bytes.
+        // A fast slideshow in bytes, which is why the rate that matters is units.
         assert!(
             crawling.describe().contains("MB/s"),
             "{}",
@@ -741,8 +655,7 @@ mod tests {
         assert!(!stalled.is_moving());
     }
 
-    /// The example names a player and reads from standard input, which is the whole contract
-    /// between this and whatever shows the picture.
+    /// The example names a player that reads the stream from standard input.
     #[test]
     fn the_example_command_reads_a_stream_from_its_input() {
         let example = super::example();
@@ -757,12 +670,7 @@ mod tests {
         );
     }
 
-    /// **A read that timed out is a pause, under either name a platform gives it.**
-    ///
-    /// The pump reads with a timeout so that a stop is noticed and a stalled rate falls to
-    /// zero. Unix reports that timeout as `WouldBlock` and Windows as `TimedOut`, and a pump
-    /// that knew only the first ended every Windows watch at its first quiet half-second. So
-    /// both are fed here, with no socket, and each must be gone round rather than settled on.
+    /// A read timeout is a pause under either name (`WouldBlock`, `TimedOut`), not an end.
     #[test]
     fn a_read_that_timed_out_is_a_pause_under_either_name() {
         use std::io::ErrorKind;

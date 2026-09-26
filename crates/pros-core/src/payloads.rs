@@ -1,22 +1,8 @@
-//! What is described, what is trustworthy, and what is actually on the target.
+//! What is described, what is trustworthy, and what is on the target.
 //!
-//! # Why this is a crate and not a panel
-//!
-//! Putting a manifest beside a check and saying *this one is loaded and that one is not* is
-//! a judgement, and judgements do not live in windows. The command line asks the same
-//! question and gets the same answer, which is the only way two front ends stay agreed.
-//!
-//! # The distinction the whole module exists for
-//!
-//! **A payload nothing here can see is not a payload that is absent.**
-//!
-//! Five services have known ports, so their presence is a measurement. Everything else in a
-//! repository - a cheat menu, a file manager, anything somebody added - has no port this
-//! project knows, and no amount of probing will find it. Reporting those as *not loaded*
-//! would be inventing a measurement, and it would be believed, because it sits in the same
-//! column as the ones that are real.
-//!
-//! So there are three answers and not two, and [`Presence::Unknown`] is the honest one.
+//! Lives here rather than in a window so the command line and the window give the same
+//! answer. A payload nothing here can see is not absent: only services with a known port (or
+//! a port the manifest declares) are measured, and everything else is [`Presence::Unknown`].
 
 use std::collections::BTreeMap;
 
@@ -34,8 +20,8 @@ pub enum Trust {
     Verifiable,
     /// It does not, and this is why.
     ///
-    /// **Carried rather than reduced to a flag**: *no checksum at all* and *a digest in an
-    /// algorithm this cannot check* need different work from different people.
+    /// Carries the reason because no checksum at all and a digest in an unsupported algorithm
+    /// need different work.
     Doubtful(Unreadable),
 }
 
@@ -54,30 +40,23 @@ pub enum Presence {
     Loaded,
     /// Its service did not answer.
     NotLoaded,
-    /// **Nothing here can tell.**
+    /// Nothing here can tell: no check has been run, or this payload has no known port.
     ///
-    /// Either no check has been run, or this payload is not one of the services with a port
-    /// this project knows. Distinct from [`Presence::NotLoaded`] on purpose: reporting an
-    /// unknown as absent is inventing a measurement, and it would sit in the same column as
-    /// the real ones and be believed.
+    /// Distinct from [`Presence::NotLoaded`], which is a measurement.
     Unknown,
 }
 
 /// Whether the payload will be there after the next power cycle.
 ///
-/// **A different question from [`Presence`], with the same-looking answer.** A service can be
-/// answering now and absent from the boot list, which means it is there until somebody turns
-/// the target off - and that is usually the finding somebody actually needed.
+/// A different question from [`Presence`]: a service can answer now and be absent from the
+/// boot list, so it is gone after the next power cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Boot {
     /// It is in the boot list, at this position.
     At(usize),
     /// The boot list was read and does not name it.
     NotInList,
-    /// The boot list was not read.
-    ///
-    /// **Not the same as absent**, for the same reason [`Presence::Unknown`] is not: a list
-    /// nobody fetched says nothing at all about what is in it.
+    /// The boot list was not read, so nothing is known about what it names.
     Unknown,
 }
 
@@ -96,9 +75,8 @@ pub struct Row<'a> {
 
 /// Puts a manifest beside a check.
 ///
-/// `report` is optional because the two questions are independent: a manifest can be read
-/// with no target present at all, and saying *unknown* for every row is a better answer
-/// than refusing to show the manifest.
+/// `report` and `chain` are optional: a manifest can be read with no target present, and then
+/// every row says unknown.
 #[must_use]
 pub fn survey<'a>(
     manifest: &'a Manifest,
@@ -126,19 +104,8 @@ pub fn survey<'a>(
 
 /// Groups a survey the way the repository groups itself.
 ///
-/// # Why the repository's own categories rather than any of mine
-///
-/// A target's repository sorts its entries into a handful of groups - loaders, servers,
-/// system tools - written by whoever curates it. Twenty-five entries in one list looks like
-/// duplication when it is really `ftpsrv`, `ftpsrv-drakmor` and `zftpd` sitting next to each
-/// other, and grouping them by what they are for makes that legible.
-///
-/// **Inventing a taxonomy here would be worse than using theirs**: theirs travels with the
-/// data, updates when the data updates, and is the one a person sees in every other tool
-/// that reads the same file.
-///
-/// Entries with no category go in a group of their own, last, named for what they are: not
-/// categorised. They are not quietly filed under something plausible.
+/// The repository's own categories travel with the data and match every other tool that
+/// reads the same file. Entries with no category go in a group of their own, last.
 #[must_use]
 pub fn by_category<'a, 'p>(rows: &'a [Row<'p>]) -> Vec<(&'a str, Vec<&'a Row<'p>>)> {
     /// What an entry with no category is filed under.
@@ -156,8 +123,7 @@ pub fn by_category<'a, 'p>(rows: &'a [Row<'p>]) -> Vec<(&'a str, Vec<&'a Row<'p>
     }
 
     let mut ordered: Vec<(&str, Vec<&Row<'p>>)> = groups.into_iter().collect();
-    // Alphabetical, except that the ones nobody classified go last - they are the group a
-    // person is least likely to be looking for and the one most likely to grow.
+    // Alphabetical, with the unclassified group last.
     ordered.sort_by_key(|(name, _)| (*name == UNSORTED, *name));
     ordered
 }
@@ -167,9 +133,8 @@ fn presence_of(name: &str, report: Option<&Report>) -> Presence {
     let Some(report) = report else {
         return Presence::Unknown;
     };
-    // A port the manifest declared for itself. Checked first because it is the more specific
-    // statement: somebody wrote this down about *this* entry, where the table below is this
-    // project's own list of five.
+    // A port the manifest declares for this entry is more specific than the known-service
+    // table, so it is checked first.
     if let Some(found) = report.declared.get(name) {
         return if found.open {
             Presence::Loaded
@@ -177,9 +142,8 @@ fn presence_of(name: &str, report: Option<&Report>) -> Presence {
             Presence::NotLoaded
         };
     }
-    // Matched by the name the service's own project uses, which is the name a repository
-    // entry carries. A repository that spells one differently reads as unknown rather than
-    // as absent, which is the right way for that to fail.
+    // Matched by the name the service's own project uses, which a repository entry carries.
+    // A different spelling reads as unknown rather than absent.
     if !SERVICES.iter().any(|service| service.name == name) {
         return Presence::Unknown;
     }
@@ -198,20 +162,12 @@ fn presence_of(name: &str, report: Option<&Report>) -> Presence {
 
 /// Every payload file the manager holds, found by looking inside its folders.
 ///
-/// # Why one level down and not the top
-///
-/// Measured: the manager keeps `/data/pldmgr/payloads/<name>/<name>_<version>.elf`, with a
-/// `.json` beside some of them. A listing of the top level is therefore almost all
-/// directories - a scan that took only the files there found **one payload out of ten**, and
-/// found it because somebody had dropped a loose copy in.
-///
-/// Both halves come back, because two callers need different ones - see [`There`].
+/// Measured on a target: the manager keeps `/data/pldmgr/payloads/<name>/<name>_<version>.elf`,
+/// with a `.json` sidecar beside some, so the scan looks one folder down as well as at the top.
 ///
 /// # Errors
 ///
-/// Only when the top of the walk cannot be listed. **A folder that will not open is skipped
-/// rather than failing the scan**: one unreadable directory should not hide the nine that
-/// were fine.
+/// Only when the top of the walk cannot be listed. A folder that will not open is skipped.
 pub fn on_target_at(
     link: &pros_link::Link,
     root: &str,
@@ -247,9 +203,7 @@ pub fn on_target_at(
             if !one.is_usable() {
                 continue;
             }
-            // **Noted from the listing rather than guessed at.** Asking for `<file>.json` for
-            // every payload would be a fetch per file, most of them for something that is not
-            // there - two payloads on the target this was written against have no sidecar.
+            // Sidecars are taken from the listing, so only ones that exist are fetched.
             if one.name.to_ascii_lowercase().ends_with(".elf.json") {
                 sidecars.push(format!("{inside}/{}", one.name));
                 continue;
@@ -265,8 +219,8 @@ pub fn on_target_at(
         }
     }
 
-    // Fetched only where the listing said one exists, and only for what is on the target's own
-    // disk: a sidecar on a stick describes a payload no startup list can resolve anyway.
+    // Internal storage only: a payload on removable storage cannot be relied on by a startup
+    // list, so its sidecar is not worth the fetch.
     if storage == Where::Internal {
         for path in sidecars {
             let Some(payload) = path.strip_suffix(".json") else {
@@ -291,26 +245,18 @@ pub fn on_target_at(
 
 /// Where a payload file lives, and what that means for a startup list.
 ///
-/// # Read from the manager's own source, because the two lists differ
-///
-/// `payload_mgr_resolve_path` - what the manager uses to turn a startup-list name into a file -
-/// searches `SCAN_DIRS`, which is `/data/pldmgr` and `/mnt/usbN/pldmgr`. Its **listing** for the
-/// web interface scans more than that: with `SCAN_USB_PAYLOADS=1` it also walks the root of
-/// every stick.
-///
-/// So the manager will show payloads it can never autoload. A list naming one of those is a
-/// list with an entry that fails at every boot, and the only sign is a line in a log nobody
-/// reads.
+/// From the manager's source: `payload_mgr_resolve_path`, which resolves a startup-list name,
+/// searches `SCAN_DIRS` (`/data/pldmgr` and `/mnt/usbN/pldmgr`), but its web listing with
+/// `SCAN_USB_PAYLOADS=1` also walks the root of every stick. It lists payloads it can never
+/// autoload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Where {
     /// On the target's own disk, under the manager's directory. Always resolvable.
     Internal,
-    /// Under `pldmgr` on removable storage. **Resolvable only while that is plugged in.**
+    /// Under `pldmgr` on removable storage. Resolvable only while that is plugged in.
     Removable,
-    /// Elsewhere on removable storage.
-    ///
-    /// **Listed by the manager and never resolvable by it.** An entry naming one of these
-    /// cannot load, with or without the stick.
+    /// Anywhere the manager cannot resolve: elsewhere on removable storage, or outside its
+    /// directory. A startup-list entry naming one of these never loads.
     Unreachable,
 }
 
@@ -350,14 +296,8 @@ impl Where {
 
 /// A payload file on the target, and where it is.
 ///
-/// # Why both, when the name used to be enough
-///
-/// The startup list names a **bare filename** and lets the manager resolve it, so that is what
-/// the autoload screen needs. Anything that *runs* a file needs the **path** - and the scan
-/// looks one folder down, so the path is not something a caller can reconstruct from the name.
-///
-/// Returning only the name meant the one thing that knew where a payload was threw it away,
-/// and every later question about it had to be answered with a guess or not at all.
+/// The startup list names a bare filename; anything that runs the file needs the path, which
+/// cannot be reconstructed from the name because the scan looks one folder down.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct There {
     /// The file's own name, which is what the startup list refers to.
@@ -368,85 +308,56 @@ pub struct There {
     pub storage: Where,
     /// What the manager recorded beside it, if anything.
     ///
-    /// # Why the file next to the file
-    ///
-    /// **A payload carries no version.** Measured: no `VERSION` macro in any of these
-    /// projects, and a real `elfldr_v0.24.elf` pulled off a target contains no version string,
-    /// no `.note` section and no build id. The only strings in it are symbol and source names.
-    ///
-    /// So a version is metadata that travels alongside, and the manager writes it into a
-    /// `<filename>.json` sidecar when it installs from a repository. That sidecar is the only
-    /// place a build's **checksum** is recorded on the target, which makes it the only thing
-    /// that can answer *is this the version the list describes* without fetching the file back
-    /// and hashing it.
-    ///
-    /// `None` for a payload put there by hand or by an autoloader - which is a real state and
-    /// not a defect. Two of the payloads on the target this was written against have no
-    /// sidecar at all, and for those the filename is the only claim about what they are.
+    /// A payload carries no version: an `elfldr_v0.24.elf` taken from a target has no version
+    /// string, no `.note` section and no build id. The manager writes a `<filename>.json`
+    /// sidecar when it installs from a repository, the only on-target record of version and
+    /// checksum. `None` for a payload put there by hand or by an autoloader.
     pub about: Option<Beside>,
 }
 
 /// What a manager wrote beside a payload when it installed it.
 ///
-/// Deliberately the same shape as a manifest entry, because it **is** one: the manager copies
-/// the repository's description into the sidecar. Reusing the type means a sidecar and a
-/// manifest entry are compared as like for like rather than through a translation.
+/// A manifest entry: the manager copies the repository's description into the sidecar, so
+/// the two compare like for like.
 pub type Beside = Payload;
 
 /// The bytes of the sidecar that describes a payload on the target.
 ///
-/// **Written beside a payload, because the payload itself cannot say.** No ELF in any of these
-/// projects carries a version string, so this file is the only thing on a console that ever
-/// answers *which build is this* - and a payload put there without one is one nothing can
-/// report as out of date, ever.
+/// The payload itself carries no version, so this file is what says which build it is.
 ///
 /// # Errors
 ///
-/// When the description cannot be serialised, which would be a bug in this crate rather than
-/// anything about the payload.
+/// When the description cannot be serialised, which is a bug in this crate.
 pub fn sidecar_for(payload: &Payload) -> Result<Vec<u8>, String> {
     serde_json::to_vec_pretty(payload).map_err(|why| why.to_string())
 }
 
 /// Whether a filename is one the loader would take.
 ///
-/// The `.json` sidecars beside some payloads are description, not code, and offering one for
-/// the startup list would put a line in it that stops the chain.
+/// A `.json` sidecar in the startup list would stop the chain.
 fn is_a_payload(name: &str) -> bool {
     name.to_ascii_lowercase().ends_with(".elf")
 }
 /// Where the manager keeps payloads on the target's own disk.
 pub const INTERNAL: &str = "/data/pldmgr/payloads";
 
-/// Another place on the console's own drive where payloads collect.
+/// Another place on the target's own drive where payloads collect.
 ///
-/// **Not somewhere a startup list can name.** It is where this program's send button used to
-/// default to, which is how payloads came to be on a target's drive and invisible to the thing
-/// that loads them. Scanned so they are seen; marked unreachable so nothing recommends one.
+/// The manager cannot resolve it, so payloads here are scanned and marked unreachable.
 pub const ELSEWHERE: &str = "/data/payloads";
 
 /// Everything the manager can see, wherever it is, tagged with what that means.
 ///
-/// # The roots, read from the manager's own header
-///
-/// `SCAN_DIRS` is `/data/pldmgr` and `/mnt/usbN/pldmgr` for eight sticks, and those are the
-/// **only** places `payload_mgr_resolve_path` looks. Its listing for the web interface walks
-/// the root of every stick as well when `SCAN_USB_PAYLOADS` is on - so it shows payloads it
-/// cannot resolve, and a startup list naming one of those fails at every boot.
-///
-/// This scan covers all three so the difference can be shown rather than discovered.
+/// The roots come from the manager's header: `SCAN_DIRS` is `/data/pldmgr` and
+/// `/mnt/usbN/pldmgr` for eight sticks. The scan also covers what the manager lists but cannot
+/// resolve, tagged [`Where::Unreachable`].
 ///
 /// # Errors
 ///
-/// Only when the internal directory cannot be listed. **A stick that is not there is not a
-/// failure** - it is the normal case, and eight of them are normal eight times over.
+/// Only when the internal directory cannot be listed. A missing stick is not a failure.
 pub fn on_target_everywhere(link: &pros_link::Link) -> Result<Vec<There>, String> {
     let mut found = on_target_at(link, INTERNAL, Where::Internal)?;
-    // **Where this program's own send button has been putting them.** It is on the console's
-    // drive and the manager still cannot resolve it - `payload_mgr_resolve_path` looks in
-    // `/data/pldmgr` and `/mnt/usbN/pldmgr` and nowhere else - so it is listed as unreachable,
-    // which is exactly what it is. Not scanning it at all was worse: a payload somebody had
-    // already sent read as one the target had never seen.
+    // On the target's drive, but outside `SCAN_DIRS`, so unreachable.
     if let Ok(more) = on_target_at(link, ELSEWHERE, Where::Unreachable) {
         found.extend(more);
     }
@@ -462,8 +373,7 @@ pub fn on_target_everywhere(link: &pros_link::Link) -> Result<Vec<There>, String
             found.extend(more);
         }
     }
-    // A file found twice keeps the better answer: internal beats removable beats unreachable,
-    // because that is the one a startup list can rely on.
+    // A file found twice keeps the place a startup list can rely on most.
     found.sort_by(|a, b| {
         a.name
             .to_lowercase()
@@ -536,11 +446,7 @@ mod tests {
         assert_eq!(log.presence, Presence::NotLoaded);
     }
 
-    /// **The rule this module exists for.**
-    ///
-    /// A payload with no port this project knows cannot be found by probing, and saying it
-    /// is absent would be inventing a measurement - in the same column as the real ones,
-    /// where it would be believed.
+    /// A payload with no known port is unknown, never absent.
     #[test]
     fn a_payload_with_no_known_port_is_unknown_and_never_absent() {
         let manifest = manifest();
@@ -570,8 +476,7 @@ mod tests {
         assert_eq!(rows.len(), 3, "the manifest should still be shown in full");
     }
 
-    /// **Answering now and absent from the boot list is a real state**, and it is usually
-    /// the finding somebody needed: it is there until the target is turned off.
+    /// A service can be loaded now and absent from the boot list.
     #[test]
     fn a_service_can_be_loaded_now_and_not_in_the_boot_list() {
         let manifest = manifest();
@@ -610,7 +515,7 @@ klogsrv.elf
         );
     }
 
-    /// **Grouped the way the repository groups itself**, not the way this project would.
+    /// A survey is grouped by the repository's own categories.
     #[test]
     fn a_survey_is_grouped_by_the_repositorys_own_categories() {
         let text = format!(
@@ -662,10 +567,7 @@ klogsrv.elf
         }
     }
 
-    /// **A port in the list makes a payload answerable that this project could not see.**
-    ///
-    /// The whole reason the field exists. Before it, everything outside the five known
-    /// services read as unknown forever, and the only way to widen that was a rebuild.
+    /// A port declared in the manifest is measured like a known service's.
     #[test]
     fn a_declared_port_is_measured_like_any_other() {
         let manifest =
@@ -687,8 +589,7 @@ klogsrv.elf
         );
     }
 
-    /// And a declared port that did not answer is absent, not unknown - because it *was*
-    /// measured. That distinction is the only reason to declare one.
+    /// A declared port that did not answer is absent, not unknown, because it was measured.
     #[test]
     fn a_declared_port_that_is_shut_is_absent_rather_than_unknown() {
         let manifest =
@@ -709,8 +610,7 @@ klogsrv.elf
 
 /// How an installed payload compares to what the list describes.
 ///
-/// **Three answers, not two.** A version nobody recorded is not an old version, and drawing it
-/// as one would invent a measurement - the same rule the presence column follows.
+/// A version nobody recorded is [`Standing::Unknown`], not an old version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Standing {
     /// The installed version is the one described.
@@ -724,8 +624,7 @@ pub enum Standing {
     },
     /// The installed version is not the described one, and is not obviously older.
     ///
-    /// **Carried rather than called *behind*.** Version strings are somebody's text, not
-    /// numbers this project can order in general; saying *different* is what is known.
+    /// Version strings are free text that cannot be ordered in general.
     Different {
         /// What is on the target.
         installed: String,
@@ -734,8 +633,7 @@ pub enum Standing {
     },
     /// Nothing on the target says what version it is.
     ///
-    /// Either there is no sidecar - a payload put there by hand - or there is one and its
-    /// version is empty, which a real target does have.
+    /// There is no sidecar (a payload put there by hand), or its version is empty.
     Unknown,
 }
 
@@ -752,9 +650,8 @@ impl There {
 
     /// How this compares to what a list describes.
     ///
-    /// Matched on the **checksum first**, because that is the only thing that actually
-    /// identifies a build: a filename is a claim anybody can edit, and a version string is
-    /// copied from the same place the filename was.
+    /// Matched on the checksum first, the only thing that identifies a build; a filename or
+    /// version string is an editable claim.
     #[must_use]
     pub fn standing(&self, described: &Payload) -> Standing {
         let Some(installed) = self.version() else {
@@ -766,8 +663,7 @@ impl There {
         if wanted.is_empty() {
             return Standing::Unknown;
         }
-        // The digest settles it when both sides state one: two builds with the same bytes are
-        // the same build whatever either of them is called.
+        // Same digest means same build, whatever either is called.
         let same_bytes = match (
             self.about
                 .as_ref()
@@ -797,13 +693,10 @@ impl There {
 
 /// Whether one version string is plainly older than another.
 ///
-/// **Only where both are plainly dotted numbers**, optionally with a leading `v`. Anything
-/// else - a date, a beta, a word - answers `false` and is reported as *different* rather than
-/// ordered, because inventing an order over somebody's text is how a tool tells you to
-/// downgrade.
-/// **Public so the one comparison rule has one home.** The version column and the source
-/// column both order version strings, and two copies of this would eventually disagree about
-/// the same pair while both looking right.
+/// Only where both are dotted numbers, optionally with a leading `v`. Anything else (a date,
+/// a beta, a word) answers `false`, so it is reported as different rather than ordered.
+///
+/// Public so the version column and the source column share one comparison rule.
 #[must_use]
 pub fn is_older(installed: &str, described: &str) -> bool {
     let parts = |text: &str| -> Option<Vec<u32>> {
@@ -846,14 +739,14 @@ mod standing_tests {
         }
     }
 
-    /// **The digest settles it**, whatever either side is called.
+    /// Matching digests mean the same build, whatever the versions say.
     #[test]
     fn matching_bytes_are_the_same_build_whatever_the_version_says() {
         let one = installed("v0.24", "aa");
         assert_eq!(one.standing(&described("v0.25", "AA")), Standing::Current);
     }
 
-    /// The case that matters on a real target: an older build installed.
+    /// An older installed version is reported as behind.
     #[test]
     fn an_older_version_is_reported_as_behind() {
         let one = installed("v0.24", "aa");
@@ -868,8 +761,7 @@ mod standing_tests {
         assert_eq!(want, "v0.25");
     }
 
-    /// **A version nobody recorded is unknown, not old.** Reporting it as behind would be
-    /// inventing a measurement, and it would sit in the same column as the real ones.
+    /// A version nobody recorded is unknown, not behind.
     #[test]
     fn an_unrecorded_version_is_unknown_rather_than_behind() {
         let one = installed("", "");
@@ -884,8 +776,7 @@ mod standing_tests {
         );
     }
 
-    /// **Versions this cannot order are *different*, never *behind*.** Inventing an order over
-    /// somebody's text is how a tool ends up telling you to downgrade.
+    /// Versions that cannot be ordered are different, never behind.
     #[test]
     fn versions_that_cannot_be_ordered_are_only_different() {
         let one = installed("1.6beta16", "aa");
@@ -895,8 +786,7 @@ mod standing_tests {
         ));
     }
 
-    /// A newer build installed than the list describes is different, not behind - the list is
-    /// what is out of date, and this does not pretend to know which way somebody wants it.
+    /// A build newer than the list describes is different, not behind.
     #[test]
     fn a_newer_build_than_the_list_is_not_called_behind() {
         let one = installed("v0.25", "aa");

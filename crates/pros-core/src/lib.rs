@@ -1,24 +1,12 @@
 //! What to do with a target, as opposed to how to talk to one.
 //!
-//! # Why this is a separate crate from the transport
+//! Anything that needs a library (JSON, hashing) lives here; `pros-link`, the transport, keeps
+//! an empty dependency table because obSCEne depends on it. See `docs/DESIGN.md`.
 //!
-//! Not tidiness. `pros-link` is taken by a project that argues for each of its three
-//! dependencies individually and forbids unsafe code, so its own dependency table is empty
-//! and has to stay that way. Everything that genuinely needs a library - reading somebody
-//! else's JSON, hashing a download before it is run - lives here, where that project never
-//! sees it.
-//!
-//! The split is therefore **what needs a dependency**, and it falls exactly where the
-//! consumers differ. See `docs/DESIGN.md`.
-//!
-//! # What is here
-//!
-//! - [`target`] - which targets this machine knows about. A name and an address, and
-//!   nothing else, because anything else expires without notice.
-//! - [`manifest`] - where payloads come from, in the payload manager's own schema so a
-//!   target that is already configured is already described.
+//! - [`target`] - which targets this machine knows about: a name and an address only.
+//! - [`manifest`] - where payloads come from, in the payload manager's own schema.
 //! - [`checksum`] - proving a payload is the one that was described, before it is run.
-//! - [`mod@check`] - what a target can currently do, and what to do about what it cannot.
+//! - [`mod@check`] - what a target can do, and what to do about what it cannot.
 
 /// The payload manager's own settings, and changing them.
 pub mod autoload;
@@ -29,7 +17,7 @@ pub mod build;
 /// What the target loads when it comes back.
 pub mod catalogue;
 pub mod chain;
-/// What a target can currently do, and what is missing.
+/// What a target can do, and what is missing.
 pub mod check;
 /// Proving bytes are the bytes that were described.
 pub mod checksum;
@@ -73,7 +61,6 @@ pub mod reveal;
 pub mod saves;
 /// Reading the parameter files beside a save.
 pub mod sfo;
-/// Payloads kept ready to be sent.
 /// Asking a payload's own project what it has released.
 pub mod sources;
 pub mod staging;

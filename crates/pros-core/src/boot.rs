@@ -1,62 +1,20 @@
 //! Editing what the target loads at startup.
 //!
-//! # What the file actually looks like
+//! The file, as read off a target, alternates a `!` delay line and a payload filename
+//! (`!3000`, `kstuff-lite_v1.09.elf`, ...). In the manager's source the delay is
+//! `atoi(line + 1)` passed to `usleep` times 1000: milliseconds. [`crate::chain::Chain`]
+//! reads the same file for what loads; this module keeps the delays because it writes the
+//! file back.
 //!
-//! Read off a target rather than assumed:
-//!
-//! ```text
-//! !3000
-//! kstuff-lite_v1.09.elf
-//! !3000
-//! nanodns.elf
-//! !3000
-//! elfldr_v0.24.elf
-//! ```
-//!
-//! A `!` line is a delay. That was *by every appearance* until the manager's own source was
-//! read, and now it is measured: `atoi(line + 1)` then `usleep(delay * 1000)`, so the number
-//! is milliseconds and a value of zero does nothing.
-//!
-//! [`crate::chain::Chain`] reads the same file and throws the delays away, because it is
-//! answering *what loads*. This one keeps them, because it is going to write the file back and
-//! **an edit that dropped every wait would change the startup timing of a machine somebody
-//! asked to reorder.**
-//!
-//! # Disabling an entry, and the guess that was wrong
-//!
-//! This module used to say an entry could only be removed, on the grounds that a line the
-//! manager did not understand *might* be taken as a filename, fail, and stop the chain - which
-//! would be found out at the next restart on a machine that then came up without its file
-//! service.
-//!
-//! **That was a guess, and reading the source showed it was wrong in the direction that
-//! matters.** The loop is:
-//!
-//! ```c
-//! if (payload_mgr_resolve_path(line, full_path, sizeof(full_path)) == 0) {
-//!     ps5_launch_elf(full_path);
-//! } else {
-//!     pldmgr_log("[Autoload] !!! Payload not found: %s\n", line);
-//! }
-//! ```
-//!
-//! A name it cannot resolve is **logged and skipped**, and the loop continues to the next
-//! line. Nothing stops. So a commented-out entry is an unresolvable name, which is a line in
-//! the log and nothing else.
-//!
-//! That is why [`crate::boot::Boot::disable`] exists and why the fear that prevented it is written down
-//! here rather than quietly deleted: the caution was reasonable and it was still a guess, and
-//! the thing that settled it was reading the program rather than reasoning about it.
-//!
-//! The prefix is `#` because it is conventional, and because **the manager reserves `!` for
-//! itself** - a disabled line must not resolve to a payload and must not look like a delay.
+//! The manager logs a name it cannot resolve and continues with the next line (its autoload
+//! loop), so [`crate::boot::Boot::disable`] can safely comment an entry out with `#`.
 
 use crate::autoload::Change;
 
 /// What marks a line the manager will not resolve.
 ///
-/// Conventional, and chosen so it cannot collide: `!` is the manager's own prefix for a delay,
-/// and a disabled line must be neither a delay nor a resolvable filename.
+/// Not `!`, which the manager reserves for a delay: a disabled line must be neither a delay
+/// nor a resolvable filename.
 pub const DISABLED: &str = "#";
 
 /// One thing the manager does at startup.
@@ -64,9 +22,7 @@ pub const DISABLED: &str = "#";
 pub struct Step {
     /// The instruction that precedes it, kept verbatim.
     ///
-    /// **Carried whole rather than parsed into a number.** `!3000` is a wait by appearance and
-    /// nothing here has confirmed the units, so re-emitting exactly what was read cannot get
-    /// them wrong.
+    /// Carried whole rather than parsed, so it is written back exactly as read.
     pub before: Option<String>,
     /// The file the manager loads.
     pub payload: String,
@@ -110,8 +66,7 @@ impl Boot {
                 continue;
             }
             if trimmed.starts_with('!') {
-                // Two instructions in a row: the first belongs to nothing, and dropping it
-                // would change what the manager does. Kept as its own step-less line.
+                // Two instructions in a row: the first belongs to no step, and is kept.
                 if let Some(orphan) = pending.replace(trimmed.to_owned()) {
                     trailing.push(orphan);
                 }
@@ -135,8 +90,7 @@ impl Boot {
 
     /// Moves one step earlier, if it is not already first.
     ///
-    /// Returns whether anything moved, so a caller can leave the button alone rather than
-    /// reporting a change that did not happen.
+    /// Returns whether anything moved.
     pub fn earlier(&mut self, at: usize) -> bool {
         if at == 0 || at >= self.steps.len() {
             return false;
@@ -156,11 +110,8 @@ impl Boot {
 
     /// Turns one off without losing it, or back on.
     ///
-    /// A disabled entry keeps its place and its delay, and comes back where it was. **That is
-    /// the whole point of it over removing**: the order is the part somebody spent thought on.
-    ///
-    /// Safe because the manager logs an unresolvable name and carries on - see the module
-    /// note, which also records that this was believed unsafe until its source was read.
+    /// A disabled entry keeps its place and its delay. Safe because the manager logs an
+    /// unresolvable name and carries on (see the module note). Returns whether it changed.
     pub fn disable(&mut self, at: usize, off: bool) -> bool {
         let Some(step) = self.steps.get_mut(at) else {
             return false;
@@ -188,10 +139,8 @@ impl Boot {
 
     /// Puts one on the end, copying whatever instruction the others use.
     ///
-    /// **The instruction is copied rather than invented.** Every measured entry is preceded by
-    /// the same one, and a new entry without it would be the only step that behaves
-    /// differently - for no reason a person asked for. When the list is empty there is nothing
-    /// to copy and the entry goes in bare, which is the honest version of not knowing.
+    /// The instruction is copied from the last (or first) step rather than invented; an empty
+    /// list gets the entry bare. A duplicate or empty name is refused.
     pub fn add(&mut self, payload: &str) -> bool {
         let payload = payload.trim();
         if payload.is_empty() || self.steps.iter().any(|step| step.payload == payload) {
@@ -230,8 +179,7 @@ impl Boot {
 
     /// The edit, ready to be looked at before it is written.
     ///
-    /// `None` when nothing would change, so a confirm is never shown for a write that would do
-    /// nothing - the same rule the settings editor follows, and for the same reason.
+    /// `None` when nothing would change, as in the settings editor.
     #[must_use]
     pub fn change(&self) -> Option<Change> {
         let now = self.to_text();
@@ -267,10 +215,7 @@ mod tests {
         assert!(boot.change().is_none(), "an untouched file is not a change");
     }
 
-    /// **Reordering moves the instruction with its entry.**
-    ///
-    /// They are one step. Moving a filename and leaving its wait behind would change the
-    /// startup timing of a machine somebody only asked to reorder.
+    /// Reordering moves the instruction with its entry.
     #[test]
     fn a_step_takes_its_instruction_with_it() {
         let mut boot = Boot::parse(measured());
@@ -284,8 +229,7 @@ mod tests {
         assert_eq!(boot.steps.len(), 3, "reordering does not lose one");
     }
 
-    /// **The ends do not wrap.** Moving the first entry up would silently make it last, which
-    /// is the opposite of what somebody pressing it wants.
+    /// Moving past either end does nothing rather than wrapping.
     #[test]
     fn the_first_cannot_go_up_and_the_last_cannot_go_down() {
         let mut boot = Boot::parse(measured());
@@ -294,8 +238,7 @@ mod tests {
         assert_eq!(boot.to_text(), measured(), "nothing should have moved");
     }
 
-    /// A new entry copies the instruction the others use, rather than going in bare and
-    /// behaving differently for no stated reason.
+    /// A new entry copies the instruction the others use.
     #[test]
     fn a_new_entry_gets_the_same_instruction_as_the_rest() {
         let mut boot = Boot::parse(measured());
@@ -305,8 +248,7 @@ mod tests {
         assert!(boot.to_text().ends_with("!3000\nshsrv_v0.20.elf\n"));
     }
 
-    /// **Adding the same thing twice does nothing**, because a list that loads one payload
-    /// twice is a list nobody meant to write.
+    /// Adding a payload already listed, or a blank name, does nothing.
     #[test]
     fn the_same_payload_is_not_added_again() {
         let mut boot = Boot::parse(measured());
@@ -315,7 +257,7 @@ mod tests {
         assert_eq!(boot.steps.len(), 3);
     }
 
-    /// Removing takes the instruction with it, for the same reason moving does.
+    /// Removing an entry takes its instruction with it.
     #[test]
     fn removing_an_entry_takes_its_instruction_too() {
         let mut boot = Boot::parse(measured());
@@ -325,7 +267,7 @@ mod tests {
         assert_eq!(text.matches("!3000").count(), 2, "one wait went with it");
     }
 
-    /// **A change is shown before it is written**, and says what it would do.
+    /// An edit becomes a change carrying the old and new text.
     #[test]
     fn an_edit_becomes_a_change_that_can_be_read_first() {
         let mut boot = Boot::parse(measured());
@@ -336,8 +278,7 @@ mod tests {
         assert!(!change.now.contains("kstuff-lite"));
     }
 
-    /// An instruction with no entry after it is kept rather than dropped, because nothing
-    /// here knows what the manager does with it and losing it is a change nobody asked for.
+    /// An instruction with no entry after it is kept.
     #[test]
     fn an_instruction_with_nothing_after_it_is_not_lost() {
         let boot = Boot::parse("!3000\nelfldr.elf\n!5000\n");
@@ -346,10 +287,7 @@ mod tests {
         assert!(boot.change().is_none(), "reading is not editing");
     }
 
-    /// **An entry can be turned off and back on, keeping its place and its delay.**
-    ///
-    /// The order is the part somebody spent thought on, which is the whole reason this exists
-    /// rather than removing and retyping.
+    /// An entry turned off and back on keeps its place and its delay.
     #[test]
     fn an_entry_can_be_turned_off_without_losing_where_it_was() {
         let mut boot = Boot::parse(measured());
@@ -373,8 +311,7 @@ mod tests {
         );
     }
 
-    /// Turning off what is already off changes nothing, so no confirm is raised for a write
-    /// that would do nothing.
+    /// Turning off what is already off, or an entry that is not there, changes nothing.
     #[test]
     fn turning_off_something_already_off_is_not_a_change() {
         let mut boot = Boot::parse(measured());
@@ -386,8 +323,7 @@ mod tests {
         );
     }
 
-    /// A disabled entry reads back as disabled, so a file written and read again agrees with
-    /// itself.
+    /// A disabled entry reads back as disabled.
     #[test]
     fn a_disabled_entry_survives_a_round_trip() {
         let boot = Boot::parse("!3000\n#nanodns.elf\n!3000\nelfldr_v0.24.elf\n");

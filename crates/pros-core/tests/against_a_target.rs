@@ -1,30 +1,14 @@
 //! What a real target says, as opposed to what a stand-in says.
 //!
-//! # Why these are ignored by default, and why that is not a skip
-//!
-//! Everything else in this project is tested against something written to behave like a
-//! target. That proves the client is self-consistent. It cannot prove the target agrees,
-//! and the difference between those two kinds of evidence is the thing this project grades
-//! most carefully everywhere else - so it would be strange to blur it here.
-//!
-//! These run only when asked: `--ignored`, with `PROS_TARGET` naming the machine. The
-//! default run reports them as **ignored**, which is visible in the output, rather than as
-//! passing - a test that quietly passes without doing anything is the defect this whole
-//! project is organised around.
-//!
-//! And **running them with no address set fails** rather than passing. Otherwise asking for
-//! them explicitly and getting silence would look exactly like asking for them and having
-//! them work.
+//! The rest of the suite proves the client against stand-ins; these check the target agrees.
+//! They are `#[ignore]`d, so a default run reports them as ignored rather than passed, and
+//! run only when asked, with `PROS_TARGET` naming the machine; asking without it set fails.
 //!
 //! ```text
 //! PROS_TARGET=192.168.1.211 cargo test -p pros-core --test against_a_target -- --ignored --nocapture
 //! ```
 //!
-//! # Read-only, deliberately
-//!
-//! Nothing here writes to the target, sends a payload, or runs a command that changes
-//! anything. A test suite that can alter the machine it is measuring is a test suite whose
-//! failures are ambiguous, and this one runs against somebody's actual target.
+//! They are read-only, except the package test, which says so in its ignore reason.
 
 use std::time::Duration;
 
@@ -36,9 +20,8 @@ use pros_link::files::{Kind, Session};
 ///
 /// # Panics
 ///
-/// When the variable is not set. **Failing rather than returning early**: these tests were
-/// asked for by name, and a run that did nothing and said it passed is worse than one that
-/// says what is missing.
+/// When the variable is not set: these tests were asked for by name, and doing nothing must
+/// not report success.
 fn target() -> Target {
     let address = std::env::var("PROS_TARGET").unwrap_or_else(|_| {
         panic!(
@@ -55,9 +38,7 @@ fn target() -> Target {
     }
 }
 
-/// The target answers, and says what it can currently do.
-///
-/// The first thing worth knowing, and the thing every other test here depends on.
+/// The target answers, and every known service is asked about.
 #[test]
 #[ignore = "needs a target: set PROS_TARGET and run with --ignored"]
 fn the_target_says_what_it_can_do() {
@@ -95,10 +76,7 @@ fn the_target_says_what_it_can_do() {
     );
 }
 
-/// A session opens, which means the login was accepted **and binary mode was agreed**.
-///
-/// The second half is the one worth having against real target: this project refuses to
-/// continue in text mode, and until now nothing had confirmed a real server will agree.
+/// A real file service accepts the login and agrees to binary mode.
 #[test]
 #[ignore = "needs a target: set PROS_TARGET and run with --ignored"]
 fn the_file_service_agrees_to_binary_mode() {
@@ -108,12 +86,7 @@ fn the_file_service_agrees_to_binary_mode() {
     session.close();
 }
 
-/// A real directory listing parses.
-///
-/// **This is the test that matters most here.** Against a stand-in, the passive-mode reply
-/// and the listing format are whatever the stand-in was written to produce. Against the
-/// target they are whatever the target produces, and every guess this client makes about
-/// them is on the line.
+/// A real directory listing, passive-mode reply and all, parses.
 #[test]
 #[ignore = "needs a target: set PROS_TARGET and run with --ignored"]
 fn a_real_listing_parses() {
@@ -132,9 +105,7 @@ fn a_real_listing_parses() {
     }
 
     assert!(!entries.is_empty(), "the root listed nothing at all");
-    // Not "every line parsed" - a target is allowed to have a listing format this client
-    // has not seen. But if *nothing* parsed, the format is not the one this was written
-    // against, and that is worth failing over rather than shrugging at.
+    // Unknown lines are allowed, but if none parse the format is not the one this reads.
     assert!(
         entries.iter().any(pros_link::files::Entry::is_usable),
         "not one line of a real listing could be read - the format is not what this client \
@@ -148,11 +119,7 @@ fn a_real_listing_parses() {
     }
 }
 
-/// A directory that is not there is refused cleanly.
-///
-/// A stand-in can be written to answer this correctly by accident. What is being checked is
-/// that a real refusal arrives as a **typed error naming the target's own words**, rather
-/// than as a hang, an empty listing, or a success with nothing in it.
+/// A missing directory is refused with the target's words, or listed as empty.
 #[test]
 #[ignore = "needs a target: set PROS_TARGET and run with --ignored"]
 fn a_directory_that_is_not_there_is_refused_rather_than_empty() {
@@ -163,8 +130,7 @@ fn a_directory_that_is_not_there_is_refused_rather_than_empty() {
 
     match answer {
         Ok(entries) => {
-            // Some servers list a missing directory as empty. That is a real answer and not
-            // this client's fault - but it must be *empty*, not full of something else.
+            // Some servers list a missing directory as empty; it must then hold no entries.
             println!("listed as empty rather than refused, which some servers do");
             assert!(
                 entries.iter().all(|entry| !entry.is_usable()),
@@ -181,9 +147,7 @@ fn a_directory_that_is_not_there_is_refused_rather_than_empty() {
     }
 }
 
-/// The shell answers something.
-///
-/// `ls /` and nothing else: this suite does not change the machine it is measuring.
+/// The shell answers a read-only command.
 #[test]
 #[ignore = "needs a target: set PROS_TARGET and run with --ignored"]
 fn the_shell_answers() {
@@ -199,21 +163,11 @@ fn the_shell_answers() {
     );
 }
 
-/// The manager's web service answers, and answers oddly.
+/// The manager's web service answers, and an unknown path answers `200 OK` with a
+/// `404 Not Found` body.
 ///
-/// # The first time this client has met a real web server
-///
-/// `pros-link`'s web client was written against a stand-in and had never spoken to
-/// anything else. Two things came back that a stand-in would not have produced:
-///
-/// - the dashboard is a single page of about 700 kB, so the framing is real rather than
-///   the tidy `Content-Length` a fake sends;
-/// - **an unknown path answers `200 OK` with `404 Not Found` as the body.**
-///
-/// That second one is worth a test of its own. A caller that treats a status of 200 as
-/// *this path existed* would hand its user the words "404 Not Found" as data - success
-/// reported for something that did not happen, which is the defect this project keeps
-/// meeting, arriving this time from the other end of the wire.
+/// So a status of 200 does not mean the path exists. The dashboard is a single page of about
+/// 700 kB, which exercises real framing.
 #[test]
 #[ignore = "needs a target: set PROS_TARGET and run with --ignored"]
 fn the_managers_web_service_answers_and_a_status_is_not_a_promise() {
@@ -232,7 +186,6 @@ fn the_managers_web_service_answers_and_a_status_is_not_a_promise() {
     println!("the dashboard is {} bytes", page.len());
     assert!(!page.is_empty(), "it answered with nothing at all");
 
-    // The finding: a status of 200 does not mean the path was there.
     let invented = pros_link::manager::get(&target.address, "/there-is-no-such-endpoint")
         .expect("this server answers 200 even for paths it does not have");
     println!("an unknown path answers: {}", invented.trim());
@@ -242,20 +195,11 @@ fn the_managers_web_service_answers_and_a_status_is_not_a_promise() {
     );
 }
 
-/// The target's own repository agrees with this project's service table about ports.
+/// The service table's ports agree with the target's own repository descriptions.
 ///
-/// # Why this is worth a test
-///
-/// The five ports in `SERVICES` were written down from a measurement made once. The
-/// repository describes several of the same payloads in its own words - *accepts connections
-/// on port 2121* - which makes it an **oracle this project did not write**.
-///
-/// So a typo in the table, or a payload that changed its port between versions, is caught by
-/// the target rather than by somebody noticing that a check has been reporting a service as
-/// absent for a month.
-///
-/// Only entries that name a port are compared, and only against services this project knows.
-/// A description that says nothing about ports says nothing about ports.
+/// The repository describes several of the same payloads ("accepts connections on port
+/// 2121"), an independent source for the ports in `SERVICES`. Only entries that name a port
+/// are compared.
 #[test]
 #[ignore = "needs a target: set PROS_TARGET and run with --ignored"]
 fn the_service_table_agrees_with_the_targets_own_repository() {
@@ -282,9 +226,7 @@ fn the_service_table_agrees_with_the_targets_own_repository() {
         println!("  {:<9} :{said}  agrees", service.name);
     }
 
-    // A comparison that compared nothing is not a passing test, it is a test that did not
-    // run. Either the repository stopped describing ports or this stopped finding them, and
-    // both are worth knowing.
+    // A comparison that compared nothing did not run.
     assert!(
         compared >= 2,
         "no repository entry named a port for any known service, so nothing was checked"
@@ -294,20 +236,14 @@ fn the_service_table_agrees_with_the_targets_own_repository() {
 
 /// The port a description names, if it names one.
 ///
-/// Deliberately narrow: the exact words *port* and a number. A description is prose, and
-/// anything cleverer than this would be reading meaning into somebody's sentence.
+/// Narrow on purpose: the word `port ` followed by digits, and nothing read into the prose.
 fn port_in(description: &str) -> Option<u16> {
     let after = description.split("port ").nth(1)?;
     let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
     digits.parse().ok()
 }
 
-/// The boot list, if this target keeps one where it was measured keeping one.
-///
-/// **Either answer is a finding**, and both are printed. What is being checked is that a
-/// missing file arrives as a refusal rather than as an empty chain - because an empty chain
-/// would say *this target boots nothing*, which is a claim about the target rather than
-/// about the path this client guessed.
+/// The boot list either reads with entries, or its absence is a refusal, not an empty chain.
 #[test]
 #[ignore = "needs a target: set PROS_TARGET and run with --ignored"]
 fn the_boot_list_either_reads_or_refuses_by_name() {
@@ -331,21 +267,16 @@ fn the_boot_list_either_reads_or_refuses_by_name() {
     }
 }
 
-/// **A port a list declares is really probed, and a shut one is really reported shut.**
+/// A port a manifest declares is probed on the target: open reads loaded, shut not loaded.
 ///
-/// The unit tests prove the wiring with a report built by hand. This proves it against the
-/// thing itself: a name this project has never heard of, given a port, becomes as measurable
-/// as the five that are compiled in.
-///
-/// Two entries, because one of them has to fail. A test that only ever saw an open port would
-/// pass just as happily if the probe were hard-wired to say yes.
+/// Two entries, so a probe hard-wired to say yes would fail.
 #[test]
 #[ignore = "needs a target; set PROS_TARGET"]
 fn a_port_a_list_declares_is_probed_against_the_target() {
     let target = target();
 
-    // 2121 is the file service, which the other tests here have already used. The name is
-    // deliberately not one of the five, so it can only be found through the declared port.
+    // 2121 is the file service; the name is not a known service, so only the declared port
+    // can find it.
     let manifest = pros_core::manifest::Manifest::from_json(
         r#"[
             { "name": "something-this-project-has-never-heard-of", "port": 2121 },
@@ -376,16 +307,10 @@ fn a_port_a_list_declares_is_probed_against_the_target() {
     println!("declared ports: open -> Loaded, shut -> NotLoaded");
 }
 
-/// **Which directories a target actually has, and which are a tool's own invention.**
+/// System directories exist on the target; payload-made directories are surveyed only.
 ///
-/// Paths were taken from another working tool and checked here rather than copied. Five of
-/// its constants turned out to be absent: they are made by the payloads that use them, so
-/// they exist on a target running those and nowhere else.
-///
-/// This prints the survey and asserts only the system directories, because those are the ones
-/// that are a property of the machine. Asserting the conditional ones would encode one
-/// target's setup as a fact about the platform - the exact mistake this test exists to
-/// document.
+/// The conditional directories exist only where the payload that makes them is installed,
+/// so they are printed, never asserted.
 #[test]
 #[ignore = "needs a target; set PROS_TARGET"]
 fn the_directories_a_target_has_are_measured_rather_than_assumed() {
@@ -425,7 +350,7 @@ fn the_directories_a_target_has_are_measured_rather_than_assumed() {
     }
     session.close();
 
-    // Saves, whose layout the tool depends on: user, then the prospero folder, then titles.
+    // The save layout: user, then `savedata_prospero`, then titles.
     let mut session = Session::open(&target.link()).expect("it connects");
     let users = session
         .list("/user/home")
@@ -440,16 +365,9 @@ fn the_directories_a_target_has_are_measured_rather_than_assumed() {
     session.close();
 }
 
-/// **A save says which account it belongs to, and this reads it off a real one.**
+/// Saves' parameter files name one account, eight bytes long, across the whole target.
 ///
-/// The whole save-transfer gate rests on this: a copy going back to the account that wrote it
-/// is a plain send, and one going anywhere else needs decrypting and re-signing. The two are
-/// indistinguishable while they happen and differ only later, when a target refuses a save.
-///
-/// Also measures the thing that stops this being the only source: **not every save has a
-/// parameter file.** Of three on the target this was written against, one did and two did
-/// not. The count is printed rather than asserted, because how many is a fact about somebody's
-/// target rather than about the platform.
+/// Not every save has a parameter file; how many do is printed, not asserted.
 #[test]
 #[ignore = "needs a target; set PROS_TARGET"]
 fn a_save_carries_the_account_that_wrote_it() {
@@ -485,7 +403,7 @@ fn a_save_carries_the_account_that_wrote_it() {
             .retrieve(&format!("{meta}/{}/{}", title.name, parameters.name))
             .expect("the parameter file comes across");
         let account = pros_core::sfo::account_in(&bytes).expect("it names an account");
-        // Not printed: it identifies somebody. Its length and consistency are the findings.
+        // Not printed, since it identifies somebody.
         assert_eq!(account.len(), 16, "an account identifier is eight bytes");
         accounts.push(account);
     }
@@ -502,9 +420,7 @@ fn a_save_carries_the_account_that_wrote_it() {
         "no save on this target carried a parameter file, so the account could not be read \
          from any of them - that is this target's state, not a fault in the parser"
     );
-    // **Every save on one target belongs to one account.** If this ever failed, comparing a
-    // copy's account against "the target's account" would be comparing against one of
-    // several, and the gate would pass or fail depending on which save was read first.
+    // `saves::account_on` relies on every save on one target naming one account.
     assert!(
         accounts.windows(2).all(|pair| pair[0] == pair[1]),
         "saves on one target named different accounts, so there is no single account to \
@@ -512,15 +428,7 @@ fn a_save_carries_the_account_that_wrote_it() {
     );
 }
 
-/// **The manager's settings read, and an edit produces a diff without writing anything.**
-///
-/// Read-only on purpose. This is the one thing in the project that *could* write to a target,
-/// and the test that proves the edit works must not be the thing that performs it - a test
-/// that reorders somebody's boot list to check it can is a test that breaks their target to
-/// prove it works.
-///
-/// So: fetch the real file, make a change in memory, and check the diff touches exactly the
-/// line it should. Nothing goes back.
+/// The manager's settings read, and an edit changes exactly one line, in memory only.
 #[test]
 #[ignore = "needs a target; set PROS_TARGET"]
 fn the_managers_settings_read_and_an_edit_stays_in_memory() {
@@ -539,8 +447,7 @@ fn the_managers_settings_read_and_an_edit_stays_in_memory() {
         "the settings file was readable and held nothing this recognises"
     );
 
-    // The delay is a number, so changing it is the safest possible demonstration - and it is
-    // never sent.
+    // The delay is a number, so it is the safest value to change; it is never sent.
     let Some(delay) = settings.get("AUTOLOAD_DELAY") else {
         println!("no AUTOLOAD_DELAY on this target - nothing further to check");
         return;
@@ -562,8 +469,7 @@ fn the_managers_settings_read_and_an_edit_stays_in_memory() {
         .count();
     assert_eq!(gone, 1, "one line should go, not {gone}");
     assert_eq!(added, 1, "and one arrive, not {added}");
-    // Every other setting survives, which is the whole promise of editing the text rather
-    // than regenerating it.
+    // Every other setting survives, since the text is edited rather than regenerated.
     for (key, value) in settings.all() {
         if key == "AUTOLOAD_DELAY" {
             continue;
@@ -576,14 +482,9 @@ fn the_managers_settings_read_and_an_edit_stays_in_memory() {
     println!("edit to AUTOLOAD_DELAY touches 1 line, leaves the rest - nothing written");
 }
 
-/// **What the target says it is, read through the shell.**
+/// The system report parses the target's real sysctl, `df` and `ps` output.
 ///
-/// Firmware is the fact everything else on this platform depends on, and this is where the
-/// parsers meet the real output rather than a fixture written from it.
-///
-/// Asserts the shape and not the values: firmware strings, model numbers and core counts are
-/// facts about somebody's target, and pinning them here would make the test fail on anybody
-/// else's - which is the opposite of what it is for.
+/// Asserts shape, not values: firmware, model and core counts differ between targets.
 #[test]
 #[ignore = "needs a target; set PROS_TARGET"]
 fn the_target_says_what_it_is() {
@@ -607,7 +508,7 @@ fn the_target_says_what_it_is() {
          measured, so this means the shell stopped answering rather than that they are wrong"
     );
     for fact in &report.facts {
-        // Printed by name only. The values identify a specific target.
+        // Printed by name only; the values identify a specific target.
         println!("  {}: {} characters", fact.name, fact.value.len());
         assert!(
             !fact.value.trim().is_empty(),
@@ -616,7 +517,6 @@ fn the_target_says_what_it_is() {
         );
     }
 
-    // The firmware is the one worth insisting on, because it is the reason for the view.
     let firmware = report
         .facts
         .iter()
@@ -632,10 +532,8 @@ fn the_target_says_what_it_is() {
         report.storage.iter().any(|one| one.at == "/user"),
         "no /user filesystem in the storage listing, which every target has"
     );
-    // **Most of what `df` lists is not the machine.** Every running application brings dozens
-    // of bind mounts under /mnt/sandbox: a target measured here listed 1183 filesystems,
-    // of which 22 were the machine. Worth asserting, because a change that stopped telling
-    // them apart would bury the figures somebody came to read.
+    // Most of what `df` lists is per-application bind mounts under /mnt/sandbox (measured:
+    // 1183 filesystems, 22 of them the machine), so they must be told apart.
     let machine = report
         .storage
         .iter()
@@ -667,13 +565,10 @@ fn the_target_says_what_it_is() {
     );
 }
 
-/// **A graft against the samples on this machine, if there are any.**
+/// Grafting local sample saves keeps the container's keystone.
 ///
-/// Not a target test - it needs no target at all - but it lives here because it needs files
-/// somebody has put on this machine, and the rest of the suite must not depend on them.
-///
-/// Grafts each save in `saves/` into each other, and asserts the rule the whole design rests
-/// on: **the container's keystone is the one that survives.**
+/// Needs no target, but needs unpacked saves in the collection's `saves/`, so it is ignored
+/// with the target tests.
 #[test]
 #[ignore = "needs saves in the collection\'s saves/; run with --ignored"]
 fn saves_on_this_machine_graft_without_losing_the_container() {
@@ -721,7 +616,7 @@ fn saves_on_this_machine_graft_without_losing_the_container() {
         println!("  note: {note}");
     }
 
-    // The rule the method rests on: a donor keystone would not mount.
+    // A donor keystone would not mount.
     let kept = std::fs::read(into.join(pros_core::graft::KEYSTONE)).expect("a keystone survived");
     let theirs = std::fs::read(donor.root.join(pros_core::graft::KEYSTONE)).expect("donor has one");
     let ours = std::fs::read(container.root.join(pros_core::graft::KEYSTONE)).expect("we have one");
@@ -734,15 +629,10 @@ fn saves_on_this_machine_graft_without_losing_the_container() {
     let _ = std::fs::remove_dir_all(&into);
 }
 
-/// **A package is handed to the target over HTTP, and the target takes it.**
+/// A package served from here is fetched by the target and accepted.
 ///
-/// The whole install path in one test: hold the file out on the interface that faces the
-/// target, tell the shell to fetch it, and check both ends agree - the target reports a
-/// content identifier, and the handover counted a fetch.
-///
-/// The second half is what makes this worth writing. A target that never came for the file and
-/// a target that fetched it and disliked it are **indistinguishable from its reply alone**, and
-/// only this side knows which happened.
+/// Both ends are checked: the handover's fetch count tells a target that never came for the
+/// file from one that fetched it and refused it, which its reply alone cannot.
 #[test]
 #[ignore = "installs a package on the target; needs PROS_TARGET and a .pkg in packages/"]
 fn a_package_served_from_here_is_fetched_and_accepted() {
@@ -791,11 +681,7 @@ fn a_package_served_from_here_is_fetched_and_accepted() {
     );
 }
 
-/// **What the payload scan actually returns from a real target.**
-///
-/// Added because the autoload screen was reported as listing the wrong things, and the code
-/// path reads plainly - so the question is what the scan answers, not what it looks like it
-/// answers.
+/// The payload scan finds the payloads the manager holds on a real target.
 #[test]
 #[ignore = "needs a target: set PROS_TARGET and run with --ignored"]
 fn the_payload_scan_finds_what_the_manager_holds() {

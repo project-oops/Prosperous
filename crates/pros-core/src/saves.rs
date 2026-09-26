@@ -1,27 +1,13 @@
-//! Where save data is, which is further down than a default can reach.
+//! Where save data is on a target.
 //!
-//! # The shape, measured
-//!
-//! `/user/home/<user>/savedata_prospero/<title>`. Measured on 2026-08-26: three save folders
-//! under one user, each named exactly as a title identifier.
-//!
-//! The middle part is why this needs code rather than a constant. **Which user is not a
-//! question this project can answer on somebody's behalf** - a target can have several, and
-//! picking one would be picking somebody's saves for them.
-//!
-//! # So it descends only when there is nothing to choose between
-//!
-//! One user, one answer, and the path is shown. More than one, and it stops and says so,
-//! because the browser exists for exactly that and a tool that guessed would be guessing
-//! about the thing somebody came to protect.
-//!
-//! That is the same rule as picking a target by name when only one is registered.
+//! Saves are at `/user/home/<user>/savedata_prospero/<title>` (measured: save folders under
+//! one user, each named as a title identifier). A target can have several users, and picking
+//! one would be picking somebody's saves for them, so the path is given only when there is
+//! exactly one user; otherwise the users are offered for a person to choose.
 
 use pros_link::files::{Kind, Session};
 
-/// Where user folders live.
-///
-/// Measured, not guessed.
+/// Where user folders live (measured).
 pub const HOME: &str = "/user/home";
 
 /// What each user's saves sit under.
@@ -32,15 +18,13 @@ pub const SAVES: &str = "savedata_prospero";
 pub enum Found {
     /// One user, so one place, and this is it.
     Here(String),
-    /// Several users. **Their names, so somebody can choose** - not a pick made for them.
+    /// Several users, named so somebody can choose.
     Several(Vec<String>),
     /// No user folders at all, which is a fact about the target rather than a failure.
     None,
 }
 
 /// Picks the user folders out of a listing of the home directory.
-///
-/// Separated from the fetching so the rule can be tested without a target.
 #[must_use]
 pub fn users(entries: &[pros_link::files::Entry]) -> Vec<String> {
     entries
@@ -58,41 +42,23 @@ pub fn decide(users: &[String]) -> Found {
     match users {
         [] => Found::None,
         [only] => Found::Here(format!("{HOME}/{only}/{SAVES}")),
-        // **Not the first one.** A target with two accounts has two people's saves on it,
-        // and a tool that silently picked would be picking whose.
+        // Never the first one: two accounts are two people's saves.
         several => Found::Several(several.to_vec()),
     }
 }
 
-/// Asks the target where its saves are.
-///
-/// # Errors
-///
-/// Propagates the listing. A home directory that cannot be read is a different problem from
-/// one with several users in it, and both are different from one with none.
 /// What each user's save metadata sits under.
 ///
-/// Measured: `.sfo` parameter files live here rather than beside the saves themselves, one
-/// folder per title, under a `user` level that `savedata_prospero` does not have.
+/// Measured: the `.sfo` parameter files live here, one folder per title, under a `user` level
+/// that `savedata_prospero` does not have.
 pub const META: &str = "savedata_prospero_meta/user";
 
 /// Which account this target's saves belong to.
 ///
-/// # Why this is read from a save rather than from the target
-///
-/// Nothing this project can reach announces the account. But every save on the target was
-/// written by it, and each one that carries a parameter file states the account in it - so
-/// **the target's account is whatever its own saves say it is**.
-///
-/// Measured: every save on a target named the same account, which is what makes *the*
-/// target's account a single thing rather than a choice between several. A target test
-/// asserts that, because if it ever stopped being true this answer would depend on which
-/// save happened to be read first.
-///
-/// `None` when nothing could be read - no user, no saves, or none of them carrying a
-/// parameter file. **Not an error and not a default**: without it, an incoming save's account
-/// has nothing to be compared against, which is [`crate::origin::Needs::Unknown`] rather than
-/// permission to copy.
+/// Nothing reachable announces the account, but each save's parameter file states the
+/// account that wrote it, and every save on a target names the same one (measured, and
+/// asserted by a target test). `None` when nothing could be read; an incoming save then has
+/// nothing to compare against, which is [`crate::origin::Needs::Unknown`], not permission.
 #[must_use]
 pub fn account_on(link: &pros_link::Link) -> Option<String> {
     let mut session = Session::open(link).ok()?;
@@ -132,7 +98,8 @@ fn account_using(session: &mut Session) -> Option<String> {
 ///
 /// # Errors
 ///
-/// Propagates the listing.
+/// Propagates the listing. A home directory that cannot be read is a different finding from
+/// one with several users, or none.
 pub fn find(link: &pros_link::Link) -> Result<Found, String> {
     let mut session = Session::open(link).map_err(|why| why.to_string())?;
     let entries = session.list(HOME).map_err(|why| why.to_string());
@@ -155,7 +122,7 @@ mod tests {
         }
     }
 
-    /// One user is one answer, and it is the path a target was measured using.
+    /// One user gives one path, in the measured layout.
     #[test]
     fn one_user_gives_one_place() {
         let listing = [entry("1ea2f4d9", Kind::Directory)];
@@ -165,9 +132,7 @@ mod tests {
         );
     }
 
-    /// **Two accounts are two people, and this does not choose between them.**
-    ///
-    /// Picking the first would be picking whose saves somebody is about to overwrite.
+    /// Several users are offered, never chosen between.
     #[test]
     fn several_users_are_offered_rather_than_chosen_between() {
         let listing = [
@@ -180,7 +145,7 @@ mod tests {
         }
     }
 
-    /// A home directory with nothing in it is an answer about the target.
+    /// An empty home directory is a finding, not an error.
     #[test]
     fn no_users_is_a_finding_rather_than_an_error() {
         assert_eq!(decide(&users(&[])), Found::None);

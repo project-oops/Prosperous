@@ -1,43 +1,13 @@
-//! Health checks that say what is wrong, and exactly what would put it right.
+//! Health checks that say what is wrong, and what would put it right.
 //!
-//! # The one rule this module is built around
+//! A check never changes anything. It is a pure function of a [`crate::doctor::Known`]
+//! snapshot the window already gathered, and returns a [`crate::doctor::Plan`]: inert data
+//! naming steps, with no connection, local path or target to carry them out. The window
+//! executes a plan only after a person confirms it. A check that opened its own socket would be
+//! untestable without a target and could disagree with the panel beside it.
 //!
-//! **A check can never change anything.** It reads a snapshot and returns a
-//! [`crate::doctor::Plan`], and a plan is inert data - a list of things somebody could do, in
-//! order, with no way at all to do them.
-//! Nothing here holds a connection, a path on this machine, or a target. Carrying a plan out
-//! is the window's job, after somebody has read it and said yes.
-//!
-//! That is not politeness, it is the whole safety property: this program configures a machine
-//! whose recovery costs a walk across the room with a USB stick, and it has already cost that
-//! twice. So the boundary is drawn in the type system rather than in a habit - a check that
-//! wanted to act would have nothing to act *with*.
-//!
-//! # Why a failure cannot exist without a remedy
-//!
-//! [`crate::doctor::Verdict::Unwell`] carries its [`crate::doctor::Remedy`] rather than having
-//! one alongside. A finding with no remedy is a sentence telling somebody their target is
-//! broken and then leaving - which is what this program used to do, in two places, with two
-//! unrelated notions of a fix:
-//!
-//! - the check screen could download a payload, send it, or run it, one press per stage, and
-//!   none of the three put it in a startup list, so none of them survived a restart;
-//! - the startup-list screen could add an entry, but only if the file was **already** on
-//!   internal storage - and otherwise printed *copy it there first* and stopped.
-//!
-//! Between those two sat the actual answer - fetch it, send it, list it - which nothing could
-//! express, so it was left to a person to assemble across two screens.
-//! [`crate::doctor::Remedy::Beyond`] exists for the cases where there genuinely is nothing to
-//! do, and it has to say why.
-//!
-//! # Why the checks do no probing
-//!
-//! Everything here is a pure function of [`crate::doctor::Known`], which the window has
-//! already gathered when the target was selected. A check that opened its own socket would
-//! double the traffic to a
-//! jailbroken console, would be untestable without one, and would be able to disagree with the
-//! panel drawn beside it about what is running. Re-checking is re-gathering, which is one
-//! mechanism instead of two.
+//! [`crate::doctor::Verdict::Unwell`] carries its [`crate::doctor::Remedy`], so no failure is
+//! reported without an answer; [`crate::doctor::Remedy::Beyond`] says why nothing can fix it.
 
 use crate::catalogue::Catalogue;
 use crate::chain::Chain;
@@ -48,9 +18,8 @@ use crate::recovery::{Fix, Gravity, Hazard, Kind, audit, baseline};
 
 /// One thing somebody could do, named but not done.
 ///
-/// **No paths on this machine and no target.** A step names a payload; binding that name to a
-/// file is the window's job, and keeping it out of here is what stops a plan being executable
-/// by whoever happens to be holding it.
+/// A step names a payload, never a local path or a target; the window binds the name to a file,
+/// so a plan cannot be executed by whoever holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
     /// Get it onto this machine from where its description says it lives.
@@ -61,8 +30,7 @@ pub enum Step {
     /// Copy it off the target, from a place a startup list cannot rely on.
     ///
     /// The first half of moving a payload from a stick to internal storage. It goes via this
-    /// machine because that is a copy this program has measured; a copy on the target itself
-    /// would be a shell command whose failure looks like its success.
+    /// machine because a copy on the target is a shell command whose failure looks like success.
     Bring {
         /// Which payload.
         payload: String,
@@ -75,63 +43,50 @@ pub enum Step {
         payload: String,
         /// The directory it lands in.
         ///
-        /// **Not a constant, because it depends on the list.** A payload named in an
-        /// autoloader's list is resolved against that list's own directory, so deploying to a
-        /// stick has to put the files on the stick. It was `/data/pldmgr/payloads` whatever was
-        /// being deployed, which wrote a correct list to a stick naming files that were never
-        /// there - a chain that comes up and loads nothing, from the feature whose job is
-        /// producing one that comes up.
+        /// Depends on the list: an autoloader resolves entries against its own list's
+        /// directory, so deploying to a stick puts the files on the stick.
         to: String,
     },
     /// Change one line of the startup list.
     ///
-    /// **Several of these collapse into one write.** The list is one file, and a plan that
-    /// wrote it three times would give a person three chances to be interrupted half way.
+    /// Several of these collapse into one write of the file, so an interruption cannot leave
+    /// it half edited.
     List(Fix),
     /// Replace a startup list entirely, with this.
     ///
-    /// **Not several [`crate::doctor::Step::List`] edits.** Setting up a target from nothing
-    /// is not a sequence of adds against whatever happened to be there - it is one file, and
-    /// describing it as edits would show somebody a diff against a configuration they are
-    /// throwing away, which is the least useful way to look at it.
+    /// Setting up from nothing writes one whole file rather than [`Step::List`] edits against
+    /// a configuration that is being discarded.
     Rebuild {
         /// Which list, in full.
         ///
-        /// Owned, because a list's path is read from the chain that declares it rather than
-        /// written into this program. A plan outlives the chooser it was built from.
+        /// Owned: the path comes from the chain that declares it, and a plan outlives the
+        /// chooser it was built from.
         into: String,
         /// Every entry, in the order they will run.
         entries: Vec<String>,
     },
     /// Load something the target already has, now, without moving anything.
     ///
-    /// Does not survive a restart, and says so - it is the answer to *this is not running*,
-    /// never to *this is not in the list*.
+    /// Does not survive a restart: it answers "this is not running", never "this is not in
+    /// the list".
     Run {
         /// The full path on the target.
         path: String,
     },
     /// Turn autoload on in the manager's settings, so the list it was just given is read.
     ///
-    /// **A manager chain is two things: a list and the switch that makes it run.** Writing the
-    /// list without the switch produces a console that comes back with nothing loaded and no sign
-    /// why - the manager simply never reads a list it was told to ignore. So deploying a manager
-    /// chain carries this, and it is a merge: only `AUTOLOAD_ENABLED` is touched, every other
-    /// setting kept.
+    /// The manager ignores its list while autoload is off, so a manager chain is deployed with
+    /// this step. It is a merge: only `AUTOLOAD_ENABLED` changes.
     Enable {
         /// The settings file - the manager's `pldmgr_config.txt`.
         into: String,
     },
     /// Put a file the chain carries back on the target, verbatim.
     ///
-    /// **The settings around a list, not the list.** A chain exported off a working console
-    /// carries copies of the files that made it behave the way it did - the manager's own
-    /// settings above all - and deploying that chain elsewhere means putting them back. This is
-    /// how: the bytes are carried in the step, written whole to the path they were read from,
-    /// with no attempt to understand or merge them. It writes exactly what was captured.
-    ///
-    /// A shipped chain carries none of these, so this appears only when deploying a chain
-    /// somebody exported from a real target - see [`crate::recovery::baseline::Captured`].
+    /// A chain exported off a target carries copies of the files beside its list, such as the
+    /// manager's settings. The bytes are written whole to the path they were read from, never
+    /// parsed or merged. Only exported chains carry any - see
+    /// [`crate::recovery::baseline::Captured`].
     Place {
         /// The full path on the target, where the file was read and will be written back.
         into: String,
@@ -164,11 +119,7 @@ impl Step {
         }
     }
 
-    /// Whether carrying this out changes the target.
-    ///
-    /// **Fetching does not.** A plan whose only unsatisfied step is a download can be run
-    /// without touching the console at all, and saying so is the difference between somebody
-    /// pressing the button and somebody putting it off.
+    /// Whether carrying this out changes the target. Fetching does not.
     #[must_use]
     pub const fn touches_the_target(&self) -> bool {
         match self {
@@ -185,10 +136,7 @@ impl Step {
 
     /// Whether this is an edit to the startup list.
     ///
-    /// **Neither `Enable` nor `Place` is one.** Both write a file beside the list, not the list -
-    /// the settings switch, and the files a chain carries - so neither is held back with the list
-    /// edits, and neither on its own means the target comes back differently. The list edit they
-    /// accompany is what does that.
+    /// `Enable` and `Place` are not: they write files beside the list, not the list.
     #[must_use]
     pub const fn is_a_list_edit(&self) -> bool {
         matches!(self, Self::List(_) | Self::Rebuild { .. })
@@ -197,9 +145,7 @@ impl Step {
 
 /// A step, and whether it has already been done.
 ///
-/// **Satisfied steps stay in the plan.** Hiding them would show somebody two steps where the
-/// work is four, and the shape of the whole job is what makes it obvious that *download* and
-/// *add to the list* are one action rather than two unrelated buttons on two screens.
+/// Satisfied steps stay in the plan, so a person sees the shape of the whole job.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Move {
     /// What to do.
@@ -244,8 +190,8 @@ impl Plan {
 
     /// Whether the startup list would be rewritten.
     ///
-    /// The one consequence worth naming separately in a confirmation: everything else here can
-    /// be undone by doing it again, and this is what decides whether the target comes back.
+    /// Named separately in a confirmation: the list decides whether the target comes back after
+    /// a restart.
     #[must_use]
     pub fn rewrites_the_list(&self) -> bool {
         self.moves
@@ -257,19 +203,14 @@ impl Plan {
 impl Plan {
     /// One plan out of several, in order, with a step that appears twice done once.
     ///
-    /// # Why duplicates have to go
-    ///
-    /// Two findings about the same payload propose overlapping work - *it is not answering*
-    /// wants it fetched and run, *it is not in the startup list* wants it fetched and listed.
-    /// Concatenating them would fetch it twice and send it twice, which is a plan that spends
-    /// somebody's time doing something it already did, in front of them, having just shown
-    /// them the list.
+    /// Two findings about one payload overlap ("not answering" fetches and runs it, "not in
+    /// the list" fetches and lists it), so a plain concatenation would fetch it twice.
     #[must_use]
     pub fn all_of(plans: &[Self]) -> Self {
         let mut moves: Vec<Move> = Vec::new();
         for plan in plans {
             for one in &plan.moves {
-                // The first mention wins, which keeps the earliest position a step needed.
+                // The first mention wins, keeping the earliest position a step needed.
                 if !moves.iter().any(|kept| kept.step == one.step) {
                     moves.push(one.clone());
                 }
@@ -291,8 +232,7 @@ impl Plan {
 pub enum Remedy {
     /// Every step is known, and nothing further needs asking.
     ///
-    /// **Known, not permitted.** This is the *"no questions"* case, never the *"no consent"*
-    /// case: a settled plan still goes in front of somebody before any of it happens.
+    /// Known, not permitted: a ready plan is still confirmed by a person before it runs.
     Ready(Plan),
     /// More than one thing would answer this, and choosing is not this program's to make.
     Choose {
@@ -307,13 +247,8 @@ pub enum Remedy {
 
 /// What one check concluded.
 ///
-/// # Four states, not two
-///
-/// The tools this borrows its shape from report pass or fail. That is one state short in both
-/// directions for a program that talks to a machine over a network it does not control:
-/// *nothing was measured* is not *it is broken*, and *this does not apply here* is not *this
-/// is fine*. Collapsing either one produces the failure this whole project is organised
-/// against - a report that reads identically whether or not it found anything out.
+/// Four states, not pass and fail: "nothing was measured" is not "it is broken", and "this
+/// does not apply here" is not "this is fine".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// It is as it should be.
@@ -351,10 +286,8 @@ impl Verdict {
 /// One check, and what it found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
-    /// A stable name for this check, unique among findings.
-    ///
-    /// **Stable across runs**, because it is how a fix in flight is matched to the finding it
-    /// was meant to answer once the target has been asked again.
+    /// A name for this check, unique among findings and stable across runs, so a fix in flight
+    /// is matched to its finding after the target is asked again.
     pub id: String,
     /// What the check is, for somebody reading a list of them.
     pub label: String,
@@ -369,9 +302,8 @@ pub struct Finding {
 pub enum Health {
     /// Every check that applies passed.
     Well,
-    /// Something was not measured. **Above `Well` on purpose**: a check nobody could run is
-    /// not a check that passed, and showing the two the same colour is how an unreachable
-    /// target comes to look like a healthy one.
+    /// Something was not measured. Ranks above `Well`, so an unreachable target never looks
+    /// healthy.
     Unknown,
     /// Something failed that costs visibility rather than access.
     Warning,
@@ -381,8 +313,7 @@ pub enum Health {
 
 /// The worst of what was found.
 ///
-/// Nothing at all is [`Health::Unknown`] rather than [`Health::Well`], for the same reason: an
-/// empty list of findings is a check that has not happened.
+/// No findings at all is [`Health::Unknown`], not [`Health::Well`].
 #[must_use]
 pub fn health(findings: &[Finding]) -> Health {
     let mut worst = Health::Well;
@@ -398,26 +329,21 @@ pub fn health(findings: &[Finding]) -> Health {
         any = true;
         worst = worst.max(one);
     }
-    // **Nothing to report is not a clean bill of health.** Starting at `Well` and taking the
-    // worst is right once anything has been looked at; with an empty list it would claim a
-    // target is fine on the strength of never having asked it anything.
     if any { worst } else { Health::Unknown }
 }
 
 /// Everything the checks are allowed to look at.
 ///
-/// A borrowed snapshot of what the window already asked for. **Nothing here can be used to ask
-/// anything else**, which is what makes a check a function rather than an actor.
+/// A borrowed snapshot of what the window already asked for; nothing in it can ask anything
+/// else.
 #[derive(Debug, Clone, Copy)]
 pub struct Known<'a> {
     /// What answered when the target was last probed.
     pub report: Option<&'a Report>,
     /// Every payload file found on the target, with where it lives.
     ///
-    /// **`None` is not an empty target.** A target nobody has listed and a target with no
-    /// payloads on it are the same slice and opposite facts, and the second one licenses a
-    /// plan that begins *download it* while the file may be sitting there already. So the
-    /// difference is kept, and a route that cannot be worked out without it says so.
+    /// `None` means not listed, which is not an empty target: only an empty listing licenses a
+    /// plan that downloads the file.
     pub there: Option<&'a [There]>,
     /// Payloads already on this machine, by the name their description gives.
     pub staged: &'a [String],
@@ -429,17 +355,13 @@ pub struct Known<'a> {
     pub kind: Kind,
     /// Where that list is, when the caller is looking at one.
     ///
-    /// **Needed because it decides where payloads go.** An autoloader resolves an entry against
-    /// the directory its own config is in, so *which list* and *where the files must land* are
-    /// one question. `None` is a caller that is not looking at a particular list, and then the
-    /// manager's directory is the answer, because that is the one place resolved by scan rather
-    /// than by relative path.
+    /// Decides where payloads go: an autoloader resolves entries against its list's directory.
+    /// `None` means the manager's directory, which is resolved by scan.
     pub list: Option<&'a str>,
     /// The chain this target is meant to be running.
     ///
-    /// **What somebody decided, not what this program knows about.** It decides which absences
-    /// are worth reporting: a console brought up by etaHEN is not missing an FTP server,
-    /// because etaHEN is one.
+    /// Decides which absences are worth reporting: a target brought up by etaHEN is not missing
+    /// an FTP server, because etaHEN is one.
     pub preset: &'a baseline::Preset,
     /// What each service is and what it unlocks.
     pub known: &'a Catalogue,
@@ -448,16 +370,11 @@ pub struct Known<'a> {
 impl Known<'_> {
     /// The directory a payload has to be in for this list to resolve it.
     ///
-    /// # Two different mechanisms, not two directories
-    ///
-    /// The payload manager **scans**: `SCAN_DIRS` in its own header is `/data/pldmgr` and
-    /// `/mnt/usb0..usb7/pldmgr`, and it finds a payload wherever among those it sits. So its own
-    /// list resolves an entry by looking, and the internal payload directory is the answer.
-    ///
-    /// The autoloader **joins**: `snprintf(full_path, ..., "%s%s", config_dir, line)`, so an
-    /// entry that is not an absolute path is resolved against the directory holding
-    /// `autoload.txt` and nowhere else. Its payloads therefore live beside its list, on whatever
-    /// device that list is on.
+    /// The payload manager scans: `SCAN_DIRS` in its header is `/data/pldmgr` and
+    /// `/mnt/usb0..usb7/pldmgr`, so the internal payload directory serves its own list.
+    /// The autoloader joins: `snprintf(full_path, ..., "%s%s", config_dir, line)` resolves a
+    /// relative entry against the directory holding `autoload.txt`, so its payloads live beside
+    /// its list.
     fn payloads_go(&self) -> String {
         match (self.kind, self.list) {
             (Kind::Autoloader, Some(list)) => beside(list),
@@ -472,10 +389,7 @@ impl Known<'_> {
 
     /// Where a payload with this name is on the target, preferring somewhere usable.
     ///
-    /// **Internal storage wins.** A copy on a stick and a copy on the drive are not
-    /// interchangeable - a startup list can only resolve the second - so a search that
-    /// returned whichever came first would report a payload as present and then build a list
-    /// that fails at every boot.
+    /// Internal storage wins, because a startup list can resolve only that copy.
     fn on_target(&self, service: &str) -> OnTarget<'_> {
         let Some(there) = self.there else {
             return OnTarget::Unknown;
@@ -495,16 +409,9 @@ impl Known<'_> {
 
     /// Whether this payload was already loaded, as far as anything here can tell.
     ///
-    /// # Why a silent port is not an answer
-    ///
-    /// **It cost a console an hour to learn this twice.** A payload that a startup list loaded
-    /// is running; a port that does not answer says only that *this program cannot reach it*.
-    /// The two were treated as one, and *load it now* was offered for something already up -
-    /// which starts a second copy, and a second copy crashed the machine.
-    ///
-    /// So this asks the only question with a real answer: **did something already load it?**
-    /// Being in a startup list that has run is evidence. So is being the thing that runs the
-    /// list at all - if the list ran, its runner is up, whatever 8084 says about it.
+    /// A silent port means only that this program cannot reach it; starting a second copy
+    /// crashes the target. Being in a startup list that has run is evidence of loading, and so
+    /// is being the list runner itself, whatever its port says.
     fn was_already_loaded(&self, service: &str) -> bool {
         if self
             .known
@@ -512,8 +419,7 @@ impl Known<'_> {
             .iter()
             .any(|one| one.runs_lists && named_as(one.name.as_ref(), service))
         {
-            // The list this is auditing came off the target, which means something read it,
-            // which means the thing that reads lists is running.
+            // A list read off the target means the list runner is running.
             return self.chain.is_some();
         }
         self.chain
@@ -522,10 +428,8 @@ impl Known<'_> {
 
     /// Whether the loader is answering.
     ///
-    /// **Everything that runs a payload goes through it.** Sending a file does not - that is
-    /// the file server - but starting one does, whether it is sent to 9021 or already on the
-    /// disk and started with `hbldr`: both end at `elfldr_spawn`. So this decides whether
-    /// *run it* is an offer or a fiction.
+    /// Starting a payload goes through it, whether sent to 9021 or started from disk with
+    /// `hbldr`: both end at `elfldr_spawn`. Sending a file does not.
     fn loader_is_up(&self) -> Option<bool> {
         let report = self.report?;
         let loader = report.about(pros_link::service::LOADER.name.as_ref())?;
@@ -543,9 +447,7 @@ impl Known<'_> {
 
 /// Whether the target holds a payload, in three answers rather than two.
 ///
-/// **The third is the one that matters.** *Not listed yet* and *not there* differ by exactly
-/// the fact that would make a plan wrong: one of them licenses *download it first*, and the
-/// other is a target whose copy nobody has looked for.
+/// "Not listed yet" and "not there" differ: only the second licenses a download.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnTarget<'a> {
     /// Nobody has listed the target's payloads.
@@ -569,8 +471,7 @@ enum Route {
 
 /// Whether a file or entry is this service, by the same rule as everything else.
 ///
-/// One rule, in one place: a second way of matching a name here could disagree with the one
-/// the startup list uses, and then a plan would add an entry the audit does not recognise.
+/// The startup list's own rule, so a plan never adds an entry the audit does not recognise.
 fn named_as(candidate: &str, service: &str) -> bool {
     Chain::parse(candidate).position(service).is_some()
 }
@@ -585,32 +486,16 @@ fn not_looked_yet(service: &str) -> String {
 
 /// The steps that get a payload onto internal storage, cheapest and surest first.
 ///
-/// # The order, and why it is this order
-///
-/// It used to ask *where is it on the target* first, and so a copy sitting on a USB stick beat
-/// both the copy already on this machine and the one the description says where to download.
-/// The advice that produced was **"copy pldmgr off the target, from
-/// `/mnt/usb0/ps5_autoloader/pldmgr_v0.5.1.elf`"** - two network trips to drag a file off the
-/// console and hand it straight back, when the file was on this disk and a verified download
-/// was a click away. It read as nonsense because it was.
-///
-/// So:
-///
-/// 1. **Already where a startup list can resolve it** - nothing to do, and it says so.
-/// 2. **On this machine** - one copy, no download, and it is the build this list describes.
-/// 3. **Described with an address** - download it, checked against the digest the list states.
-///    A verified download of the described build beats an unverified copy of some other build.
-/// 4. **Somewhere on the target a list cannot use** - drag it over and hand it back. Last,
-///    because it is the slowest, the only one that produces no digest to check, and the one
-///    that leans on a USB stick that is somebody's way back in when everything else is broken.
+/// 1. Already where a startup list can resolve it: nothing to do.
+/// 2. On this machine: one send.
+/// 3. Described with an address: download, checked against the stated digest.
+/// 4. On the target where a list cannot use it: copy it off and send it back. Last, because it
+///    is two network trips and yields no digest to check.
 fn get_it_there(what: &Known<'_>, service: &str) -> Route {
     get_it_there_into(what, service, &what.payloads_go())
 }
 
 /// As [`get_it_there`], for a list other than the one the findings are about.
-///
-/// Setting a target up from nothing names the list being written, which is not necessarily the
-/// one the screen was looking at when the button was pressed.
 fn get_it_there_into(what: &Known<'_>, service: &str, to: &str) -> Route {
     let send = || Move {
         step: Step::Send {
@@ -621,8 +506,7 @@ fn get_it_there_into(what: &Known<'_>, service: &str, to: &str) -> Route {
     };
     let there = what.on_target(service);
 
-    // **Not knowing is its own answer.** Falling through here would propose moving a file
-    // about on the strength of never having looked for the copy that may already be in place.
+    // Not having looked is no route: the copy may already be in place.
     if there == OnTarget::Unknown {
         return Route::NotYet;
     }
@@ -635,8 +519,7 @@ fn get_it_there_into(what: &Known<'_>, service: &str, to: &str) -> Route {
             ..send()
         }]);
     }
-    // 2. On this machine. The download is listed and marked done, so the shape of the job is
-    //    the same one somebody sees when it is not.
+    // 2. On this machine. The download is listed and marked done, keeping the plan's shape.
     if what.is_here(service) {
         return Route::Steps(vec![
             Move {
@@ -660,8 +543,7 @@ fn get_it_there_into(what: &Known<'_>, service: &str, to: &str) -> Route {
             send(),
         ]);
     }
-    // 4. Last: the copy on the target that a startup list cannot resolve. Two network trips
-    //    and no digest at the end of them, which is why nothing above it settles for this.
+    // 4. The copy on the target that a startup list cannot resolve.
     if let OnTarget::At(one) = there {
         return Route::Steps(vec![
             Move {
@@ -698,9 +580,8 @@ fn put_it_in_the_list(what: &Known<'_>, service: &str, because: String) -> Remed
 
 /// The plan that puts one named service into the startup list.
 ///
-/// **Public because [`Remedy::Choose`] hands a decision to a person**, and whatever they pick
-/// has to become a plan somewhere. Building it here rather than in the window is what stops
-/// the chosen route differing from the one the check would have proposed itself.
+/// Turns a person's pick from [`Remedy::Choose`] into a plan, by the same route a check
+/// proposes.
 #[must_use]
 pub fn plan_for(what: &Known<'_>, service: &str) -> Remedy {
     put_it_in_the_list(
@@ -712,20 +593,9 @@ pub fn plan_for(what: &Known<'_>, service: &str) -> Remedy {
 
 /// What a startup list should call this payload, so the loader can find it.
 ///
-/// # Why a chain's name is not a filename
-///
-/// A chain names payloads - `kstuff-lite`, `nanoDNS` - because an ordering is about what a
-/// thing *is*, and versions change without the ordering changing. A startup list names
-/// **files**, because something has to resolve them on disk.
-///
-/// Deploying a chain wrote the first where the second was needed. The list it produced was
-/// well-formed, correctly ordered, and named six things that do not exist - every row reporting
-/// *not on the target*, which is exactly what it was: a configuration that cannot load
-/// anything, written by the feature whose whole job is producing one that can.
-///
-/// So: what is on the target already, or failing that what the list describes and a send is
-/// about to put there. The bare name only when nothing knows any better, which is the case
-/// where the payload has no route and is being left out anyway.
+/// A chain names payloads (`kstuff-lite`); a startup list names files, which must resolve on
+/// disk. The answer is the file already on the target, or the described filename a send will
+/// write. `None` when neither is known, and the payload is then left out.
 fn will_be_called(what: &Known<'_>, service: &str) -> Option<String> {
     // Already where a list can resolve it: it is not being replaced, so it keeps its name.
     if let OnTarget::At(one) = what.on_target(service)
@@ -733,12 +603,8 @@ fn will_be_called(what: &Known<'_>, service: &str) -> Option<String> {
     {
         return Some(one.name.clone());
     }
-    // Otherwise a send is in the plan, and it writes the described filename.
-    //
-    // **`None` rather than the bare name.** A description with no filename cannot say what
-    // will be on the disk, and writing the chain's own word for it produces exactly the line
-    // this function exists to stop producing - one that resolves to nothing. A payload that
-    // cannot be named is left out and said, like one that cannot be got.
+    // Otherwise a send writes the described filename. A description with no filename gives
+    // `None`, never the bare name, which would resolve to nothing.
     what.described
         .payloads()
         .iter()
@@ -749,8 +615,8 @@ fn will_be_called(what: &Known<'_>, service: &str) -> Option<String> {
 /// The directory holding a file.
 ///
 /// A list path with its last segment removed, and no trailing slash - `/mnt/usb0/ps5_autoloader`
-/// from `/mnt/usb0/ps5_autoloader/autoload.txt`. A path with no separator has no directory to
-/// speak of, and the manager's own is the answer that cannot be wrong.
+/// from `/mnt/usb0/ps5_autoloader/autoload.txt`. A path with no separator gives the manager's
+/// directory.
 fn beside(path: &str) -> String {
     match path.rfind('/') {
         Some(0) | None => INTERNAL.to_owned(),
@@ -760,28 +626,13 @@ fn beside(path: &str) -> String {
 
 /// A plan that sets a target up from nothing, in the recommended order.
 ///
-/// # What this is for
+/// For a target that has just run the entry point, or a stick being made into a way back in.
+/// The order comes from [`crate::recovery::baseline`] and nothing is added to it. The plan is
+/// inert until confirmed, and the list it writes then gets the same whole-file review as any
+/// other write.
 ///
-/// A target that has just been exploited, or a stick being made into a way back in. Both are
-/// the same job - get the payloads somewhere the loader can reach and write a list that runs
-/// them in an order that works - and both are otherwise a dozen presses across three screens
-/// with the ordering held in somebody's head.
-///
-/// # Where the order comes from
-///
-/// [`crate::recovery::baseline`], which is a tracked file in this repository rather than a
-/// constant, so the order and the reason for it are reviewable like anything else here. This
-/// adds nothing to it and invents no order of its own.
-///
-/// # What it will not do
-///
-/// **It plans; it does not write.** Like every other plan here it is inert until somebody
-/// agrees to it, and the list it produces then goes through the same whole-file review as any
-/// other write. Two confirmations for the most destructive thing this program can do.
-///
-/// Payloads with no route are left out and named, rather than listed and unresolvable: an
-/// entry naming a file the loader cannot find fails at every boot with only a log line to say
-/// so, which is the exact failure this whole module exists to prevent.
+/// Returns the plan and the payloads left out: a payload with no route is named rather than
+/// listed, since an unresolvable entry fails at every boot.
 #[must_use]
 pub fn provision(
     what: &Known<'_>,
@@ -792,27 +643,16 @@ pub fn provision(
     let mut moves: Vec<Move> = Vec::new();
     let mut entries: Vec<String> = Vec::new();
     let mut left_out: Vec<String> = Vec::new();
-    // **Where this list will resolve its entries from.** Worked out from the list being
-    // written rather than from whatever the screen happened to be showing.
+    // Where the list being written resolves its entries from.
     let to = match kind {
         Kind::Autoloader => beside(into),
         Kind::Manager => INTERNAL.to_owned(),
     };
 
     for placed in preset.in_order(kind) {
-        // The manager is what a list of one kind requires and the other forbids, and the loader
-        // is kept out of an autoloader's list while belonging in the manager's - both of which
-        // are structural, not about the live target, so `None` is passed for whether the loader
-        // is answering.
-        //
-        // **This is deploy, not audit, and the difference is the loader.** A deployed list is for
-        // the NEXT boot, when the boot loader will have opened 9021 and this list re-adds the
-        // loader last to keep it open. Passing the *current* loader state here dropped the loader
-        // from the manager's own list on every deploy that happened while 9021 was answering -
-        // which is every deploy, because a person deploying with this program has the loader up
-        // to do it. The live check belongs to `audit`, which warns that a second loader would
-        // collide with the running one *now*; it has no business deciding what gets written for
-        // later.
+        // `None` for the loader state: a deployed list is for the next boot, where the loader
+        // belongs last in the manager's list whatever 9021 is doing now. The live check is
+        // `audit`'s.
         if !crate::recovery::can_work_in(&placed.name, kind, what.known, None) {
             continue;
         }
@@ -849,11 +689,7 @@ pub fn provision(
         },
         already: false,
     });
-    // **A manager chain is a list AND the switch that reads it.** Writing the manager's own list
-    // without turning autoload on gives a console that comes back with nothing loaded and no sign
-    // why - the exact failure a person hits after deploying and finding the target unchanged. So
-    // the manager's own list carries the switch beside it; an autoloader's list is read by the
-    // autoloader regardless and needs none.
+    // The manager reads its list only with autoload on; an autoloader's list needs no switch.
     if kind == Kind::Manager {
         moves.push(Move {
             step: Step::Enable {
@@ -862,12 +698,8 @@ pub fn provision(
             already: false,
         });
     }
-    // **The files the chain carries, put back last.** A chain exported off a working console
-    // brings copies of the settings that made it behave - restore them verbatim, after the switch
-    // above, so a captured settings file becomes the target's again. A shipped chain carries
-    // none, so this adds nothing to it; only a chain somebody exported has files here. The switch
-    // still runs regardless, so a chain whose captured settings happen to have autoload off is
-    // not deployed inert.
+    // Carried files go last, after the switch, so a captured settings file is the last word on
+    // its path. Shipped chains carry none.
     for file in &preset.files {
         moves.push(Move {
             step: Step::Place {
@@ -898,10 +730,7 @@ pub fn provision(
 
 /// The checks about the startup list alone, worst first.
 ///
-/// **For the screen that edits it.** Everything [`crate::doctor::examine`] reports is worth
-/// knowing, but half of it is about what is answering right now, which is a different question
-/// with a different screen. A list being edited should be told what is wrong with *it*, where
-/// it is being edited, rather than only on another screen that audits a different list.
+/// For the screen that edits the list; [`examine`] also reports what is answering now.
 #[must_use]
 pub fn examine_list(what: &Known<'_>) -> Vec<Finding> {
     let mut findings = about_the_list(what);
@@ -913,10 +742,7 @@ pub fn examine_list(what: &Known<'_>) -> Vec<Finding> {
     findings
 }
 
-/// Every check, run against one snapshot.
-///
-/// Ordered worst first, which is the order somebody should read them in and therefore the
-/// order they are drawn in.
+/// Every check, run against one snapshot, worst first.
 #[must_use]
 pub fn examine(what: &Known<'_>) -> Vec<Finding> {
     let mut findings = Vec::new();
@@ -954,8 +780,7 @@ fn about_the_list(what: &Known<'_>) -> Vec<Finding> {
         }];
     };
 
-    // An unlisted target passes nothing here rather than a guess: the audit then makes no
-    // claim about where a file is, which under-reports instead of asserting something unmeasured.
+    // An unlisted target passes no files, so the audit makes no claim about where one is.
     let hazards = audit(
         chain,
         what.known,
@@ -970,9 +795,7 @@ fn about_the_list(what: &Known<'_>) -> Vec<Finding> {
             id: "startup-list".to_owned(),
             label: "the startup list".to_owned(),
             gravity: Gravity::Critical,
-            // **Says which list, because it is not the only one.** *This list brings back a way
-            // in* read as a verdict on the target while being a verdict on one file, and the
-            // file that decides whether the loader comes back is usually a different one.
+            // Names which list: the verdict is on one file, not the whole target.
             verdict: Verdict::Well(format!(
                 "after a restart, {} brings back a way in",
                 what.kind.describe()
@@ -1065,8 +888,7 @@ fn on_removable(what: &Known<'_>, entry: &str, storage: Where) -> Remedy {
             ));
         }
     };
-    // The entry is already in the list; moving the file is the whole of the answer, so no
-    // list edit is added. An entry that reads the same before and after is the point.
+    // The entry is already in the list; moving the file is the whole answer.
     moves.retain(|one| !one.step.is_a_list_edit());
     Remedy::Ready(Plan {
         because: format!("so the manager can resolve {entry} at every boot, not just this one"),
@@ -1119,35 +941,20 @@ fn about_what_is_running(what: &Known<'_>) -> Vec<Finding> {
         .collect()
 }
 
-/// What would get a service answering **now**, which is not what gets it back after a restart.
+/// What would get a service answering now, which is not what gets it back after a restart.
 fn start_it_now(what: &Known<'_>, service: &str) -> Remedy {
-    // **This program cannot start anything while the loader is not answering.**
-    //
-    // Which is not the same as *the target is broken*, and the difference matters: a console
-    // can run its whole chain with 9021 unreachable, and one measured here does. What is lost
-    // is the ability to start something from this machine - both ways of doing it, sending an
-    // ELF to the loader and asking `hbldr` to run one already on the disk, end at the same
-    // place.
-    //
-    // It offered exactly that on a target where the loader was not answering, four lines above
-    // a paragraph saying so.
+    // Nothing can be started from here while the loader is not answering: sending an ELF and
+    // `hbldr` both go through it. The target itself may still be running its whole chain.
     if what.loader_is_up() == Some(false) {
         return Remedy::Beyond(format!(
             "this program cannot start {service} while {} is not answering - both ways of \
-             running a payload go through it. Loading it needs the exploit's own loader, which \
-             means re-running the exploit. Whatever the target is already running is unaffected.",
+             running a payload go through it. Starting it again means re-running the entry point \
+             that first started it. Whatever the target is already running is unaffected.",
             pros_link::service::LOADER.name
         ));
     }
-    // **Never offered for something that was already loaded.**
-    //
-    // This is the one that has cost real time. `pldmgr` was not answering on 8084, so *load it
-    // now* was offered - on a console whose startup list had demonstrably run, which means
-    // `pldmgr` was the thing that ran it and was up the whole time. Starting it again started a
-    // second copy and crashed the machine.
-    //
-    // A closed port means this program cannot reach it. It is not evidence that nothing is
-    // there, and the difference is a reboot.
+    // Never offered for something already loaded: a closed port is not evidence that nothing
+    // is running, and a second copy crashes the target.
     if what.was_already_loaded(service) {
         return Remedy::Beyond(format!(
             "{service} was already loaded on this target, so a second copy is what starting it \
@@ -1159,8 +966,7 @@ fn start_it_now(what: &Known<'_>, service: &str) -> Remedy {
     }
     if let OnTarget::At(one) = what.on_target(service) {
         return Remedy::Ready(Plan {
-            // **Said before the button, not after the crash.** Nothing here can see processes;
-            // it sees ports, and a silent port is not an empty one.
+            // Nothing here sees processes, only ports, so the risk is stated up front.
             because: "it is already on the target, so this starts it without moving anything - \
                       it does not put it in a startup list. Nothing here can see whether a copy \
                       is already running: if one is, this makes two."
@@ -1229,9 +1035,7 @@ mod tests {
     fn described(name: &str, url: Option<&str>) -> Payload {
         Payload {
             name: name.to_owned(),
-            // **A description says what file it arrives as**, and a list entry is that file.
-            // A fixture without one is a payload nothing can write into a list, which is a
-            // real case with its own test rather than the default for every other one.
+            // A list entry is this file; `unnameable` covers a description without one.
             filename: Some(format!("{name}.elf")),
             url: url.map(ToOwned::to_owned),
             ..Payload::default()
@@ -1267,11 +1071,7 @@ mod tests {
         }
     }
 
-    /// **The gap this module exists to close**, stated as a test.
-    ///
-    /// A payload nobody has, that a list needs, used to produce two dead ends: a download
-    /// button on one screen that never touched the list, and an add button on another that
-    /// refused because the file was not on the target. One finding, one plan, three steps.
+    /// A payload nobody has is fetched, sent and listed in one three-step plan.
     #[test]
     fn a_payload_nobody_has_yet_is_fetched_sent_and_listed_in_one_plan() {
         let manifest = Manifest::new(vec![described("klogsrv", Some("https://example/klogsrv"))]);
@@ -1300,7 +1100,7 @@ mod tests {
         assert!(plan.rewrites_the_list());
     }
 
-    /// A payload already on this machine skips the download - and still shows it.
+    /// A payload already on this machine marks the download done and still shows it.
     #[test]
     fn what_is_already_here_is_marked_done_rather_than_hidden() {
         let manifest = Manifest::new(vec![described("klogsrv", Some("https://example/klogsrv"))]);
@@ -1327,9 +1127,7 @@ mod tests {
         assert_eq!(plan.outstanding().len(), 2);
     }
 
-    /// **A payload on a stick is two copies away, not one add away.**
-    ///
-    /// This is the case that used to print *copy it to /data/pldmgr/payloads first* and stop.
+    /// A payload only on a stick is brought over and sent before it is listed.
     #[test]
     fn a_payload_on_removable_storage_is_brought_over_before_it_is_listed() {
         let manifest = Manifest::new(vec![]);
@@ -1361,11 +1159,7 @@ mod tests {
         assert!(steps[2].starts_with("add"), "{steps:?}");
     }
 
-    /// **A target nobody has listed does not license a download.**
-    ///
-    /// The payload may be sitting on the drive already. Proposing to fetch it because the
-    /// listing has not been read is a plan built on an absence of evidence, and the person
-    /// carrying it out has no way to tell that from a plan built on a measurement.
+    /// A target nobody has listed gets no plan; the same target listed empty does.
     #[test]
     fn an_unlisted_target_is_not_treated_as_an_empty_one() {
         let manifest = Manifest::new(vec![described("klogsrv", Some("https://example/klogsrv"))]);
@@ -1387,7 +1181,6 @@ mod tests {
         };
         assert!(said.contains("have not been listed"), "{said}");
 
-        // The same snapshot, having actually looked, does propose one.
         let listed = Known {
             there: Some(&[]),
             ..unlisted
@@ -1398,11 +1191,7 @@ mod tests {
         ));
     }
 
-    /// **An unread scan is not an absence.**
-    ///
-    /// Carried over from the check screen, where this was a real bug: the payload scan only
-    /// ran when somebody opened the startup list, so the screen giving the advice reasoned
-    /// from nothing and drew it as *not there*.
+    /// An unread scan is unknown, not absent.
     #[test]
     fn nothing_listed_is_unknown_rather_than_absent() {
         let manifest = Manifest::new(vec![]);
@@ -1421,7 +1210,7 @@ mod tests {
         assert_eq!(what.on_target("klogsrv"), super::OnTarget::Unknown);
     }
 
-    /// A listing that found it says where, so something can be done about it.
+    /// A listing that found the payload returns its path.
     #[test]
     fn a_payload_on_the_target_comes_back_with_its_path() {
         let manifest = Manifest::new(vec![]);
@@ -1448,7 +1237,7 @@ mod tests {
         assert_eq!(one.path, "/data/pldmgr/payloads/klogsrv/klogsrv_v0.9.elf");
     }
 
-    /// A listing that ran and found nothing is a real absence, and fetching is then right.
+    /// A listing that ran and found nothing is an absence.
     #[test]
     fn a_listing_that_found_nothing_is_an_absence() {
         let manifest = Manifest::new(vec![]);
@@ -1467,11 +1256,7 @@ mod tests {
         assert_eq!(what.on_target("klogsrv"), super::OnTarget::Absent);
     }
 
-    /// **A copy on the drive beats a copy on a stick**, whichever came first in the listing.
-    ///
-    /// Only one of the two can be resolved by a startup list, so returning whichever was
-    /// found first would report the payload as present and then build a list that fails at
-    /// every boot.
+    /// A copy on internal storage beats a copy on a stick, whatever the listing order.
     #[test]
     fn internal_storage_wins_over_a_stick() {
         let manifest = Manifest::new(vec![]);
@@ -1505,11 +1290,7 @@ mod tests {
         assert_eq!(one.storage, Where::Internal, "{}", one.path);
     }
 
-    /// **Two findings about one payload do not fetch it twice.**
-    ///
-    /// The overlap is the normal case: *it is not answering* and *it is not in the startup
-    /// list* both want the same file on the target, and a combined plan that listed the
-    /// download twice would be showing somebody work it had already decided to skip.
+    /// Two findings about one payload combine into a plan that fetches it once.
     #[test]
     fn a_combined_plan_does_repeated_work_once() {
         let fetch = Move {
@@ -1591,11 +1372,7 @@ mod tests {
         assert_eq!(both.moves, plan.moves, "one plan combined is itself");
     }
 
-    /// **A copy on the console's USB never beats a copy on this machine.**
-    ///
-    /// The exact advice this replaced: pldmgr was on the target's stick and also staged here,
-    /// and the plan said *copy pldmgr off the target, from `/mnt/usb0/...`* - two network trips
-    /// to drag a file off the console and hand it straight back. One send was the whole job.
+    /// A copy on this machine beats a copy on the target's stick.
     #[test]
     fn a_payload_already_here_is_sent_rather_than_dragged_off_the_console() {
         let manifest = Manifest::new(vec![described("pldmgr", Some("https://example/pldmgr"))]);
@@ -1634,7 +1411,7 @@ mod tests {
         );
     }
 
-    /// **A verified download beats scavenging from the console**, when there is one to be had.
+    /// A verified download beats copying off the target.
     #[test]
     fn a_described_payload_is_downloaded_rather_than_dragged_off_the_console() {
         let manifest = Manifest::new(vec![described("pldmgr", Some("https://example/pldmgr"))]);
@@ -1668,9 +1445,7 @@ mod tests {
         );
     }
 
-    /// **And it is still the answer when it is the only one.** A copy on the console is a
-    /// worse route, not a forbidden one - dropping it would leave nothing to offer for a
-    /// payload nobody has and nothing describes.
+    /// A copy on the target is still used when it is the only route.
     #[test]
     fn a_copy_on_the_console_is_used_when_there_is_no_other_route() {
         let manifest = Manifest::new(vec![]);
@@ -1700,7 +1475,7 @@ mod tests {
         assert!(steps[0].contains("off the target"), "{steps:?}");
     }
 
-    /// **A configurator's list is in the tracked order, not the order anything was found.**
+    /// A provisioned autoloader list holds only the manager.
     #[test]
     fn setting_up_produces_the_recommended_order() {
         let manifest = Manifest::new(vec![
@@ -1737,17 +1512,12 @@ mod tests {
             panic!("the last step writes the file");
         };
         assert_eq!(into, "/mnt/usb0/ps5_autoloader/autoload.txt");
-        // **The clean autoloader list is only the manager.** It starts pldmgr, which then loads
-        // the rest of the chain from its own list - so nothing else belongs here.
+        // pldmgr loads the rest of the chain from its own list.
         assert_eq!(entries, ["pldmgr.elf"], "{entries:?}");
         assert!(plan.rewrites_the_list());
     }
 
-    /// **The manager's own list never names the loader or the manager.**
-    ///
-    /// Both are already up by the time it is read - one is what read it, the other is what it
-    /// was loaded through - so listing either is at best pointless and at worst the end of the
-    /// chain.
+    /// The manager's own list includes the loader whatever 9021 is doing, and never the manager.
     #[test]
     fn setting_up_the_managers_own_list_includes_the_loader_whatever_9021_is_doing() {
         let manifest = Manifest::new(vec![
@@ -1756,10 +1526,6 @@ mod tests {
             described("ftpsrv", Some("https://example/ftpsrv")),
         ]);
         let known = Catalogue::builtin();
-        // The list written into a manager's own file is for the NEXT boot, so the live loader
-        // state must not change it: the loader belongs last in this list either way, and the
-        // manager itself never belongs in the list it reads. It was dropping the loader here
-        // whenever 9021 was answering - which is every deploy - that this asserts against.
         for answering in [true, false] {
             let report = with_loader(answering);
             let what = Known {
@@ -1800,11 +1566,7 @@ mod tests {
         }
     }
 
-    /// **Deploying a manager chain turns autoload on; deploying an autoloader list does not.**
-    ///
-    /// The manager ignores a list it is told to ignore, so the switch is written beside the list -
-    /// the step a person otherwise flips by hand after every deploy, and the reported bug. An
-    /// autoloader's list is read regardless and needs no such step.
+    /// Deploying a manager chain turns autoload on; deploying an autoloader list does not.
     #[test]
     fn deploying_the_managers_list_also_enables_autoload() {
         let manifest = Manifest::new(vec![described("ftpsrv", Some("https://example/ftpsrv"))]);
@@ -1850,13 +1612,7 @@ mod tests {
         );
     }
 
-    /// **A chain that carries files puts each one back, verbatim, after the list and the switch.**
-    ///
-    /// This is the deploy half of `export chain`: a chain exported off a working console carries
-    /// copies of the settings beside its list, and deploying it restores them. The bytes are put
-    /// back exactly, and the step comes after the list is written and after autoload is turned on -
-    /// so a captured settings file is the last word on its own path, and the switch has already
-    /// guaranteed the list is read whatever the captured settings said.
+    /// A chain that carries files puts each back verbatim, after the list and the switch.
     #[test]
     fn a_chain_that_carries_files_has_them_restored_on_deploy() {
         let manifest = Manifest::new(vec![described("ftpsrv", Some("https://example/ftpsrv"))]);
@@ -1906,9 +1662,7 @@ mod tests {
         );
     }
 
-    /// **A shipped chain carries no files, so deploying it places none.** The feature is inert
-    /// for the chains this program ships - it only ever restores what somebody exported off their
-    /// own target - so a plain deploy is exactly as it was.
+    /// A shipped chain carries no files, so deploying it places none.
     #[test]
     fn a_chain_that_carries_no_files_places_nothing() {
         let manifest = Manifest::new(vec![described("ftpsrv", Some("https://example/ftpsrv"))]);
@@ -1940,13 +1694,12 @@ mod tests {
         );
     }
 
-    /// **A payload with no route is left out and named**, never listed unresolvable.
+    /// A payload with no route is left out and named, never listed unresolvable.
     #[test]
     fn what_cannot_be_got_is_named_rather_than_listed() {
         let manifest = Manifest::new(vec![described("ftpsrv", Some("https://example/ftpsrv"))]);
         let known = Catalogue::builtin();
-        // The manager's own list, because that is where the payloads live now - the autoloader's
-        // is only the manager itself.
+        // The manager's own list, because the autoloader's holds only the manager.
         let what = Known {
             report: None,
             there: Some(&[]),
@@ -1986,13 +1739,7 @@ mod tests {
         );
     }
 
-    /// **A loader that is down cannot be started by anything, including itself.**
-    ///
-    /// This offered *load it now, without sending anything* on exactly the target whose check
-    /// screen said, four lines below, that the loader is down and reloading a payload will not
-    /// help. Both were on screen at once and one of them was a button - and `hbldr` reaches the
-    /// disk through the same `elfldr_spawn` the loader port uses, so it fails precisely when it
-    /// looks most useful.
+    /// Nothing is offered to be started while the loader is down; `hbldr` needs it too.
     #[test]
     fn nothing_is_offered_to_be_started_while_the_loader_is_down() {
         let manifest = Manifest::new(vec![]);
@@ -2022,7 +1769,7 @@ mod tests {
         assert!(said.contains("re-run"), "{said}");
     }
 
-    /// With the loader answering, the same payload on the same disk is one press.
+    /// With the loader answering, a payload on the disk is started in one step.
     #[test]
     fn a_payload_on_the_disk_is_started_when_the_loader_is_up() {
         let manifest = Manifest::new(vec![]);
@@ -2051,12 +1798,7 @@ mod tests {
         assert_eq!(plan.outstanding().len(), 1);
     }
 
-    /// **The loader last in the manager's own list is the deliberate way to run it.**
-    ///
-    /// Everything else has loaded by the time it starts, and what it is there for is to still
-    /// be running afterwards holding 9021 open. This was reported as a hazard, with the words
-    /// *the 0 after it depend on it surviving being sent to itself* - a sentence the hazard's
-    /// own carried count disproves.
+    /// The loader last in the manager's own list is not a hazard: nothing after it can pay.
     #[test]
     fn the_loader_last_in_the_managers_list_is_not_a_hazard() {
         let known = Catalogue::builtin();
@@ -2093,7 +1835,7 @@ shsrv_v0.20.elf
         );
     }
 
-    /// **With entries after it, it is still a hazard** - that is what the finding is for.
+    /// The loader with entries after it is still a hazard.
     #[test]
     fn the_loader_with_things_after_it_is_still_a_hazard() {
         let known = Catalogue::builtin();
@@ -2122,17 +1864,11 @@ shsrv_v0.20.elf
         );
     }
 
-    /// **The one that cost an hour, twice.**
-    ///
-    /// `pldmgr` was not answering on 8084, so *load it now* was offered - on a console whose
-    /// startup list had demonstrably run, which means `pldmgr` was the thing that ran it and was
-    /// up the whole time. Starting it again started a second copy and crashed the machine.
+    /// The list runner is never offered a second copy when its list was read off the target.
     #[test]
     fn what_runs_the_list_is_never_offered_a_second_copy() {
         let known = Catalogue::builtin();
         let manifest = Manifest::new(vec![]);
-        // The list came off the target, so something read it - and the thing that reads lists
-        // is the thing being asked about.
         let chain = Chain::parse(
             "ftpsrv_v0.21.elf
 klogsrv_v0.9.elf
@@ -2165,9 +1901,7 @@ shsrv_v0.20.elf
         assert!(said.contains("cannot reach it"), "{said}");
     }
 
-    /// **And nor is anything the startup list already loaded.**
-    ///
-    /// Being in a list that has run is the same evidence by a different route.
+    /// A payload the startup list already loaded is never offered a second copy.
     #[test]
     fn a_payload_the_startup_list_loaded_is_never_offered_a_second_copy() {
         let known = Catalogue::builtin();
@@ -2205,7 +1939,7 @@ shsrv_v0.20.elf
         );
     }
 
-    /// Something the list never loaded is still offered, and still says what it cannot see.
+    /// A payload no list loaded is offered, with the second-copy risk stated.
     #[test]
     fn a_payload_no_list_loaded_is_offered_with_the_risk_stated() {
         let known = Catalogue::builtin();
@@ -2242,11 +1976,7 @@ shsrv_v0.20.elf
         );
     }
 
-    /// **The manager's own list, deployed, is the list a working console runs.**
-    ///
-    /// The chain is taken from one rather than assembled, so this pins the result exactly: the
-    /// eight entries in that order, `elfldr` last so it outlives the chain that loaded
-    /// everything else, and no `pldmgr` because the list is what `pldmgr` reads.
+    /// The shipped manager chain pins its exact order: `elfldr` last, no `pldmgr`.
     #[test]
     fn the_managers_chain_is_the_one_a_console_runs() {
         let preset = crate::recovery::baseline::first();
@@ -2279,11 +2009,7 @@ shsrv_v0.20.elf
         );
     }
 
-    /// **One kernel patch, and no rival chain inside this one.**
-    ///
-    /// It held both `kstuff` and `kstuff-lite`, which the chain file's own text says never to
-    /// do, and `etaHEN` - which is a different way of bringing a console up, with a preset of
-    /// its own, and which starts several of the payloads listed beside it.
+    /// The manager chain holds one kernel patch and no `etaHEN`, which has its own preset.
     #[test]
     fn the_managers_chain_holds_no_rival_and_one_patch() {
         let names: Vec<String> = crate::recovery::baseline::first()
@@ -2296,12 +2022,7 @@ shsrv_v0.20.elf
         assert!(!names.iter().any(|one| one == "etaHEN"), "{names:?}");
     }
 
-    /// **A deployed list names files, not chain entries.**
-    ///
-    /// Deploying wrote `kstuff-lite` where `kstuff-lite_v1.09.elf` was needed. The list was
-    /// well-formed, correctly ordered, and named six things that do not exist - every row
-    /// reporting *not on the target*, from the one feature whose job is producing a list that
-    /// loads.
+    /// A deployed list names files, not chain entries.
     #[test]
     fn a_deployed_list_names_files_that_can_be_resolved() {
         let manifest = Manifest::new(vec![
@@ -2351,9 +2072,7 @@ shsrv_v0.20.elf
             !entries.iter().any(|one| one == "kstuff-lite"),
             "and never the chain's own name for it: {entries:?}"
         );
-        // **A description with no filename is left out, not written as a bare name.** The
-        // fixture gives ftpsrv no filename, which is the case that used to produce an entry
-        // resolving to nothing.
+        // The fixture gives ftpsrv no filename, so it is left out rather than written bare.
         assert!(
             !entries.iter().any(|one| one == "ftpsrv"),
             "unnameable entries are left out: {entries:?}"
@@ -2363,14 +2082,7 @@ shsrv_v0.20.elf
         }
     }
 
-    /// **A chain deployed to a stick puts its payloads on that stick.**
-    ///
-    /// The autoloader joins an entry onto the directory holding its own `autoload.txt` -
-    /// `snprintf(full_path, ..., "%s%s", config_dir, line)` - so a list on `/mnt/usb0` resolves
-    /// its entries in `/mnt/usb0/ps5_autoloader`. Sending the files to the internal payload
-    /// directory instead produced a correct, well-ordered list naming files that were nowhere
-    /// near it: a chain that comes up and loads nothing, written by the feature whose whole job
-    /// is producing one that comes up.
+    /// A chain deployed to a stick sends its payloads beside the stick's `autoload.txt`.
     #[test]
     fn deploying_to_a_stick_sends_the_payloads_to_the_stick() {
         let known = Catalogue::builtin();
@@ -2412,11 +2124,7 @@ shsrv_v0.20.elf
         }
     }
 
-    /// **The manager's own list is resolved by scanning, so its payloads go where it scans.**
-    ///
-    /// `SCAN_DIRS` in the manager's own header is `/data/pldmgr` and `/mnt/usb0..usb7/pldmgr`.
-    /// It finds a payload by looking rather than by joining a path, so its list does not want
-    /// the files beside it - it wants them somewhere it scans.
+    /// The manager's own list sends its payloads to the internal directory the manager scans.
     #[test]
     fn deploying_the_managers_own_list_sends_to_where_it_scans() {
         let known = Catalogue::builtin();
@@ -2451,16 +2159,9 @@ shsrv_v0.20.elf
         }
     }
 
-    /// **The loader is never in an autoloader's list**, because that autoloader loads it.
+    /// The loader is never in an autoloader's list, and is last in the manager's.
     ///
-    /// Read from y2jb's source rather than its README. `aioshellcode.js` finds and maps the
-    /// loader itself, and `autoload.js` then **waits for it to accept connections on 9021**
-    /// before it loads anything from a list at all. So by the time a list is read the loader is
-    /// already running and holding the port, and an entry for it is a second copy arriving at a
-    /// socket the first one has bound.
-    ///
-    /// This file once said to put it early, reasoning that everything after it loads through
-    /// it. That is true and it is the autoloader's job, not the list's.
+    /// In y2jb's source, `autoload.js` waits for the loader on 9021 before reading any list.
     #[test]
     fn the_loader_is_left_out_of_an_autoloaders_list_entirely() {
         let preset = crate::recovery::baseline::first();
@@ -2475,7 +2176,6 @@ shsrv_v0.20.elf
             "and the manager still is: {auto:?}"
         );
 
-        // The manager's own list is the one place it belongs, and it goes last.
         let mgr: Vec<String> = preset
             .in_order(Kind::Manager)
             .iter()
@@ -2484,7 +2184,7 @@ shsrv_v0.20.elf
         assert_eq!(mgr.last().map(String::as_str), Some("elfldr"), "{mgr:?}");
     }
 
-    /// Nowhere to get it from is said plainly rather than planned around.
+    /// A payload with no route gets a `Beyond`, not steps.
     #[test]
     fn a_payload_with_no_route_says_so_instead_of_offering_steps() {
         let manifest = Manifest::new(vec![described("klogsrv", None)]);
@@ -2508,15 +2208,13 @@ shsrv_v0.20.elf
         assert!(said.contains("nothing describes where"), "{said}");
     }
 
-    /// **The loader in the manager's own list is one edit and no transfers.**
+    /// Removing the loader from the manager's own list is one edit and no transfers.
     #[test]
     fn removing_the_loader_is_a_list_edit_alone() {
         let known = Catalogue::builtin();
         let chain = Chain::parse("kstuff.elf\nelfldr_v0.24.elf\nftpsrv.elf\npldmgr.elf");
         let manifest = Manifest::new(vec![]);
-        // **While it is answering.** That is the whole of the hazard: a second copy finds 9021
-        // already bound. After a boot chain has finished the first one has exited, and then
-        // listing it is how somebody gets it back - see the test below.
+        // The hazard exists only while the loader is answering.
         let up = with_loader(true);
         let what = Known {
             report: Some(&up),
@@ -2547,8 +2245,7 @@ shsrv_v0.20.elf
         assert!(!plan.touches_the_target() || plan.rewrites_the_list());
     }
 
-    /// **A failure always carries its remedy.** The type says so; this says it out loud, over
-    /// a list that produces several different hazards at once.
+    /// Every failure carries a non-empty remedy, over a list with several hazards.
     #[test]
     fn nothing_reports_a_failure_without_saying_what_would_answer_it() {
         let known = Catalogue::builtin();
@@ -2586,7 +2283,7 @@ shsrv_v0.20.elf
         }
     }
 
-    /// **Nothing measured is not a clean bill of health.**
+    /// A target nobody asked is unknown, not well.
     #[test]
     fn a_target_nobody_asked_is_unknown_rather_than_well() {
         let known = Catalogue::builtin();
@@ -2608,7 +2305,7 @@ shsrv_v0.20.elf
         assert!(findings.iter().all(|one| !one.verdict.is_unwell()));
     }
 
-    /// Nothing at all is unknown too - an empty report is not a passing one.
+    /// No findings at all is unknown.
     #[test]
     fn no_findings_at_all_is_unknown() {
         assert_eq!(health(&[]), Health::Unknown);
@@ -2640,7 +2337,7 @@ shsrv_v0.20.elf
         assert_eq!(health(&[well, warned, bad]), Health::Unwell);
     }
 
-    /// The worst findings are drawn first, because that is the order to read them in.
+    /// Findings are ordered worst first.
     #[test]
     fn findings_are_ordered_worst_first() {
         let known = Catalogue::builtin();
@@ -2666,7 +2363,7 @@ shsrv_v0.20.elf
         assert!(ranks.windows(2).all(|pair| pair[0] >= pair[1]), "{ranks:?}");
     }
 
-    /// A version on the end does not make it a different payload - the one rule, everywhere.
+    /// A versioned filename matches the service it names.
     #[test]
     fn a_versioned_file_is_the_service_it_names() {
         assert!(named_as("klogsrv_v0.6.elf", "klogsrv"));
@@ -2707,7 +2404,7 @@ shsrv_v0.20.elf
         assert_eq!(pltauth.gravity, Gravity::Warning);
     }
 
-    /// Fetching changes nothing on the target, and a plan that only fetches says so.
+    /// A plan that only fetches does not touch the target.
     #[test]
     fn a_plan_that_only_downloads_does_not_touch_the_target() {
         let plan = super::Plan {

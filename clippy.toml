@@ -1,11 +1,3 @@
-# `doc_markdown` reads a PascalCase word in a doc comment as an un-backticked code identifier
-# and asks for backticks. `SELFish` is a sibling project's name, written stylised as prose per
-# the OOPS conventions (section 2), not a symbol - so it is added to the valid-idents list
-# rather than backticked. `..` keeps clippy's own defaults (GitHub, OpenGL and the rest).
-# obSCEne, Orbistoun and Prosperous do not need listing: the first reads as lower-case-initial
-# prose and the other two carry only a leading capital, so none trips the lint.
-#
-# `GameStream` is NVIDIA's name for the protocol the Moonlight bridge speaks (docs/VIDEO.md part
-# four); `GfeVersion` is one of the XML fields that protocol defines. Both are names written as
-# prose, not symbols in this tree, so they join the list rather than being backticked at every use.
+# Names written as prose rather than code identifiers: a sibling project, the protocol the
+# Moonlight bridge speaks and its fields. `..` keeps clippy's defaults.
 doc-valid-idents = ["SELFish", "GameStream", "GfeVersion", "ENet", "XInput", ".."]

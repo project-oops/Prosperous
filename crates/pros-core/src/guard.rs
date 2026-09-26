@@ -1,24 +1,11 @@
 //! Validating a destination path before staging a title to a target.
 //!
-//! There is exactly one thing this catches: a title staged into an **inert system path** such as
-//! `/user/app`, where the upload succeeds on the wire and is then silently ignored - never
-//! scanned or mounted by `ShadowMountPlus` or `ShellCore`, so it never appears on the home
-//! screen. For that one case it offers the location the console does scan instead:
-//! `/data/homebrew/<TITLE_ID>`, **under the title's own id**.
-//!
-//! # What it deliberately does not do
-//!
-//! It does **not** rewrite a title id, and it does not judge a prefix. A homebrew title carries
-//! whatever id it was built with - `MESA…`, `GLCB…`, a `FAKE…`, anything that is not a Sony
-//! prefix - and the homebrew folder is exactly where such an id belongs. So a destination under
-//! `/data/homebrew` is always accepted as written.
-//!
-//! It used to do more, and the more was wrong: it treated any non-`PPSA`/`CUSA`/`FAKE` prefix as
-//! a defect and *rewrote* the id to `PPSA<suffix>`, so `MESA00001` staged to the homebrew folder
-//! became `PPSA00001` - a Sony id the caller never asked for, which then landed on top of an
-//! unrelated title that already had it. Where a title goes is the caller's decision; this only
-//! keeps it out of a folder the console ignores, and it never changes what the title is called.
-//! (D030)
+//! It catches one defect: a title staged into an inert system path such as `/user/app`, where
+//! the upload succeeds and is then ignored - never mounted by `ShadowMountPlus` or `ShellCore`,
+//! so it never appears on the home screen. It then suggests `/data/homebrew/<TITLE_ID>` under
+//! the title's own id. It never rewrites a title id or judges a prefix: a homebrew title keeps
+//! whatever id it was built with, and a destination under `/data/homebrew` is always accepted
+//! as written. (D030)
 
 use std::path::{Path, PathBuf};
 
@@ -30,11 +17,8 @@ pub const INERT_USER_APP: &str = "/user/app";
 
 /// Classification of a transfer target defect.
 ///
-/// One kind, because there is one defect this catches - a destination the console ignores. It
-/// stays an enum rather than a bool so a [`Refusal`] reads as *what kind of problem*, and so a
-/// second **measured** defect could be added later without changing the shape callers match on.
-/// It is not the place for a reasoned-about one: the prefix rule that used to live here was
-/// exactly that, and it did harm (see the module note).
+/// An enum rather than a bool so a [`Refusal`] names the kind of problem, and a further
+/// measured defect can be added without changing the shape callers match on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IssueKind {
     /// Target path is under an inert system directory (`/user/app`).
@@ -59,17 +43,15 @@ pub struct Refusal {
     pub from: PathBuf,
     /// Requested remote target path.
     pub target_path: String,
-    /// The title ID, exactly as detected - **never rewritten**.
+    /// The title ID, exactly as detected.
     pub title_id: String,
-    /// The id the suggested path uses. **Always the same as `title_id`** - kept as its own field
-    /// so callers reading it need not change, and named so it is plain that nothing here alters
-    /// an identity.
+    /// The id the suggested path uses, always equal to `title_id`.
     pub suggested_id: String,
     /// Suggested destination under `/data/homebrew`, using the title's own id.
     pub suggested_path: String,
     /// The category of issue.
     pub kind: IssueKind,
-    /// Explanation of why this transfer will fail to appear on the console.
+    /// Explanation of why this transfer will fail to appear on the target.
     pub explanation: String,
     /// Actionable advice for the user.
     pub remedy: String,
@@ -77,10 +59,7 @@ pub struct Refusal {
 
 /// Where a homebrew title with this id lives on the target: `/data/homebrew/<id>`.
 ///
-/// The one place `ShadowMountPlus` scans, composed with the title's own id and nothing else - so a
-/// caller with a title id need not spell the path, and the spelling lives with the root it is
-/// built from rather than in each caller. The id is used verbatim; this validates nothing, which
-/// is [`check`]'s job.
+/// The id is used verbatim and not validated; validation is [`check`]'s job.
 #[must_use]
 pub fn homebrew_path(id: &str) -> String {
     format!("{CANONICAL_HOMEBREW_ROOT}/{id}")
@@ -145,11 +124,11 @@ pub fn detect_title(dir: &Path) -> Option<DetectedTitle> {
     })
 }
 
-/// The title's own id, taken from the first place that has one and **kept verbatim**: the
-/// metadata, then the destination's own last path component, then the source directory's name.
+/// The title's own id, kept verbatim, from the first place that has one: the metadata, the
+/// destination's last path component, then the source directory's name.
 ///
-/// A nine-character component is taken as an id; `app` (the tail of `/user/app`) is not, so the
-/// inert path itself is never mistaken for a title. Empty when nothing names one.
+/// A nine-character component is taken as an id; `app` (the tail of `/user/app`) is not.
+/// Empty when nothing names one.
 fn title_id_of(detected: Option<&DetectedTitle>, target_last: &str, from_dir: &str) -> String {
     if let Some(id) = detected.and_then(|d| d.title_id.clone()) {
         return id;
@@ -165,18 +144,14 @@ fn title_id_of(detected: Option<&DetectedTitle>, target_last: &str, from_dir: &s
 
 /// Evaluates a proposed transfer for an inert destination.
 ///
-/// Returns `Some(Refusal)` **only** when `to` points into an inert system path the console
-/// ignores; the refusal's suggested path is the same title, under its own id, in
-/// `/data/homebrew`. Every other destination - `/data/homebrew/<anything>` included - returns
-/// `None`. This never second-guesses where a caller puts a title beyond keeping it out of a
-/// folder that eats it, and it never changes a title id. See the module note and D030.
+/// Returns `Some(Refusal)` only when `to` is an inert system path; the suggestion is the same
+/// title under its own id in `/data/homebrew`. Every other destination, `/data/homebrew`
+/// included, returns `None`. (D030)
 #[must_use]
 pub fn check(from: &Path, to: &str) -> Option<Refusal> {
     let normalized_to = to.replace('\\', "/");
     let trimmed_to = normalized_to.trim_end_matches('/');
 
-    // The one defect. A destination that is not an inert system path - the homebrew folder above
-    // all - is the caller's to choose, whatever the title's prefix.
     if !is_inert_target_path(trimmed_to) {
         return None;
     }
@@ -226,12 +201,14 @@ mod tests {
     use std::fs::{File, create_dir_all};
     use std::io::Write;
 
+    /// A homebrew path is the scan root joined with the id.
     #[test]
     fn a_homebrew_title_path_is_the_scan_root_and_the_id() {
         assert_eq!(homebrew_path("GLPB00001"), "/data/homebrew/GLPB00001");
         assert_eq!(homebrew_path("MESA00001"), "/data/homebrew/MESA00001");
     }
 
+    /// Only `/user/app` and paths below it are inert.
     #[test]
     fn inert_path_detection() {
         assert!(is_inert_target_path("/user/app"));
@@ -243,6 +220,7 @@ mod tests {
         assert!(!is_inert_target_path("/system/app"));
     }
 
+    /// The title id is read from compact and formatted JSON, and absent when missing.
     #[test]
     fn json_title_id_parsing() {
         let json = r#"{"titleId":"PPSA90001","titleName":"Home Shell"}"#;
@@ -260,10 +238,7 @@ mod tests {
         assert_eq!(parse_title_id_from_json("{}"), None);
     }
 
-    /// **The homebrew folder is accepted whatever the prefix, and the id is left alone.** This is
-    /// the reported bug: `MESA00001` bound for `/data/homebrew` was rewritten to `PPSA00001` - a
-    /// Sony id nobody asked for, which then clobbered an unrelated title. A non-Sony prefix in the
-    /// homebrew folder is not a defect; it is the whole point of the homebrew folder.
+    /// The homebrew folder is accepted whatever the prefix, and the id is left alone.
     #[test]
     fn a_non_sony_prefix_in_the_homebrew_folder_is_left_alone() {
         let temp = std::env::temp_dir().join("pros_guard_homebrew_ok");
@@ -286,9 +261,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp);
     }
 
-    /// **An inert path is redirected to the homebrew folder under the title's OWN id.** The one
-    /// thing the guard catches - a destination the console ignores - and the suggestion keeps the
-    /// id exactly, never swapping the prefix for `PPSA`.
+    /// An inert path is redirected to the homebrew folder under the title's own id.
     #[test]
     fn an_inert_path_redirect_keeps_the_title_id() {
         let temp = std::env::temp_dir().join("pros_guard_inert");
@@ -307,7 +280,7 @@ mod tests {
         assert_eq!(res.suggested_id, "GLCB00001", "the id is never rewritten");
         assert_eq!(res.suggested_path, "/data/homebrew/GLCB00001");
 
-        // A Sony-prefix title staged inert is redirected the same way, keeping its id.
+        // A retail-prefix title staged inert is redirected the same way, keeping its id.
         writeln!(
             File::create(temp.join("sce_sys").join("param.json")).unwrap(),
             "{{\"titleId\":\"PPSA90001\"}}"

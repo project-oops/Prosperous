@@ -1,35 +1,12 @@
-//! What services exist, what they buy, and which of them is a way back in.
+//! What services exist, what they unlock, and which of them is a way back in.
 //!
-//! # Why this is ours and the payload list is not
+//! `manifest` holds facts about a payload in a payload manager's format; the role a service
+//! plays for this program lives here instead, in a file this project owns, joined to the
+//! manifest by payload name.
 //!
-//! `manifest` reads a document belonging to a payload manager: where a payload comes from,
-//! what it hashes to, which version it is. **Those are facts about a payload**, and copying
-//! that format bought interoperability with a tool people already run.
-//!
-//! What a service *means to this program* is a different kind of fact. `elfldr` being a way
-//! back into a target after a bad restart is not something a payload repository has an opinion
-//! about, and bolting it onto somebody else's schema would tie every judgement this program
-//! makes to the continued existence of one manager's cache file.
-//!
-//! So roles live here, in a file this project owns, **referring to payloads by the name the
-//! manifest already uses**. Two documents, one subject each, joined by a name.
-//!
-//! # It works with no file at all
-//!
-//! The five compiled-in services are the default and are what runs when nothing is
-//! configured. A tool that needs a configuration file before it works is a tool that is broken
-//! out of the box. The file **overrides and extends**; it never has to exist.
-//!
-//! # Precedence, stated once
-//!
-//! Later wins, so the more specific source is later:
-//!
-//! 1. the compiled-in five,
-//! 2. anything a payload list declared for itself,
-//! 3. this file.
-//!
-//! One resolution order, written down, so two sources can differ without the program having to
-//! guess which is right.
+//! The compiled-in services are the default and the file is optional; it overrides and
+//! extends. Later wins: the compiled-in services, then what a payload list declares for
+//! itself, then this file.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -39,9 +16,7 @@ use serde::{Deserialize, Serialize};
 
 /// What a file may say about one service.
 ///
-/// Every field optional: an entry that only corrects a port should not have to restate what
-/// the service unlocks, and one that only marks something a way back should not have to
-/// repeat its port.
+/// Every field is optional, so an entry states only what it corrects.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     /// The payload's name, as the payload list spells it. This is the join.
@@ -57,24 +32,20 @@ pub struct Entry {
     pub required: Option<bool>,
     /// Whether having it running is a way to put a payload on the target.
     ///
-    /// **This is what a startup list is audited against.** Moving files is not enough on its
-    /// own: a file service can put an ELF on the disk and has no way to run it.
+    /// A startup list is audited against this. A file service alone does not count: it can
+    /// put an ELF on the disk and cannot run it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovers: Option<bool>,
-    /// Why this is in a startup list, in somebody own words.
+    /// Why this is in a startup list, in the owner's own words.
     ///
-    /// **The one field here that is prose rather than a fact.** What a service *does* comes
-    /// from the built-in table or from a payload published description; why it sits where it
-    /// does in a particular chain - *runs first, so unsigned code can run* - is knowledge
-    /// about somebody setup that nothing on the target records and this program cannot
-    /// derive. Written here, it survives every rebuild and every payload update.
+    /// Knowledge about one setup that nothing on the target records, so it is kept here
+    /// where it survives rebuilds and payload updates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// Whether this is what runs a startup list once it is up.
     ///
-    /// **An autoloader list that does not name it never starts it**, and the list it would
-    /// have run then silently does nothing - no error, because the thing that would report
-    /// one never ran either. That has cost a real target its jailbreak twice.
+    /// An autoloader list that does not name it never starts it, and the list then does
+    /// nothing with no error reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runs_lists: Option<bool>,
 }
@@ -84,15 +55,13 @@ pub struct Entry {
 pub struct Catalogue {
     /// In the order they should be reported, loader first.
     services: Vec<Service>,
-    /// Why each is in a chain, for the ones somebody has written a note about.
-    ///
-    /// Beside the services rather than on them: a note is about a payload whether or not it
-    /// is a service this program knows, so keying it by name reaches both.
+    /// Why each is in a chain, keyed by payload name so a note can describe a payload that is
+    /// not a known service.
     notes: BTreeMap<String, String>,
 }
 
 impl Catalogue {
-    /// The compiled-in five, which is what runs when nothing is configured.
+    /// The compiled-in services, used when nothing is configured.
     #[must_use]
     pub fn builtin() -> Self {
         Self {
@@ -115,9 +84,8 @@ impl Catalogue {
             .find(|service| service.name.eq_ignore_ascii_case(name))
     }
 
-    /// Every service that is a way to put a payload on the target.
-    ///
-    /// **The question a startup list is audited against.** Any one of them is enough.
+    /// Every service that is a way to put a payload on the target. A startup list needs any
+    /// one of them.
     #[must_use]
     pub fn ways_back(&self) -> Vec<&Service> {
         self.services
@@ -128,8 +96,8 @@ impl Catalogue {
 
     /// Takes what a payload list declared about itself.
     ///
-    /// A payload naming a port describes a service, whoever wrote it. Anything already known
-    /// is **corrected rather than duplicated**, so one name never appears twice.
+    /// A payload naming a port describes a service. Anything already known is corrected
+    /// rather than duplicated, so one name never appears twice.
     pub fn take_declared(&mut self, manifest: &crate::manifest::Manifest) {
         for payload in manifest.payloads() {
             if let Some(desc) = payload.unlocks.as_ref().or(payload.description.as_ref())
@@ -154,13 +122,7 @@ impl Catalogue {
         }
     }
 
-    /// Applies one entry, correcting a service already known or adding a new one.
-    ///
-    /// **A field the entry does not state is left alone**: an absence is not a correction, the
-    /// same rule the payload list follows when merging.
-    /// Why a payload is in a chain, if anybody has written it down.
-    ///
-    /// Matched case-insensitively by name, like everything else joining these two documents.
+    /// Why a payload is in a chain, if a note was written. Matched case-insensitively by name.
     #[must_use]
     pub fn note(&self, name: &str) -> Option<&str> {
         self.notes
@@ -171,8 +133,8 @@ impl Catalogue {
 
     /// Applies one entry, correcting a service already known or adding a new one.
     ///
-    /// **A field the entry does not state is left alone**: an absence is not a correction, the
-    /// same rule the payload list follows when merging.
+    /// A field the entry does not state is left alone: an absence is not a correction, as in
+    /// the payload list's merge.
     pub fn absorb(&mut self, entry: Entry) {
         if let Some(note) = entry.note.as_ref().filter(|note| !note.trim().is_empty()) {
             self.notes.insert(entry.name.clone(), note.clone());
@@ -199,8 +161,7 @@ impl Catalogue {
             }
             return;
         }
-        // A port is what makes a service answerable at all. Without one there is nothing to
-        // connect to, so an entry naming none describes nothing this program can check.
+        // Without a port there is nothing to connect to, so the entry is not a service.
         let Some(port) = entry.port else {
             return;
         };
@@ -218,9 +179,8 @@ impl Catalogue {
     ///
     /// # Errors
     ///
-    /// When the document will not parse. **A file somebody wrote and got wrong is reported**,
-    /// not silently ignored: quietly falling back to the defaults would mean an override that
-    /// never took effect and never said so.
+    /// When the document will not parse. A broken override is reported rather than silently
+    /// replaced by the defaults.
     pub fn take_json(&mut self, text: &str) -> Result<(), String> {
         let entries: Vec<Entry> = serde_json::from_str(text).map_err(|why| why.to_string())?;
         for entry in entries {
@@ -242,8 +202,8 @@ pub fn path() -> Option<PathBuf> {
 ///
 /// # Errors
 ///
-/// When the file exists and will not parse. A missing file is not an error - it is the normal
-/// case, and it means the compiled-in five.
+/// When the file exists and will not parse. A missing file is not an error; it means the
+/// compiled-in services.
 pub fn load() -> Result<Catalogue, String> {
     let mut catalogue = Catalogue::builtin();
     let Some(path) = path() else {
@@ -290,10 +250,7 @@ mod tests {
         assert_eq!(catalogue.services().len(), 5);
     }
 
-    /// **The loader, the shell and the manager are ways back; moving files is not.**
-    ///
-    /// A file service can put an ELF on the disk and has no way to run it, so a chain that
-    /// leaves only that behind has left nothing that can start anything.
+    /// The loader, the shell and the manager are ways back; the file service is not.
     #[test]
     fn a_file_service_alone_is_not_a_way_back() {
         let ways: Vec<String> = Catalogue::builtin()
@@ -307,8 +264,7 @@ mod tests {
         assert!(!ways.contains(&"ftpsrv".to_owned()));
     }
 
-    /// A file corrects what is already known rather than adding a second entry under the
-    /// same name.
+    /// A file corrects a known service rather than adding a second one of the same name.
     #[test]
     fn an_entry_corrects_rather_than_duplicates() {
         let mut catalogue = Catalogue::builtin();
@@ -327,8 +283,7 @@ mod tests {
         );
     }
 
-    /// **A rival payload can be declared a way back**, which is the whole point: nothing here
-    /// should assume the five it was built with are the only ones that ever will be.
+    /// A payload not compiled in can be declared a way back.
     #[test]
     fn a_payload_this_program_never_heard_of_can_be_a_way_back() {
         let mut catalogue = Catalogue::builtin();
@@ -359,8 +314,7 @@ mod tests {
         assert_eq!(catalogue.services().len(), before);
     }
 
-    /// **A file that will not parse is reported, not ignored.** Silently using the defaults
-    /// would be an override that never took effect and never said so.
+    /// A file that will not parse is reported, not ignored.
     #[test]
     fn a_broken_file_is_an_error_rather_than_a_shrug() {
         let mut catalogue = Catalogue::builtin();
@@ -372,11 +326,7 @@ mod tests {
 mod notes {
     use super::Catalogue;
 
-    /// **A reason can be written for a payload this program has never heard of.**
-    ///
-    /// Why an entry sits where it does in a chain is knowledge about somebody's setup. Nothing
-    /// on the target records it and nothing here can derive it, so it is written in a file -
-    /// which means it survives a rebuild, a payload update, and this program's opinions.
+    /// A note can be written for a payload that is not a known service.
     #[test]
     fn a_note_can_be_written_for_anything() {
         let mut catalogue = Catalogue::builtin();
@@ -390,12 +340,11 @@ mod notes {
             catalogue.note("kstuff-lite"),
             Some("runs first, so unsigned code can run")
         );
-        // And it did not have to invent a service to hold it: an entry with no port is still
-        // not something that can be probed.
+        // Holding the note does not make it a service.
         assert!(catalogue.get("kstuff-lite").is_none());
     }
 
-    /// A note about one of the built-in five is kept beside it.
+    /// A note about a built-in service is kept beside it.
     #[test]
     fn a_note_can_also_be_written_about_a_known_service() {
         let mut catalogue = Catalogue::builtin();
@@ -413,7 +362,7 @@ mod notes {
         );
     }
 
-    /// Nothing written is nothing said - an empty note is not a note.
+    /// An empty note is not a note.
     #[test]
     fn an_empty_note_is_not_one() {
         let mut catalogue = Catalogue::builtin();
@@ -426,14 +375,8 @@ mod notes {
 
 /// Writes a note about one payload into the file, keeping everything else in it.
 ///
-/// # Why it reads before it writes
-///
-/// The file is somebody's, and it may carry ports, roles and notes this call knows nothing
-/// about. Rewriting it from what is in memory would silently drop whatever was not loaded -
-/// so the document is read, one entry is changed or added, and the rest goes back as it came.
-///
-/// An empty note removes it, because *there is no reason recorded* and *there is a reason and
-/// it is blank* should not be two different states in the file.
+/// The file is read, one entry changed or added, and the rest written back as it came, so
+/// entries this call does not know about survive. An empty note removes the note.
 ///
 /// # Errors
 ///
@@ -462,7 +405,7 @@ pub fn write_note(name: &str, note: &str) -> Result<PathBuf, String> {
             ..Entry::default()
         }),
     }
-    // An entry left with nothing to say at all is dropped rather than kept as a name.
+    // An entry left with nothing but a name is dropped.
     entries.retain(|entry| {
         entry.note.is_some()
             || entry.port.is_some()
@@ -484,11 +427,7 @@ pub fn write_note(name: &str, note: &str) -> Result<PathBuf, String> {
 mod writing {
     use super::{Catalogue, Entry};
 
-    /// **A note is added without disturbing what else the file says.**
-    ///
-    /// The file may carry ports and roles this call knows nothing about; rewriting it from
-    /// memory would drop them, and the dropping would look exactly like they had never been
-    /// written. Checked through the same reader the real path uses.
+    /// A note is added without disturbing the rest of the entry it lands on.
     #[test]
     fn writing_a_note_keeps_the_rest_of_the_file() {
         let existing = r#"[{ "name": "zftpd", "port": 2121, "recovers": true }]"#;
@@ -514,8 +453,7 @@ mod writing {
         assert!(one.recovers, "and its role");
     }
 
-    /// An entry that would be left saying nothing at all is dropped rather than kept as a
-    /// bare name, so clearing a note tidies up after itself.
+    /// An entry with nothing but a name states nothing.
     #[test]
     fn an_entry_with_nothing_left_to_say_is_not_kept() {
         let entry = Entry {

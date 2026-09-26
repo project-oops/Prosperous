@@ -1,15 +1,10 @@
 //! Launching an installed title and capturing what it says, for the probe screen.
 //!
-//! # Why this is not a job
-//!
-//! For the reason the log is not one (see [`crate::tail`]): a probe is a launch followed by a
-//! subscription that lasts as long as the title keeps talking, up to a cap. Put through the
-//! one-job-at-a-time rule it would hold the whole window shut for a minute. So it runs beside the
-//! worker, on its own thread, and hands back what it saw over its own channel.
-//!
-//! The steps are `pros_core::probe`'s, the same ones `pros probe` runs after its restore - close
-//! whatever the title left running, attach to the log, launch, follow until it parks, exits or the
-//! cap passes. This only reports them.
+//! A probe follows the log for as long as the title talks, up to a cap, so like
+//! [`crate::tail`] it runs on its own thread beside the worker rather than as a job that would
+//! hold the window for a minute. The steps are `pros_core::probe`'s, the same ones `pros probe`
+//! runs: close what the title left running, attach to the log, launch, follow until it parks,
+//! exits or the cap passes.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -114,8 +109,7 @@ impl Run {
         !self.ended
     }
 
-    /// Asks it to stop following. The title is left running - ending it is the dashboard's, or
-    /// the system screen's close.
+    /// Asks it to stop following. The title is left running; the dashboard's close ends it.
     pub(crate) fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Ok(held) = self.stopper.lock()
@@ -145,8 +139,8 @@ fn probing(
         let _ = say.send(Event::Step(text));
     };
 
-    // 1. Close whatever it left running. Best-effort: a parked big-app ignores signals, and the
-    //    launch below is what says whether the slot is still held.
+    // Best-effort: a parked big-app ignores signals, and the launch says whether the slot is
+    // still held.
     match pros_core::probe::close(link, id) {
         0 => note(format!("{id} is not running")),
         closed => note(format!("closed {id} ({closed} process(es))")),
@@ -155,8 +149,7 @@ fn probing(
         return pros_core::probe::Ending::Stopped.describe(id, seconds);
     }
 
-    // 2. Attach to the log **before** launching - see `pros_core::probe` on why the order is the
-    //    whole difference between a capture and an empty one.
+    // Attach before launching: a title's early output is lost otherwise (`pros_core::probe`).
     note(format!("attaching to {id}'s log before launch..."));
     let (stopper, lines) = match pros_link::log::follow(link) {
         Ok(opened) => opened,
@@ -171,7 +164,6 @@ fn probing(
         return pros_core::probe::Ending::Stopped.describe(id, seconds);
     }
 
-    // 3. Launch it.
     match pros_core::probe::launch(link, id) {
         Ok(said @ pros_core::launch::Said::Asked(_)) => {
             note(format!("launching {id}: {}", said.describe()));
@@ -190,7 +182,6 @@ fn probing(
         }
     }
 
-    // 4. Follow until it parks, exits, the cap passes, or somebody presses stop.
     note(format!(
         "following {id} (until it parks, exits, or {seconds}s)..."
     ));

@@ -1,13 +1,9 @@
 //! The RTSP handshake that sets a stream up, on port 48010.
 //!
-//! **Adapted from Moonshine** (Hans Gaiser, BSD-2-Clause; see `THIRD-PARTY-LICENSES.md`), whose
-//! `rtsp.rs` handles the same five-message exchange. A Moonlight client, after `launch`, connects
-//! here and runs OPTIONS → DESCRIBE → SETUP (once per stream) → ANNOUNCE → PLAY, one request per
-//! connection. The bridge answers each with the shape the client parses; on PLAY it is time to
-//! stream, which the caller does.
-//!
-//! Only what a bridge in front of Porthole can honestly offer is advertised: H.264 video, no
-//! HEVC/AV1, no server-side audio yet.
+//! Adapted from Moonshine's `rtsp.rs` (BSD-2-Clause; see `THIRD-PARTY-LICENSES.md`). After
+//! `launch`, a client runs OPTIONS, DESCRIBE, SETUP (once per stream), ANNOUNCE and PLAY, one
+//! request per connection. On PLAY the caller starts streaming. Only H.264 video is advertised:
+//! no HEVC, AV1 or audio.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -59,7 +55,7 @@ pub(crate) struct Ports {
     pub(crate) video: u16,
     /// The control port.
     pub(crate) control: u16,
-    /// The audio port (reserved; audio is not served yet).
+    /// The audio port, answered in SETUP; nothing is sent on it.
     pub(crate) audio: u16,
 }
 
@@ -83,8 +79,7 @@ fn answer<B>(request: &Request<B>, ports: Ports) -> (Response<Vec<u8>>, Next) {
         ),
         Method::Describe => (base().build(sdp().into_bytes()), Next::Continue),
         Method::Setup => {
-            // The client's SETUP names the stream in the URL as `streamid=<name>/...`; the port to
-            // answer with depends on which stream it is.
+            // SETUP names the stream in the URL as `streamid=<name>/...`.
             let uri = request
                 .request_uri()
                 .map(ToString::to_string)
@@ -120,7 +115,7 @@ fn answer<B>(request: &Request<B>, ports: Ports) -> (Response<Vec<u8>>, Next) {
 
 /// The SDP a DESCRIBE returns: H.264 only, one video stream.
 fn sdp() -> String {
-    // The exact keys a GameStream client reads; the values say H.264, no HEVC, no server audio.
+    // The keys a GameStream client reads; the values say H.264 only, no HEVC, no audio.
     "v=0\r\n\
      o=android 0 14 IN IPv4 0.0.0.0\r\n\
      s=NVIDIA Streaming Server\r\n\
@@ -155,6 +150,7 @@ mod tests {
             .empty()
     }
 
+    /// OPTIONS lists the methods and echoes the request's `CSeq`.
     #[test]
     fn options_lists_the_methods_and_echoes_cseq() {
         let (response, next) = answer(&request(Method::Options, "rtsp://host"), ports());
@@ -175,12 +171,14 @@ mod tests {
         );
     }
 
+    /// The SDP offers H.264 and never HEVC.
     #[test]
     fn describe_returns_an_h264_sdp() {
         assert!(sdp().contains("H264/90000"));
         assert!(!sdp().to_lowercase().contains("hevc"));
     }
 
+    /// SETUP for the control stream answers with the control port.
     #[test]
     fn setup_for_control_answers_with_the_control_port() {
         let (response, _) = answer(
@@ -191,6 +189,7 @@ mod tests {
         assert!(transport.as_str().contains("server_port=47999"));
     }
 
+    /// PLAY tells the caller to start streaming.
     #[test]
     fn play_says_to_start_streaming() {
         let (_response, next) = answer(&request(Method::Play, "rtsp://host"), ports());

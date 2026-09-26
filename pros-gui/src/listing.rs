@@ -1,32 +1,12 @@
 //! One list of things, each of which may be here, on the target, or only described.
 //!
-//! # Why the merged view is the real model
+//! The model is a single list of entries, each knowing which sides it is on. The split view
+//! projects it (left pane: entries with a `here`, right: with a `there`); the merged view
+//! shows both columns at once.
 //!
-//! Every sync section shows two panes and asks one question: **what is on each side, and what
-//! do I want to do about the difference?** Two lists drawn separately answer that badly - a
-//! name in the left pane and the same name in the right are one thing, and the eye has to do
-//! the joining.
-//!
-//! So the model is a single list of entries, each knowing which sides it is on. The split view
-//! is a *projection* of that: the left pane is the entries with a `here`, the right the ones
-//! with a `there`. The merged view is the same data with both columns shown at once. Neither
-//! is the source of truth for the other, because they are the same thing.
-//!
-//! That is also why this module exists rather than the drawing code doing it twice. It was
-//! twice: the local pane merged a tracked list against a folder, the target pane listed a
-//! directory, and neither knew about the other.
-//!
-//! # Why actions belong here and not on rows
-//!
-//! A button on every row is a button repeated fifty times, and it decides for one thing what
-//! the person may want for twenty. **What can be done depends on what is selected**, so it is
-//! a property of the selection - which lives here, with the rules about it, where it can be
-//! checked without a window.
-//!
-//! An action that does not apply to everything selected is **offered and refused, with the
-//! reason naming what is in the way**. Hiding it would leave somebody looking for a control
-//! that is not there, unable to tell whether they are wrong about the tool or the tool is
-//! wrong about them.
+//! Actions belong to the selection, not to rows, so the rules live here and are tested without
+//! a window. An action that does not apply to everything selected is offered and refused, with
+//! the reason naming what is in the way, rather than hidden.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,14 +18,8 @@ use crate::state::Section;
 /// One side's knowledge of a thing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Side {
-    /// What **this** side calls it.
-    ///
-    /// # Why the row's name is not enough
-    ///
-    /// A row is one payload and the sides disagree about its spelling: a description saying
-    /// `elfldr-ps5.elf`, a disk holding `elfldr_v0.25.elf`, a target keeping a directory called
-    /// `elfldr`. The row is named after the description, so a path built from the row's name
-    /// asks a side for a file it does not have under that name.
+    /// What this side calls it. The sides spell one payload differently (see
+    /// [`Listing::build`]), so a path on a side is built from this, not from the row's name.
     pub name: String,
     /// How big, when the listing said.
     pub size: Option<u64>,
@@ -64,16 +38,14 @@ pub(crate) struct Entry {
     pub there: Option<Side>,
     /// What a tracked list says about it, when it says anything.
     ///
-    /// **Present for things that are on neither side**, which is how a list of things worth
-    /// having appears at all.
+    /// Present also for things on neither side, which is how a list of things worth having
+    /// appears.
     pub described: Option<Payload>,
 }
 
 /// Which sides an entry is on.
 ///
-/// **Four states, not two.** A thing on both sides, a thing on one side or the other, and a
-/// thing on neither that somebody has written down as worth having. Collapsing the last into
-/// *missing* would put a payload nobody has fetched in the same box as a file that was deleted.
+/// "Described" is distinct from missing: a payload nobody has fetched is not a deleted file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Standing {
     /// On both sides.
@@ -97,16 +69,8 @@ impl Entry {
         }
     }
 
-    /// Whether the copy on this machine is a folder.
-    ///
-    /// # Why each side is asked separately
-    ///
-    /// There was one answer for both, true when *either* side was a directory, and every caller
-    /// used it for a decision about one particular side. Two of them used it for the wrong one:
-    /// running and sending read the file on this machine and refused when the **target** held a
-    /// directory of that name - which is how the payload manager stores every payload it has,
-    /// so `run` was refused for all of them on the strength of a side it never reads.
-    /// Whether the copy on the target is a folder.
+    /// Whether the copy on the target is a folder. Asked per side: the payload manager keeps
+    /// each payload in a directory, while the local copy is a file.
     pub(crate) fn folder_there(&self) -> bool {
         self.there.as_ref().is_some_and(|side| side.folder)
     }
@@ -124,9 +88,8 @@ impl Entry {
 pub(crate) enum Offer {
     /// Load it now, through the loader.
     ///
-    /// **Distinct from copying it there.** Running a payload puts it in memory until the next
-    /// power cycle; copying puts a file on a disk. Both are useful and they are not the same
-    /// act, which is why they are not the same button.
+    /// Distinct from [`Self::Send`]: running puts it in memory until the next power cycle,
+    /// sending puts a file on a disk.
     Run,
     /// Copy from here to the target.
     Send,
@@ -138,19 +101,13 @@ pub(crate) enum Offer {
     Install,
     /// Start it on the target.
     ///
-    /// **Not the same as running a payload, and not the same machinery.** [`Self::Run`] sends
-    /// ELF bytes to a loader that spawns them. This sends an identifier to the target's own
-    /// system service, which finds the installed application and boots its own executable -
-    /// no file crosses the link and nothing here is executed.
-    ///
-    /// See `pros_core::launch` for the call it is, and `docs/DECISIONS.md` for the three ways
-    /// something can end up running on a target and why they are three buttons.
+    /// [`Self::Run`] sends ELF bytes to a loader; this sends an identifier to the target's own
+    /// system service, which boots the installed application. No file crosses the link. See
+    /// `pros_core::launch`.
     Launch,
     /// Remove it from this machine.
     ///
-    /// **Two delete actions, not one.** A thing on both sides would otherwise leave the button
-    /// to guess which side was meant, and the guess would sometimes be the one that could not
-    /// be undone.
+    /// One delete per side, so a thing on both sides never leaves the side to a guess.
     DeleteHere,
     /// Remove it from the target.
     DeleteThere,
@@ -171,22 +128,12 @@ impl Offer {
 
     /// Whether this action can ever apply on that screen.
     ///
-    /// # Why some controls are absent rather than greyed
-    ///
-    /// **The rule everywhere else here is to disable and say why**, because a control that
-    /// vanishes reads as a bug while a greyed one reads as a state. That rule assumes the
-    /// control could become live - it is telling somebody what to change.
-    ///
-    /// These cannot. `launch` sends an application identifier to the target's own system
-    /// service; a payload is not an application and never will be, so on the payloads screen
-    /// the button was permanently grey, explaining a state that no action could leave. That is
-    /// not a state, it is furniture - and it sat next to `run`, which is the control somebody
-    /// actually wants, inviting exactly the wrong guess about which one starts a payload.
+    /// Elsewhere a control that does not apply is greyed with a reason, because a selection
+    /// change could enable it. Where no selection ever could, as `launch` on the payloads
+    /// screen, the control is absent instead.
     pub(crate) const fn applies_to(self, section: Section) -> bool {
         match self {
-            // Installed applications, by identifier. Only the screens that list them.
             Self::Launch => matches!(section, Section::Titles | Section::Filesystem),
-            // Registering a package with the target, which is what the packages screen is.
             Self::Install => matches!(section, Section::Packages | Section::Filesystem),
             _ => true,
         }
@@ -194,8 +141,7 @@ impl Offer {
 
     /// Whether this destroys something.
     ///
-    /// Used to put a confirm in front of it, and to draw it apart from the rest - a button
-    /// that loses data should not sit in the run of buttons that move it.
+    /// Such an action is confirmed first and drawn apart from the buttons that move data.
     pub(crate) const fn is_destructive(self) -> bool {
         matches!(self, Self::DeleteHere | Self::DeleteThere)
     }
@@ -206,8 +152,6 @@ impl Offer {
             Self::Run => "run",
             Self::Send => "send >",
             Self::Fetch => "< fetch",
-            // The one label that is not fixed: replacing an older copy that is already here is
-            // a different act from getting a file for the first time. See `Offer::says`.
             Self::Download => "download",
             Self::Install => "install",
             Self::Launch => "launch",
@@ -242,8 +186,7 @@ impl Offer {
 
     /// Why one entry cannot take part.
     ///
-    /// `None` when it can. **The first entry that cannot is the one named**, because a reason
-    /// mentioning fifty things is one nobody reads.
+    /// `None` when it can. [`Listing::offers`] names only the first entry that cannot.
     fn refuses(self, entry: &Entry) -> Option<String> {
         let name = &entry.name;
         match self {
@@ -255,18 +198,14 @@ impl Offer {
             Self::Download if !entry.is_fetchable() => Some(format!(
                 "{name} has no url, or a digest this cannot check - it will not be fetched"
             )),
-            // **On this machine, not on the target.** Installing means holding the file out
-            // for the target to fetch, so the file has to be here to hold out. A package
-            // already on its disk cannot be installed from there - measured: a local path
-            // gives the target nothing it can read.
+            // The target fetches the package from here; measured, a path on its own disk gives
+            // the installer nothing it can read.
             Self::Install if entry.here.is_none() => Some(format!(
                 "{name} is only on the target, and the target fetches a package from here -                  so it has to be here"
             )),
             Self::Install if !pros_core::install::is_a_package(name) => {
                 Some(format!("{name} is not a package"))
             }
-            // **One at a time.** A target shows one thing at once, and asking it to start
-            // three is two requests that go nowhere and one that might.
             Self::Launch if !pros_core::launch::is_an_app_id(name) => {
                 Some(format!("{name} is not an application identifier"))
             }
@@ -286,15 +225,10 @@ impl Offer {
 
 /// Which row a file belongs in: the described payload it is a copy of, or itself.
 ///
-/// **Matched the way every other comparison in this program matches a payload**, through
-/// [`pros_core::chain::Chain::position`]: a name matches when it is the whole entry, or when
-/// what follows it is a separator and then a version. That rule is not a convenience here - it
-/// is the one that already knows `kstuff` must not swallow `kstuff-lite_v1.09`, which is two
-/// payloads reported as one in the column that says what comes back after a reboot.
-///
-/// Both spellings of the description are tried, because either can be the one a side used: the
-/// filename it names, and the payload's own name, which is what a directory on the target is
-/// called.
+/// Matched through [`pros_core::chain::Chain::position`], as everywhere else: a name matches
+/// when it is the whole entry or is followed by a separator and a version, so `kstuff` does not
+/// match `kstuff-lite_v1.09`. Both the described filename and the payload's name are tried; a
+/// directory on the target is named after the latter.
 fn one_payload(described: &Manifest, name: &str) -> String {
     for payload in described.payloads() {
         let file = payload.filename.as_deref().unwrap_or(&payload.name);
@@ -319,41 +253,20 @@ pub(crate) struct Listing {
     pub entries: Vec<Entry>,
     /// What is ticked, by name.
     ///
-    /// **By name rather than by index**, because the list is rebuilt from the two sides every
-    /// time either changes, and an index would silently come to mean a different row.
+    /// By name, not index: the list is rebuilt whenever either side changes.
     pub chosen: BTreeSet<String>,
 }
 
 impl Listing {
     /// Builds one from a tracked list, a local folder and a target listing.
     ///
-    /// # One payload is one row, whatever each side calls it
-    ///
-    /// Matching is **by name, case-insensitively**: a list writing `ELFLDR.ELF` and a disk
-    /// holding `elfldr.elf` are one thing, and showing them as two invites somebody to fetch
-    /// what they already have.
-    ///
-    /// A described entry is keyed by its filename when it has one, because that is what both
-    /// sides would call it - its display name is often something else entirely. **The other two
-    /// sides are then matched to it by payload rather than by spelling**, because the three of
-    /// them routinely disagree:
-    ///
-    /// | | elfldr, on one real machine |
-    /// |---|---|
-    /// | the description | `elfldr-ps5.elf` |
-    /// | this disk | `elfldr_v0.25.elf` |
-    /// | the target | `elfldr`, a directory the manager keeps it in |
-    ///
-    /// Keyed by exact name that is **three rows for one payload**, and the row a person ticks
-    /// decides which of the three the toolbar acts on. Ticking the described one offered no
-    /// `run`, because the file on this disk was a different row - and said so, in a message
-    /// naming a file that was sitting in the folder it had just been told to look in.
+    /// One payload is one row whatever each side calls it. Names match case-insensitively. A
+    /// described entry is keyed by its filename, and the local and target sides are matched to
+    /// it by payload rather than spelling: one measured setup had `elfldr-ps5.elf` in the
+    /// description, `elfldr_v0.25.elf` on disk and a directory `elfldr` on the target.
     pub(crate) fn build(described: &Manifest, local: &[Item], remote: &[Item]) -> Self {
-        /// The entry for a name, made if this is the first mention of it.
-        ///
-        /// A function rather than a closure: one that borrowed the map and handed back a
-        /// reference into it cannot be a closure at all, and writing it as one only produces
-        /// a borrow error with the reason hidden in it.
+        /// The entry for a name, made if this is the first mention of it. A function because a
+        /// closure cannot return a reference into the map it borrows.
         fn at<'a>(by_key: &'a mut BTreeMap<String, Entry>, name: &str) -> &'a mut Entry {
             by_key.entry(name.to_lowercase()).or_insert_with(|| Entry {
                 name: name.to_owned(),
@@ -410,8 +323,7 @@ impl Listing {
 
     /// Drops any tick for something no longer in the list.
     ///
-    /// **Called after rebuilding**, so a selection cannot name rows that are gone - an action
-    /// on a stale name either does nothing or does it to the wrong thing, and both are silent.
+    /// Called after rebuilding, so an action never runs on a stale name.
     pub(crate) fn forget_what_left(&mut self) {
         let present: BTreeSet<&str> = self.entries.iter().map(|e| e.name.as_str()).collect();
         self.chosen.retain(|name| present.contains(name.as_str()));
@@ -419,17 +331,18 @@ impl Listing {
 
     /// Whether an action can be taken on what is selected, and why not when it cannot.
     ///
-    /// `Ok(())` when every selected entry can take part. **Nothing selected is a refusal with
-    /// its own wording**, rather than an action that appears available and does nothing.
+    /// `Ok(())` when every selected entry can take part.
+    ///
+    /// # Errors
+    ///
+    /// The reason, naming the first entry in the way; nothing selected has its own wording.
     pub(crate) fn offers(&self, offer: Offer) -> Result<(), String> {
         let picked = self.picked();
         if picked.is_empty() {
             return Err("nothing is selected".to_owned());
         }
-        // **One, because a run starts a payload.** Which side the selected row is on decides
-        // *how* it runs - the copy here goes to the loader, a copy that is only on the target
-        // is started where it already is - and neither is a thing to do to five rows at once.
-        // This is the only condition that greys it.
+        // Run takes one row: its side decides how it runs (loader from here, shell on the
+        // target). This is the only condition that greys it.
         if offer == Offer::Run && picked.len() != 1 {
             return Err(format!(
                 "{} are selected - run starts one payload, so select one",
@@ -469,10 +382,7 @@ mod tests {
         }
     }
 
-    /// **One name is one row, whichever sides it is on.**
-    ///
-    /// The whole point of the merged model: a thing on both sides is one entry with two
-    /// columns, not two entries that happen to look alike.
+    /// One name is one row, whichever sides it is on.
     #[test]
     fn both_sides_of_one_thing_are_one_entry() {
         let listing = Listing::build(
@@ -488,7 +398,7 @@ mod tests {
         assert_eq!(listing.entries[2].standing(), Standing::OnlyThere);
     }
 
-    /// Matched case-insensitively, because a list and a disk spell things differently.
+    /// Names match case-insensitively.
     #[test]
     fn one_thing_spelled_two_ways_is_still_one_thing() {
         let described = Manifest::from_json(r#"[{ "name": "elfldr", "filename": "ELFLDR.ELF" }]"#)
@@ -499,8 +409,7 @@ mod tests {
         assert!(listing.entries[0].described.is_some());
     }
 
-    /// **On neither side is its own state.** A payload nobody has fetched and a file somebody
-    /// deleted are different situations, and one box for both would hide that.
+    /// Described and on neither side is its own standing.
     #[test]
     fn something_described_and_nowhere_is_not_the_same_as_missing() {
         let described = Manifest::from_json(r#"[{ "name": "shsrv", "filename": "shsrv.elf" }]"#)
@@ -523,10 +432,7 @@ mod tests {
         )
     }
 
-    /// **Nothing selected refuses, in its own words.**
-    ///
-    /// An action that looks available and does nothing is the defect this project is about,
-    /// in a toolbar.
+    /// Nothing selected refuses every action, in its own words.
     #[test]
     fn an_empty_selection_refuses_every_action() {
         let listing = two_sided();
@@ -544,7 +450,6 @@ mod tests {
         assert!(listing.offers(Offer::Send).is_ok());
         assert!(listing.offers(Offer::Fetch).is_err());
 
-        // Add something that is only on the target, and sending stops applying.
         listing.toggle("there.pkg");
         let refused = listing.offers(Offer::Send).expect_err("mixed selection");
         assert!(
@@ -553,8 +458,7 @@ mod tests {
         );
     }
 
-    /// **A refusal names one thing, not fifty.** A reason listing every offender is one
-    /// nobody reads to the end of.
+    /// A refusal names only the first thing in the way.
     #[test]
     fn a_refusal_names_the_first_thing_in_the_way() {
         let mut listing = two_sided();
@@ -567,8 +471,7 @@ mod tests {
         assert!(!refused.contains("games"), "one name is enough: {refused}");
     }
 
-    /// Downloading needs a url and a digest that can be checked - the same rule the fetching
-    /// code enforces, asked before the button is offered rather than after it is pressed.
+    /// Downloading needs a url and a checkable digest before it is offered.
     #[test]
     fn downloading_needs_somewhere_to_get_it_and_a_way_to_check_it() {
         let mut listing = two_sided();
@@ -581,13 +484,8 @@ mod tests {
         assert!(refused.contains("nothing.elf"), "{refused}");
     }
 
-    /// **Installing needs the package on *this* machine**, because the target fetches it
-    /// from here.
-    ///
-    /// This inverts what it used to assert. A package already on the target cannot be
-    /// installed from there: `pkg_install` takes a url, and a path on the target's own disk
-    /// gives it nothing it can read - measured against a real package in `/data/pkg`, which
-    /// produced the same empty answer as a file that was not there.
+    /// Installing needs the package on this machine: `pkg_install` takes a url, and a package
+    /// in the target's `/data/pkg` measured the same empty answer as a missing file.
     #[test]
     fn installing_needs_a_package_on_this_machine_to_hold_out() {
         let nothing = Manifest::default();
@@ -607,7 +505,7 @@ mod tests {
         assert!(refused.contains("has to be here"), "{refused}");
     }
 
-    /// And it still has to be a package.
+    /// Installing refuses a file that is not a package.
     #[test]
     fn installing_still_needs_a_package() {
         let mut listing = two_sided();
@@ -618,10 +516,7 @@ mod tests {
         assert!(refused.contains("not a package"), "{refused}");
     }
 
-    /// **A tick for a row that is gone is dropped when the list is rebuilt.**
-    ///
-    /// The list is rebuilt whenever either side changes. A selection naming something absent
-    /// would either do nothing or act on the wrong thing, and both happen quietly.
+    /// A tick for a row that is gone is dropped after a rebuild.
     #[test]
     fn a_selection_does_not_outlive_the_rows_it_named() {
         let mut listing = two_sided();
@@ -638,12 +533,7 @@ mod tests {
         );
     }
 
-    /// **Three spellings of one payload are one row.**
-    ///
-    /// Measured on a real setup: the description says `elfldr-ps5.elf`, the disk holds
-    /// `elfldr_v0.25.elf`, and the target keeps a directory called `elfldr`. As three rows, the
-    /// one carrying the description had no local file - so `run` was refused for a payload that
-    /// was downloaded, with a message naming a file that was on the disk.
+    /// The three measured spellings of one payload make one row, and `run` is offered on it.
     #[test]
     fn one_payload_is_one_row_however_each_side_spells_it() {
         let described =
@@ -660,8 +550,7 @@ mod tests {
             "and so did the directory on the target"
         );
 
-        // And the row the payload table ticks - keyed by the description's filename - is the
-        // row that has the local file, which is what `run` needs.
+        // The payload table ticks the row by the description's filename.
         listing.toggle("elfldr-ps5.elf");
         assert!(
             listing.offers(Offer::Run).is_ok(),
@@ -670,11 +559,7 @@ mod tests {
         );
     }
 
-    /// **A name that merely starts the same is a different payload.**
-    ///
-    /// `kstuff` and `kstuff-lite` are two kernel patches and a chain names one of them. Merging
-    /// them here would put one payload's local copy under the other's description, which is the
-    /// same wrong answer this rule was written for in the boot list.
+    /// A name that only starts the same (`kstuff`, `kstuff-lite`) is a different payload.
     #[test]
     fn a_longer_name_is_not_a_version_of_a_shorter_one() {
         let described = Manifest::from_json(r#"[{ "name": "kstuff", "filename": "kstuff.elf" }]"#)
@@ -683,7 +568,7 @@ mod tests {
         assert_eq!(listing.entries.len(), 2, "{:?}", listing.entries);
     }
 
-    /// A folder is known per side, because every action reads one side and writes the other.
+    /// Being a folder is known per side.
     #[test]
     fn a_folder_is_known_on_the_side_that_has_it() {
         let listing = two_sided();
@@ -699,14 +584,7 @@ mod tests {
         );
     }
 
-    /// **A file here and a directory there can still be run.**
-    ///
-    /// This is how every payload on a prepared target looks: the manager keeps each one in
-    /// `/data/pldmgr/payloads/<name>/`, so the far side of a payload whose local copy is a
-    /// perfectly ordinary ELF is a directory. Running reads the local file and sends it; it
-    /// never looks at what the target keeps under that name. Asking whether *either* side was
-    /// a folder refused every one of them, with a reason - "pldmgr is a folder" - that was true
-    /// of something the action was not going to touch.
+    /// A local file whose target side is a directory (`/data/pldmgr/payloads/<name>/`) can run.
     #[test]
     fn a_payload_the_target_keeps_in_a_directory_can_still_be_run() {
         let mut listing = Listing::build(
@@ -719,8 +597,7 @@ mod tests {
             listing.offers(Offer::Run).is_ok(),
             "the local copy is a file, and that is the one that gets sent"
         );
-        // Deleting it on the target is offered too, and always was the harder question: a
-        // directory is removed by a guarded walk in `pros_core::remove`, not by refusing.
+        // A directory on the target is removed by `pros_core::remove`'s guarded walk.
         assert!(
             listing.offers(Offer::DeleteThere).is_ok(),
             "a directory on the target is removed by walking it, not refused"

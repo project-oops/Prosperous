@@ -1,15 +1,9 @@
 //! The server's own certificate, and reading the client's.
 //!
-//! # Why a certificate at all
-//!
-//! GameStream pairing pins certificates: at the end of it the client trusts exactly this server's
-//! self-signed cert and no other, and the server trusts exactly this client's. So the bridge needs
-//! one certificate that is **stable across runs** - if it changed each start, every client would
-//! have to pair again - and it needs to read the one the client presents, to pull its public key
-//! (for phase four's signature check) and its signature bytes (which both sides hash).
-//!
-//! The cert is RSA-2048 with a SHA-256 signature, self-signed, because that is what the protocol's
-//! reference host issues and therefore what clients expect.
+//! Pairing pins certificates on both sides, so the server certificate is stable across runs or
+//! every client would have to pair again. The client's certificate supplies its public key (for
+//! the phase-four signature check) and its signature bytes (which both sides hash). The server
+//! certificate is a self-signed RSA-2048/SHA-256 one, the kind clients expect from a host.
 
 use std::path::Path;
 use std::str::FromStr;
@@ -28,12 +22,12 @@ use x509_cert::time::Validity;
 
 use crate::error::{Error, Result};
 
-/// Ten years, as seconds. The cert outlives any pairing that pins it; a short expiry would just
-/// force re-pairing for no security this deployment cares about (a trusted LAN). `Duration::new`
-/// rather than `from_secs` because the days-unit constructor clippy would prefer is still unstable.
+/// Ten years: the cert outlives any pairing that pins it, since expiry would only force
+/// re-pairing on a trusted LAN. `Duration::new` because the days-unit constructor clippy prefers
+/// is unstable.
 const TEN_YEARS: Duration = Duration::new(3650 * 24 * 60 * 60, 0);
 
-/// Where a private key and cert are written under the data directory.
+/// Where the private key is written under the data directory.
 const KEY_FILE: &str = "server-key.pem";
 /// Where the self-signed certificate is written.
 const CERT_FILE: &str = "server-cert.pem";
@@ -115,8 +109,8 @@ impl ServerCert {
 
     /// Load the certificate from `dir`, generating and persisting one the first time.
     ///
-    /// The same cert every run is the point (a client pins it), so it is written once and read
-    /// afterwards. A directory that does not exist is created.
+    /// A client pins the cert, so it is written once and read on every later run. A missing
+    /// directory is created.
     ///
     /// # Errors
     ///
@@ -207,6 +201,7 @@ mod tests {
         hex::encode(server.pem.as_bytes())
     }
 
+    /// A generated cert carries a PEM body and signature bytes.
     #[test]
     fn a_generated_cert_has_a_key_and_a_signature() {
         let cert = ServerCert::generate().unwrap();
@@ -215,21 +210,20 @@ mod tests {
         assert!(!cert.pem_hex().is_empty());
     }
 
+    /// A cert parsed from hex-of-PEM keeps the signature bytes it was made with.
     #[test]
     fn a_cert_reads_back_off_the_wire_with_the_same_signature() {
-        // The bridge's own cert is a perfectly good stand-in for a client's: same shape, and it
-        // arrives as hex-of-PEM exactly as a client's does.
+        // The server cert stands in for a client's: same shape, same hex-of-PEM encoding.
         let server = ServerCert::generate().unwrap();
         let client = ClientCert::from_hex_pem(&as_client_wire(&server)).unwrap();
-        // The signature the client side reads must equal the one the server side embedded.
         assert_eq!(client.signature, server.signature);
     }
 
+    /// The public key parsed from the cert verifies signatures made with the private key.
     #[test]
     fn the_public_key_read_off_the_wire_matches_the_private_one() {
         let server = ServerCert::generate().unwrap();
         let client = ClientCert::from_hex_pem(&as_client_wire(&server)).unwrap();
-        // A signature made with the private key verifies against the public key read from the cert.
         let signature = crate::crypto::sign(&server.private, b"pin me");
         assert!(crate::crypto::verify(&client.public, b"pin me", &signature));
     }

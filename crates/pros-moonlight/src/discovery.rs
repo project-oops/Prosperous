@@ -1,8 +1,7 @@
-//! Advertising the bridge over mDNS, so a Moonlight client finds it without being told an address.
+//! Advertising the bridge over mDNS, so a client finds it without being given an address.
 //!
-//! GameStream hosts announce `_nvstream._tcp` on the HTTP port; a client browsing for that service
-//! is how the host appears in its list on its own. The daemon has to stay alive for the
-//! advertisement to persist, so it is handed back rather than dropped.
+//! GameStream hosts announce `_nvstream._tcp` on the HTTP port. The advertisement lasts as long
+//! as the daemon, so the daemon is handed back rather than dropped.
 
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 
@@ -50,7 +49,7 @@ pub(crate) fn advertise(host: &Host) -> Result<Advertisement> {
     Ok(Advertisement { _daemon: daemon })
 }
 
-/// Wrap an mDNS error as an I/O one, since that is the shape the crate's error already carries.
+/// Wrap an mDNS error as an I/O error.
 fn io_other(error: &impl std::fmt::Display) -> std::io::Error {
     std::io::Error::other(error.to_string())
 }

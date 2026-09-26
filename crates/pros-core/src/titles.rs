@@ -1,28 +1,13 @@
 //! What a title is called, as opposed to what its folder is called.
 //!
-//! # Why this is worth a round trip
-//!
-//! A title's folder is named by identifier: `PPSA01650`. A list of those is a list a person
-//! has to decode, and the decoding is not something they can do - the mapping lives on the
-//! target, in a file beside each title's artwork.
-//!
-//! `/user/appmeta/<id>/param.json` holds it. **Measured on 2026-08-26**, along with the
-//! shape below.
-//!
-//! # The name is localised, and this does not pretend otherwise
-//!
-//! The file carries a set of languages and says which is the default. So the rule is: the
-//! default language's name, or any language's name if the default names none, or **nothing** -
-//! and nothing means the identifier is shown, which is what the caller had anyway.
-//!
-//! A name is never invented. A title with no readable name reads as its identifier, which is
-//! true, rather than as a guess, which might not be.
+//! A title's folder is named by identifier (`PPSA01650`); the name a person recognises is in
+//! `/user/appmeta/<id>/param.json` on the target (measured, with the shape in the test
+//! fixture below). The name is localised: the default language's name, else any language's,
+//! else none - and none means the identifier is shown. A name is never invented.
 
 use serde_json::Value;
 
-/// Where the target keeps a title's description.
-///
-/// Measured, not guessed. See the module note.
+/// Where the target keeps a title's description (measured).
 pub const APPMETA: &str = "/user/appmeta";
 
 /// What a title says about itself.
@@ -32,8 +17,7 @@ pub struct Metadata {
     pub id: String,
     /// What a person calls it, when the file says.
     ///
-    /// `None` rather than a placeholder: a caller showing the identifier instead is showing
-    /// something true, and a caller told a name is entitled to believe it.
+    /// `None` rather than a placeholder, so a caller that is given a name can believe it.
     pub name: Option<String>,
     /// Which build of it is installed.
     pub version: Option<String>,
@@ -59,14 +43,13 @@ pub fn path_for(id: &str) -> String {
 ///
 /// # Errors
 ///
-/// When the document is not JSON. **A missing name is not an error** - it is a title that
-/// does not say, and the identifier answers for it.
+/// When the document is not JSON. A missing name is not an error.
 pub fn parse(id: &str, text: &str) -> Result<Metadata, String> {
     let document: Value = serde_json::from_str(text).map_err(|why| why.to_string())?;
 
     Ok(Metadata {
-        // The file states its own identifier. Trusted over the folder name when it is
-        // there, because a folder can be copied and a file describes itself.
+        // The file's own identifier is trusted over the folder name, since a folder can be
+        // copied.
         id: document
             .get("titleId")
             .and_then(Value::as_str)
@@ -85,10 +68,9 @@ pub fn parse(id: &str, text: &str) -> Result<Metadata, String> {
     })
 }
 
-/// The title's name in the language the file says is default, or any language that has one.
+/// The title's name in the file's default language, or any language that has one.
 ///
-/// Falling back to *any* language rather than to nothing, because a name in the wrong
-/// language is still the name of the right game, and an identifier is nobody's language.
+/// A name in another language is still the right title's name, which beats an identifier.
 fn localised_name(document: &Value) -> Option<String> {
     let languages = document.get("localizedParameters")?.as_object()?;
 
@@ -112,9 +94,9 @@ fn localised_name(document: &Value) -> Option<String> {
 ///
 /// # Errors
 ///
-/// Propagates the transfer, and the parse. A title whose description cannot be fetched is
-/// **not** turned into an empty name here: the caller decides whether to show the identifier
-/// or say that nothing could be read, and those are different messages.
+/// Propagates the transfer and the parse. A description that cannot be fetched is not turned
+/// into an empty name: the caller decides between showing the identifier and reporting that
+/// nothing could be read.
 pub fn read(link: &pros_link::Link, id: &str) -> Result<Metadata, String> {
     let bytes = pros_link::files::retrieve(link, &path_for(id)).map_err(|why| why.to_string())?;
     parse(id, &String::from_utf8_lossy(&bytes))
@@ -124,7 +106,7 @@ pub fn read(link: &pros_link::Link, id: &str) -> Result<Metadata, String> {
 mod tests {
     use super::{Metadata, parse, path_for};
 
-    /// A target's own file, trimmed to the fields this reads. Kept as it was found.
+    /// A target's own file, trimmed to the fields this reads.
     const REAL: &str = r#"{
         "applicationCategoryType": 65536,
         "contentId": "UP4381-PPSA01650_00-YOUTUBESIEA00000",
@@ -137,7 +119,7 @@ mod tests {
         "titleId": "PPSA01650"
     }"#;
 
-    /// The whole point: an identifier becomes something a person recognises.
+    /// A real description yields the name, version and content identifier.
     #[test]
     fn a_real_title_says_what_it_is_called() {
         let found = parse("PPSA01650", REAL).expect("it reads");
@@ -153,7 +135,7 @@ mod tests {
         assert_eq!(found.display(), "YouTube");
     }
 
-    /// A name in a language nobody asked for is still the name of the right game.
+    /// A name in a non-default language is used rather than the identifier.
     #[test]
     fn any_language_beats_an_identifier() {
         let text = r#"{
@@ -166,10 +148,7 @@ mod tests {
         );
     }
 
-    /// **A title that does not say is shown as its identifier, which is true.**
-    ///
-    /// Not a placeholder, not a guess: a caller told a name is entitled to believe it, so a
-    /// name is never invented for one that has none.
+    /// A title with no name is shown as its identifier, never a guess.
     #[test]
     fn a_title_with_no_name_is_its_identifier_and_not_a_guess() {
         let found = parse("PPSA00002", r#"{"titleId":"PPSA00002"}"#).expect("it reads");
@@ -177,14 +156,14 @@ mod tests {
         assert_eq!(found.display(), "PPSA00002");
     }
 
-    /// The file describes itself, and is believed over the folder it was found in.
+    /// The file's own identifier is believed over the folder it was found in.
     #[test]
     fn the_file_names_its_own_identifier() {
         let found = parse("WRONG0000", REAL).expect("it reads");
         assert_eq!(found.id, "PPSA01650");
     }
 
-    /// Something that is not a description says so, rather than reading as a nameless title.
+    /// A document that is not JSON is an error, not a nameless title.
     #[test]
     fn a_document_that_is_not_a_description_is_an_error() {
         assert!(parse("PPSA00003", "not json at all").is_err());

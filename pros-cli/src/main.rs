@@ -1,32 +1,15 @@
 //! `pros` - one instrument for talking to a prepared target.
 //!
-//! Throughout `pros`, *target* means a **registered target** - a machine registered by name and
-//! address (`pros register`) - never a *build target* (the machine an artifact is built for,
-//! `selfish --target`) or an *install target* (a download manifest's destination). Prosperous
-//! owns this sense and keeps the bare word; the qualifier is stated once, here, so a reader
-//! crossing from the other repositories does not import the collision. (OOPS conventions section
-//! 2, "The four axes of a build and a run".)
+//! Here *target* means a registered target (`pros register`), never a build or install target.
+//! The logic lives in `pros-core` and `pros-link`, shared with the window; this binary holds
+//! argument parsing and wording.
 //!
-//! # This program holds no logic, on purpose
-//!
-//! Registering, probing, reading a manifest, verifying a digest, refusing the wrong kind of
-//! file: all of it is in `pros-core` and `pros-link`, because a graphical version of this
-//! has to do exactly the same things and a second implementation of them would drift within
-//! a month. What is here is argument parsing and wording.
-//!
-//! That is the sibling projects' principle 13 taken as a starting condition rather than
-//! arrived at after the first drift.
-//!
-//! # Exit codes are part of the interface
-//!
-//! - **0** - it worked, or the target answered and the answer was *not ready*.
-//! - **1** - this program could not do what it was asked: no such target, a file that is
-//!   not there, a transfer that failed, a title the target refused to start.
-//! - **2** - a check found the target blocked.
-//!
-//! Two and one are separated deliberately. **A target that is switched off is an answer,
-//! not a malfunction**, and a script that branches on it should not have to tell that apart
-//! from the tool falling over by reading the message.
+//! Exit codes are part of the interface:
+//! - 0 - it worked, or the target answered and the answer was "not ready".
+//! - 1 - this program could not do what it was asked: no such target, a missing file, a
+//!   failed transfer, a title the target refused to start.
+//! - 2 - a check found the target blocked. An absent target is an answer, not a malfunction,
+//!   so a script can tell it from a tool failure without reading the message.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -39,15 +22,14 @@ use pros_core::target::{self, Target};
 
 mod say;
 
-/// What a blocked check exits with. See the module note.
+/// What a blocked check exits with.
 const BLOCKED: u8 = 2;
 
 #[derive(Parser)]
 #[command(
     name = "pros",
     about = "Talk to a prepared target: register it, ask what it can do, move files, run things",
-    // The same line the window's footer shows, from the same place. Two front ends over one
-    // library that disagree about which build they are is a bug report nobody can act on.
+    // The same build line the window's footer shows, from the same source.
     version = pros_core::build::line_static()
 )]
 struct Cli {
@@ -55,9 +37,8 @@ struct Cli {
     command: Command,
     /// The same global flag every subcommand carries.
     ///
-    /// **Captured here as well as there** so that anything running before the subcommand -
-    /// the warning below - knows which target was meant. A global argument is populated at
-    /// both levels, so this is one flag read twice rather than two flags.
+    /// Read here too so the warning before the subcommand knows which target was meant. A
+    /// global argument is populated at both levels.
     #[command(flatten)]
     which: Which,
 }
@@ -87,7 +68,7 @@ enum Command {
         /// Which one
         name: String,
     },
-    /// Ask a target what it can currently do
+    /// Ask a target what it can do now
     Check {
         /// Send anything that is missing and is staged here, then ask again
         #[arg(long)]
@@ -122,10 +103,9 @@ enum Command {
     },
     /// Keep a probe alive on the target while something else drives it
     ///
-    /// A conformance probe answers questions by calling functions whose arity is not known
-    /// yet, so faulting is the normal case. Its own protocol says restarting afterwards is
-    /// somebody else's job. This is that job: watch the port, and when it stops answering,
-    /// send the same bytes again.
+    /// A conformance probe faults as a normal part of its work and leaves restarting to
+    /// someone else. This watches its port and, when it stops answering, sends the same
+    /// bytes again.
     Supervise {
         /// The probe, as a file here
         path: PathBuf,
@@ -247,15 +227,13 @@ enum Command {
     },
     /// Start an installed title on the target, by its application identifier
     ///
-    /// The identifier, not a path. This asks the target's own system service to start an
-    /// application the way selecting it on the home screen does; it does not run an ELF.
-    /// `pros send` is that door.
+    /// The identifier, not a path. This asks the target's system service to start an
+    /// application the way the home screen does; it does not run an ELF (`pros send` does).
     Launch {
         /// Which title. Nine characters, four letters then five digits - `pros titles`
         /// lists them
         ///
-        /// Called `id` rather than `title` because it is not a name: the builtin resolves
-        /// an identifier and nothing else.
+        /// An identifier, not a name: the builtin resolves nothing else.
         id: String,
         #[command(flatten)]
         which: Which,
@@ -270,8 +248,8 @@ enum Command {
     },
     /// Close a title, freeing what it holds open
     ///
-    /// Ends every process the title owns. A stopped process is woken first so its own exit
-    /// teardown completes - killing it while stopped leaves locked files behind.
+    /// Ends every process the title owns. A stopped process is woken first so its exit
+    /// teardown completes; killing it while stopped leaves locked files behind.
     Close {
         /// Which title, by identifier - `pros titles` lists them
         id: String,
@@ -280,9 +258,9 @@ enum Command {
     },
     /// End one process by its pid, freeing what it holds open
     ///
-    /// The native way to do what a hand-typed `sh kill …` fumbles: it sends the signal the
-    /// target's `kill` builtin actually takes (`-s <number>`, not the `-9` shorthand it rejects),
-    /// and it wakes a stopped process first so its own teardown completes. `pros ps` lists pids.
+    /// Sends the signal in the form the target's `kill` builtin takes (`-s <number>`; it
+    /// rejects the `-9` shorthand), and wakes a stopped process first so its teardown
+    /// completes. `pros ps` lists pids.
     Kill {
         /// Which process, by pid - `pros ps` lists them
         pid: String,
@@ -291,17 +269,16 @@ enum Command {
     },
     /// List the processes running on the target
     ///
-    /// The same `ps` the window's system panel reads, so a pid to `pros kill` comes from here
-    /// rather than from a raw shell.
+    /// The same `ps` the window's system panel reads; the pids here are what `pros kill`
+    /// takes.
     Ps {
         #[command(flatten)]
         which: Which,
     },
     /// Watch the running processes, redrawn on an interval until stopped
     ///
-    /// The live form of `ps`: the same table - pid, state, memory, title, command - re-read every
-    /// few seconds. Ctrl-C stops it, or `--seconds` caps it. Read-only, like `ps`: to end
-    /// something use `pros close` or `pros kill`.
+    /// The `ps` table re-read every few seconds. Ctrl-C stops it, or `--seconds` caps it.
+    /// Read-only: to end something use `pros close` or `pros kill`.
     Top {
         /// Stop after this many seconds (default: keep going until Ctrl-C)
         #[arg(long)]
@@ -314,15 +291,13 @@ enum Command {
     },
     /// Deploy a homebrew title from a local build, launch it, and follow its log until it ends
     ///
-    /// The probe loop in one command, replacing a hand-run `restore` then `launch` then `logs`:
-    /// close the title if it is running, restore it from a local build into
-    /// `/data/homebrew/<id>` (overwriting what is there), launch it, and stream its log until the
-    /// title leaves the process list - it exited or crashed - or `--seconds` elapses.
+    /// Closes the title if it is running, restores it from a local build into
+    /// `/data/homebrew/<id>` (overwriting what is there), launches it, and streams its log until
+    /// the title leaves the process list or `--seconds` elapses.
     ///
-    /// A probe that finishes by parking (idling rather than exiting, the conforming ending for a
-    /// big-app) never leaves the process list, so the watch ends at the `--seconds` cap and says
-    /// so. Closing a running title is best-effort: a parked big-app ignores signals, and if it is
-    /// still holding the slot the launch below will say so.
+    /// A title that parks (idles rather than exits, the conforming ending for a big-app) never
+    /// leaves the process list, so the watch ends at the `--seconds` cap. Closing is
+    /// best-effort: a parked big-app ignores signals, and the launch reports a held slot.
     Probe {
         /// Which title. Nine characters, four letters then five digits - `pros titles` lists them
         id: String,
@@ -341,8 +316,7 @@ enum Command {
     Fetch {
         /// Which entry. Omit with --all to fetch everything that can be checked
         ///
-        /// Called `payload` rather than `name` because `--name` already means *which
-        /// target*, and two arguments called the same thing is a question every time.
+        /// Called `payload` because `--name` already means which target.
         payload: Option<String>,
         /// Everything the manifest describes that is not here already
         #[arg(long)]
@@ -375,7 +349,7 @@ enum Command {
         #[arg(long)]
         manifest: PathBuf,
     },
-    /// Stand in for a console's Porthole payload, so the Moonlight bridge can be tested with no
+    /// Stand in for the target's Porthole payload, so the Moonlight bridge can be tested with no
     /// hardware. Serves an Annex-B clip on 9805 and prints the controller records that arrive on
     /// 9806. Runs until stopped.
     FakeTarget {
@@ -402,17 +376,13 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    // Held for the whole of `main`: the guard is what keeps the writers alive, and `let _`
-    // would drop it here and lose everything after this line.
-    // `build` and `root` are what `oops-log` prints on its own startup line, so no tool has to
-    // remember to write one - or to write it after the subscriber exists, which is the part that
-    // would be got wrong separately in each of them.
+    // Held for the whole of `main`: the guard keeps the writers alive, and `let _` would drop
+    // it here. `oops-log` prints `build` on its own startup line.
     let _logging = oops_log::Logging::new("pros")
         .build(pros_core::build::line_static())
         .init();
     let cli = Cli::parse();
-    // Before the command, not after: a command that then hangs has its explanation already
-    // above it, which is the whole value of saying anything at all.
+    // Before the command, so a command that then hangs has its explanation above it.
     forewarn(&cli.command, cli.which.name.as_deref());
     match run(cli.command) {
         Ok(code) => code,
@@ -426,9 +396,7 @@ fn main() -> ExitCode {
 impl Command {
     /// Which service on the target this cannot work without.
     ///
-    /// **Declared, not discovered.** The window has the same table in
-    /// `Section::requires`, and two places deciding what a command needs would disagree the
-    /// first time one gained a feature.
+    /// Declared, not discovered. The window keeps the matching table in `Section::requires`.
     const fn requires(&self) -> Option<&'static str> {
         match self {
             // Local, or the asking itself.
@@ -463,9 +431,8 @@ impl Command {
             | Self::Backup { .. }
             | Self::Restore { .. }
             | Self::Saves { .. }
-            // Probe needs shsrv (launch/close/ps) and klogsrv (its log) too, but the restore is
-            // its first hard step and the one it cannot begin without - the launch and log
-            // failures surface at their own steps, in their own words.
+            // Probe also uses shsrv and klogsrv, but the restore is the step it cannot begin
+            // without; the others report their own failures.
             | Self::Probe { .. }
             | Self::Titles { .. } => Some("ftpsrv"),
         }
@@ -474,38 +441,25 @@ impl Command {
 
 /// How long a service is given to answer before the command is warned about.
 ///
-/// Short on purpose. A service that is up answers a connection on a local network in
-/// microseconds, so this is not measuring the service - it is deciding whether to print a
-/// paragraph. **A wrong answer here costs a warning, never a refusal**, which is why it can
-/// afford to be brief.
+/// Short: a service that is up answers on a local network in microseconds, and a wrong
+/// reading costs a warning, never a refusal.
 const GLANCE: Duration = Duration::from_millis(600);
 
 /// How long silence has to last before a shell command's answer is considered complete.
 ///
-/// The shell sends no end marker, so quiet is the only signal there is. The window uses the
-/// same number for the same commands, and two front ends that waited different lengths would
-/// disagree about whether a target had answered.
+/// The shell sends no end marker, so quiet is the only signal. The window uses the same
+/// value for the same commands.
 const SETTLE: Duration = Duration::from_millis(1200);
 
-/// Says so, loudly, when a command needs something the target is not offering.
+/// Warns, before the command runs, when it needs a service the target is not offering.
 ///
-/// # Why this warns and does not refuse
-///
-/// The check is one connection attempt with a short budget. It can be wrong - a firewall, a
-/// service still starting, a network having a moment - and a tool that refused on a
-/// possibly-wrong reading would be worse than one that tried and failed with the reason
-/// already on screen.
-///
-/// # Why it prints before the command rather than after
-///
-/// So that a command which then hangs has its explanation above it. The sibling probe holds
-/// the same rule for the same reason and states it more sharply: announce before attempting,
-/// because a program cannot narrate its own failure to return.
+/// It warns rather than refuses: one short connection attempt can be wrong (a firewall, a
+/// service still starting), and a failed attempt with the reason on screen beats a refusal.
 fn forewarn(command: &Command, name: Option<&str>) {
     let Some(service) = command.requires() else {
         return;
     };
-    // No target registered is a different complaint, and the command itself will make it.
+    // With no target registered, the command itself reports that.
     let Ok(target) = pick(name) else {
         return;
     };
@@ -634,8 +588,8 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
 
 /// Runs one shell command on the target and prints what it said.
 ///
-/// An empty reply is said out loud rather than shown as nothing, because a shell that is not
-/// loaded and a command that printed nothing look identical otherwise - the check knows which.
+/// An empty reply is reported, because a shell that is not loaded and a command that printed
+/// nothing otherwise look identical.
 fn sh(command: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let target = pick(name)?;
     let out = pros_link::shell::run(&target.link(), command, SETTLE)?;
@@ -649,8 +603,7 @@ fn sh(command: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error:
 
 /// Listens to the target's system log for a while and prints it.
 ///
-/// A quiet log is reported as a result rather than an error, the same distinction the exit codes
-/// draw: a target that had nothing to say is not a program that failed.
+/// A quiet log is a result, not an error.
 fn logs(seconds: u64, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
     use std::io::Write as _;
     use std::sync::Arc;
@@ -704,8 +657,8 @@ fn logs(seconds: u64, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error
 
 /// Runs the Moonlight host bridge in front of Porthole.
 ///
-/// The behaviour is `pros_moonlight`'s (principle 3); this finds the LAN address and the apps to
-/// offer, starts a PIN prompt on standard input, and hands over. It blocks until stopped.
+/// The behaviour is `pros_moonlight`'s; this finds the LAN address and the apps to offer,
+/// starts a PIN prompt on standard input, and hands over. It blocks until stopped.
 fn moonlight(
     hostname: String,
     ip: Option<std::net::Ipv4Addr>,
@@ -713,7 +666,7 @@ fn moonlight(
     let local_ip = ip
         .or_else(detect_lan_ip)
         .ok_or("could not work out this machine's LAN address; pass it with --ip")?;
-    // One app per registered target; a default if none is registered yet.
+    // One app per registered target; a placeholder if none is registered.
     let targets = target::load().unwrap_or_default();
     let apps = if targets.is_empty() {
         println!(
@@ -726,7 +679,7 @@ fn moonlight(
     let data_dir = target::directory()
         .ok_or("no data directory for the certificate")?
         .join("moonlight");
-    // Where Porthole's 9805/9806 are served: the first registered target, or the local fake target.
+    // Porthole's 9805/9806: the first registered target, or the local fake target.
     let porthole = targets
         .first()
         .map_or_else(|| "127.0.0.1".to_owned(), |one| one.address.clone());
@@ -775,8 +728,8 @@ fn submit_pin(pin: &str) -> std::io::Result<()> {
     stream.flush()
 }
 
-/// Work out the LAN address the target and clients would reach this machine on, by asking the OS
-/// which local address it would use to reach the network - no packet is sent.
+/// The LAN address the target and clients reach this machine on, from the local address the
+/// OS routes outward with. A UDP connect sends no packet.
 fn detect_lan_ip() -> Option<std::net::Ipv4Addr> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("8.8.8.8:80").ok()?;
@@ -786,10 +739,10 @@ fn detect_lan_ip() -> Option<std::net::Ipv4Addr> {
     }
 }
 
-/// Runs a stand-in target for testing the Moonlight bridge without a console.
+/// Runs a stand-in target for testing the Moonlight bridge without hardware.
 ///
-/// The behaviour is entirely `pros_moonlight::fake`'s (principle 3); this reads the clip, says
-/// what it is doing, and hands over. It blocks until the process is stopped.
+/// The behaviour is `pros_moonlight::fake`'s; this reads the clip, says what it is doing, and
+/// hands over. It blocks until the process is stopped.
 fn fake_target(
     clip: &Path,
     video_port: u16,
@@ -815,9 +768,8 @@ fn fake_target(
 
 /// Sends a payload.
 ///
-/// The shape guard is the library's, not this program's: a vendor module and a payload
-/// share their first four bytes, and the loader accepts either and then dies silently on
-/// the one it cannot run.
+/// The shape guard is the library's: a vendor module and a payload share their first four
+/// bytes, and the loader accepts either and dies silently on the one it cannot run.
 fn send(
     path: &Path,
     seconds: u64,
@@ -826,12 +778,8 @@ fn send(
     let target = pick(name)?;
     let payload = std::fs::read(path)?;
 
-    // **Asked here as well as in the library, so nothing is announced that is not happening.**
-    //
-    // The send guards on this too, and that is the real check. But printing "sending 64
-    // bytes" and then refusing describes an action that never took place - which is the
-    // same defect as a check that cannot fail, wearing different clothes. The announcement
-    // comes after the refusal, so it is only ever made about a send.
+    // Checked here as well as in the library so "sending" is never printed for a send that
+    // is then refused.
     let found = pros_link::identify(&payload);
     if !found.is_payload() {
         return Err(format!(
@@ -847,8 +795,7 @@ fn send(
     let out = pros_link::loader::send(&target.link(), &payload, Duration::from_secs(seconds))?;
     if out.trim().is_empty() {
         println!("nothing arrived on the socket within {seconds}s");
-        // Said every time, because the opposite belief is how a working payload gets
-        // reported as broken: only a payload launched *this way* reports here at all.
+        // Only a payload launched this way reports on the socket, so silence is not failure.
         println!("not necessarily failure: only a payload launched this way reports here");
         println!("at all. If it writes a file, `pros pull` will get it");
     } else {
@@ -859,9 +806,8 @@ fn send(
 
 /// Fetches a file off the target.
 ///
-/// Written by this program rather than left to a shell redirect: a redirect decides the
-/// encoding itself and can put a byte-order mark at the front of a file that every parser
-/// afterwards has to cope with.
+/// Written by this program rather than a shell redirect, which can choose the encoding and
+/// prepend a byte-order mark.
 fn pull(
     path: &str,
     into: Option<PathBuf>,
@@ -884,8 +830,8 @@ fn pull(
 
 /// Copies one local file onto the target, at a path the caller chose.
 ///
-/// **Warns before an inert destination.** A file put under a system mount point is not indexed
-/// or mounted, so it lands and does nothing - said here rather than left to be discovered.
+/// Warns before an inert destination: a file under a system mount point is not indexed or
+/// mounted, so it lands and does nothing.
 fn push(from: &Path, to: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
     if pros_core::guard::is_inert_target_path(to) {
         eprintln!(
@@ -909,8 +855,7 @@ fn verify(
     let payload = manifest
         .find(against)
         .ok_or_else(|| format!("the manifest describes no payload called {against:?}"))?;
-    // Both of these are refusals rather than warnings: a payload that cannot be checked and
-    // one that fails its check are equally not to be sent.
+    // Both refuse: a payload that cannot be checked is as unsendable as one that fails.
     let expected = payload.checksum()?;
     expected.verify(&std::fs::read(file)?)?;
     println!("{} is {against}, {expected}", file.display());
@@ -919,16 +864,8 @@ fn verify(
 
 /// Reports on a manifest, from here or from the target.
 ///
-/// # Why the target is a source at all
-///
-/// The payload manager keeps its own repository description, in the schema this project
-/// copied rather than invented. **A target that is already configured is already
-/// described**, so reading it beats typing it in again - and it is the only way to find out
-/// what that file actually looks like, which has not been measured.
-///
-/// No path is assumed. Where the manager keeps that file is a guess this program is not
-/// going to make on somebody's behalf; it is asked for, and when the answer is known it can
-/// become a default with a measurement behind it.
+/// The payload manager on a configured target keeps its own repository description, in the
+/// schema this project follows, so the target can be read instead of typed in again.
 fn payloads(
     file: Option<&Path>,
     from_target: Option<&str>,
@@ -947,16 +884,12 @@ fn payloads(
             let bytes = pros_link::files::retrieve(&target.link(), path)?;
             Manifest::from_json(&String::from_utf8_lossy(&bytes))?
         }
-        // The one beside the registry when there is one, and the built-in recommended list
-        // when there is not. **Falling back rather than refusing**: a person who has just
-        // installed this wants to know what a target ought to be running, and telling them
-        // to write a file first is telling them to already know the answer.
+        // Falls back to the built-in list rather than refusing, so a new install can still
+        // see what a target ought to be running.
         (None, None) => read_or_recommend()?,
     };
 
-    // **Asked for, not assumed.** Reading is a look; keeping is a change to a file
-    // somebody may have edited, and a command that quietly rewrote it while showing a table
-    // would be doing two things when it was asked to do one.
+    // Saving only on request: it rewrites a file somebody may have edited.
     let manifest = if save {
         let before = read_or_recommend().unwrap_or_default();
         let merged = before.merged_with(&manifest);
@@ -969,15 +902,12 @@ fn payloads(
         manifest
     };
 
-    // Probing is asked for rather than assumed: it costs five ports at a second and a half,
-    // and a person who wants the description alone should not pay for it.
+    // Probing only on request: it costs a connection attempt per service.
     let (report, chain) = if check {
         let target = pick(name)?;
         let report = pros_core::check(&target);
-        // **A boot list that could not be read is not an empty one.** The failure becomes
-        // `None`, which the survey reports as unknown rather than as absent - and it is said
-        // out loud rather than passed over, because the file service being down is itself
-        // worth knowing.
+        // An unreadable boot list is `None`, which the survey reports as unknown rather than
+        // absent; the failure is printed because the file service being down is a finding.
         let chain = match pros_core::chain::Chain::read(&target.link()) {
             Ok(chain) => Some(chain),
             Err(why) => {
@@ -1014,10 +944,8 @@ fn backup(
         )
     });
     let mut session = pros_link::files::Session::open(&target.link())?;
-    // Printed as it happens: a backup of any size is a long silence otherwise, and a
-    // person watching cannot tell waiting from stuck.
-    // Nothing to press here: on a command line, the way to stop something is to stop it, and
-    // the shell already offers that. Saying never rather than pretending otherwise.
+    // Progress is printed so waiting is distinguishable from stuck. The cancel callback is
+    // always false: on a command line, Ctrl-C stops the process.
     let summary = pros_core::transfer::download(
         &mut session,
         from,
@@ -1033,9 +961,8 @@ fn backup(
 
 /// Which files a transfer may skip, from the `--all` flag.
 ///
-/// **Skip-unchanged is the default**, because re-sending a whole title where one file changed is
-/// the cost worth removing; `--all` forces every file across, for when the record cannot be
-/// trusted. See `pros_core::deployed`.
+/// Skipping unchanged files is the default; `--all` sends every file, for when the record of
+/// what landed cannot be trusted. See `pros_core::deployed`.
 fn resend(all: bool) -> pros_core::transfer::Resend {
     if all {
         pros_core::transfer::Resend::Everything
@@ -1132,10 +1059,7 @@ enum Registry {
     Remove(String),
 }
 
-/// The three commands that touch the registry and no target.
-///
-/// Grouped because they are one subject, and because a dispatch that holds every command
-/// inline grows until nobody reads it.
+/// The commands that touch the registry and no target.
 fn registry(what: &Registry) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match what {
         Registry::Add(name, address) => {
@@ -1169,7 +1093,7 @@ fn read_or_recommend() -> Result<Manifest, Box<dyn std::error::Error>> {
     if let Some(path) = path.filter(|path| path.exists()) {
         return Ok(Manifest::from_file(&path)?);
     }
-    // Said out loud, because where a list came from decides how much to trust it.
+    // Where a list came from decides how much to trust it.
     println!("no manifest of your own, so this is the built-in list");
     println!("read off a target's own repository - `pros payloads --write` to edit it");
     println!();
@@ -1178,23 +1102,13 @@ fn read_or_recommend() -> Result<Manifest, Box<dyn std::error::Error>> {
 
 /// Watches a probe's port and re-sends it when it stops answering.
 ///
-/// # Why this waits rather than polls hard
-///
-/// The thing on the other end is being driven by somebody asking questions, and most of those
-/// questions take milliseconds. A supervisor that checked constantly would spend the target's
-/// time competing with the driver for it; one that checks every second or so notices a death
-/// within a second of it mattering, which is as fast as anybody can use.
-///
-/// # Every restart is printed
-///
-/// The driver detects a restart by the probe's session identifier changing. This side knows
-/// for certain, and a restart nobody mentioned would let two separate processes read as one
-/// continuous session - the discontinuity the protocol takes care to keep visible.
+/// It looks about once a second so it does not compete with the driver for the target. Every
+/// restart and every change of state is printed, so two processes never read as one session.
 ///
 /// # Errors
 ///
-/// When the probe cannot be read, or no target is registered. A send that fails is **not** an
-/// error: it is one dead start, counted, and the loop carries on until the patience runs out.
+/// When the probe cannot be read, or no target is registered. A failed send is not an error:
+/// it is one dead start, counted against the patience.
 fn supervise(
     path: &Path,
     port: u16,
@@ -1225,9 +1139,7 @@ fn supervise(
     loop {
         let answering = pros_core::supervise::is_answering(&target.address, port, REACH);
         if answering != alive {
-            // Said in both directions: a probe coming back is as much a fact about the
-            // session as one going away, and a driver reading this log needs both to line
-            // its records up against.
+            // Both directions: a driver lines its records up against each change.
             println!(
                 "  {}",
                 if answering {
@@ -1245,8 +1157,7 @@ fn supervise(
                 match pros_link::loader::send(&target.link(), &payload, SETTLING) {
                     Ok(said) if said.trim().is_empty() => {}
                     Ok(said) => println!("    {}", said.trim()),
-                    // Not fatal. A loader that refused is one dead start, and the patience
-                    // is what decides whether to keep trying.
+                    // Not fatal: one dead start, and the patience decides whether to go on.
                     Err(why) => println!("    the loader refused: {why}"),
                 }
                 if restarts > 0 && attempt >= restarts {
@@ -1266,8 +1177,7 @@ fn supervise(
 fn write_recommended() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let path = pros_core::manifest::default_path()
         .ok_or("no home directory, so there is nowhere for a manifest to live")?;
-    // **Refused rather than overwritten.** The thing this would destroy is the digests
-    // somebody typed in by hand, which is the expensive half of a manifest.
+    // Refused rather than overwritten: the existing file may hold hand-checked digests.
     if path.exists() {
         return Err(format!(
             "{} already exists and is not overwritten - what it holds that this does not is exactly the part somebody had to find out",
@@ -1304,10 +1214,8 @@ fn library(
 
 /// Asks a target what it can do, and optionally does something about the answer.
 ///
-/// **A tool that can see a problem and cannot act on it has left the interesting half
-/// undone.** What it can do is narrow and stays narrow: send something that is missing, is
-/// described, and is already here verified. It does not fetch, and it does not touch the
-/// boot list - what that file accepts has not been measured.
+/// `--fix` sends only what is missing, described, and already staged here verified. It does
+/// not fetch and does not touch the boot list.
 fn check(fix: bool, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let target = pick(name)?;
     let report = pros_core::check(&target);
@@ -1341,8 +1249,7 @@ fn check(fix: bool, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::
             .and_then(pros_core::staging::path_for)
             .filter(|path| path.exists());
         let Some(path) = staged else {
-            // Named, not skipped. *Not here* and *sent* are different outcomes and a
-            // person reading this needs to know which happened to which.
+            // Named, not skipped, so each service shows which outcome it had.
             println!("{name:<10} not staged here - `pros fetch {name} --from-target`");
             continue;
         };
@@ -1359,8 +1266,7 @@ fn check(fix: bool, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::
     if sent == 0 {
         return Ok(ExitCode::from(BLOCKED));
     }
-    // Asked again rather than assumed: sending a payload and it answering are two things,
-    // and only the second one is what somebody wanted.
+    // Checked again: a payload being sent does not mean it answers.
     println!();
     println!("asking again");
     let after = pros_core::check(&target);
@@ -1376,8 +1282,7 @@ fn saves(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let target = pick(name)?;
     let where_to = match pros_core::saves::find(&target.link())? {
         pros_core::saves::Found::Here(path) => path,
-        // Offered rather than chosen between: a target with two accounts has two people's
-        // saves on it.
+        // Listed rather than chosen between: each account's saves are its own.
         pros_core::saves::Found::Several(users) => {
             println!("several users, so this does not choose between them:");
             for user in users {
@@ -1405,8 +1310,8 @@ fn saves(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
         return Ok(ExitCode::SUCCESS);
     }
     for item in &found {
-        // A save belongs to a title, and the title's own description names it - when that
-        // title is still installed. One that is not shows its identifier, which is true.
+        // Named from the installed title's description; an uninstalled title shows only its
+        // identifier.
         let named = pros_core::titles::read(&target.link(), &item.name)
             .ok()
             .and_then(|about| about.name);
@@ -1421,9 +1326,7 @@ fn saves(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
 
 /// Lists what is installed, by name.
 ///
-/// One round trip per title, because the names live one file down. Worth it: a list of
-/// identifiers is a list somebody has to decode, and the decoding is not something they can
-/// do without the target.
+/// One round trip per title, because each name lives in the title's own description.
 fn titles(appmeta: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let target = pick(name)?;
     let entries = pros_link::files::list(&target.link(), appmeta)?;
@@ -1444,8 +1347,7 @@ fn titles(appmeta: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::er
                 about.version.as_deref().unwrap_or("-"),
                 about.display()
             ),
-            // **The identifier, and a mark saying why that is all there is.** A title whose
-            // description could not be read is not a title with no name.
+            // An unreadable description shows the identifier and the reason, not a blank name.
             Err(why) => {
                 unread += 1;
                 println!("{:<12} {:<10} ? {why}", item.name, "-");
@@ -1461,23 +1363,13 @@ fn titles(appmeta: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::er
 
 /// Starts an installed title, and says what the target made of being asked.
 ///
-/// # Why this exists when `pros sh "launch PPSA00000"` sends the same bytes
-///
-/// It does send the same bytes. What the shell cannot do is the two things either side of
-/// them.
-///
-/// **Before**: the shell splits its line on spaces and offers no quoting, and the builtin
-/// hands everything from the first word onwards to the application as its own arguments. A
-/// stray word therefore does not start the wrong title - it starts the right one and passes
-/// it something nobody meant to pass. That is checked here and refused, not trimmed.
-///
-/// **After**: a refusal arrives as a `perror` line on the same socket as everything else, so
-/// a shell that printed whatever came back would exit zero on a launch the target turned
-/// down. The answer is read, and the exit code is the reading.
+/// It sends the same line as `pros sh "launch <id>"`, with a check either side. The shell
+/// splits on spaces with no quoting and passes every extra word to the application as an
+/// argument, so the identifier is validated and refused, not trimmed. A refusal arrives as a
+/// `perror` line on the same socket as any other reply, so the reply is read and sets the
+/// exit code.
 fn launch(id: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    // A usage complaint, so it goes where usage complaints go. What the *target* says is a
-    // result and goes to stdout below - the two are different kinds of thing and a script
-    // that pipes one should not catch the other.
+    // A usage error goes to stderr; what the target says is a result and goes to stdout.
     if !pros_core::launch::is_an_app_id(id) {
         eprintln!("not an application identifier: {id}");
         eprintln!("nine characters, four letters then five digits, no spaces");
@@ -1491,12 +1383,10 @@ fn launch(id: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::
     println!("{}", said.describe());
 
     match said {
-        // **Asked, which is not started.** There is no reply that means a game came up, so
-        // zero here says the target took the request - and the wording above says exactly
-        // that rather than letting an exit code imply more than was measured.
+        // Asked, not started: the target has no reply meaning a title came up, so success
+        // says only that it took the request.
         pros_core::launch::Said::Asked(_) => Ok(ExitCode::SUCCESS),
-        // Both are the target declining, one by printing its usage and one by naming the
-        // call that failed. A drawn negative is the whole reason this is not `pros sh`.
+        // The target declining, by printing its usage or by naming the call that failed.
         pros_core::launch::Said::NotAnId | pros_core::launch::Said::Refused(_) => {
             Ok(ExitCode::FAILURE)
         }
@@ -1545,8 +1435,7 @@ fn close(id: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::E
             let _ = pros_link::shell::run(&target.link(), &command, SETTLE)?;
         }
     }
-    // Ask again rather than assume: a title still listed did not close, and saying so is worth
-    // more than an exit code that implies it did.
+    // Listed again: a title still listed did not close.
     let after = pros_link::shell::run(&target.link(), "ps", SETTLE)?;
     if pros_core::system::of_title(&pros_core::system::processes(&after), id).is_empty() {
         println!("{id} is gone");
@@ -1559,9 +1448,9 @@ fn close(id: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::E
 
 /// Ends one process by pid, freeing what it holds open.
 ///
-/// The same primitive `close` uses, aimed by pid rather than by title: read the listing, find the
-/// one process it names, and run the kill commands `pros_core::system::end` produces - which wake
-/// a stopped process before killing it. A pid nothing is using is said, not signalled into.
+/// The primitive `close` uses, aimed by pid: the commands `pros_core::system::end` produces,
+/// which wake a stopped process before killing it. A pid not in the listing is reported, not
+/// signalled.
 fn kill_pid(pid: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let target = pick(name)?;
     let listing = pros_link::shell::run(&target.link(), "ps", SETTLE)?;
@@ -1588,7 +1477,7 @@ fn kill_pid(pid: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::erro
     for command in pros_core::system::end(process) {
         let _ = pros_link::shell::run(&target.link(), &command, SETTLE)?;
     }
-    // Ask again rather than assume, exactly as `close` does: a pid still listed did not end.
+    // Listed again, as in `close`: a pid still listed did not end.
     let after = pros_link::shell::run(&target.link(), "ps", SETTLE)?;
     if pros_core::system::by_pid(&pros_core::system::processes(&after), &pid).is_none() {
         println!("pid {pid} is gone");
@@ -1601,9 +1490,8 @@ fn kill_pid(pid: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::erro
 
 /// Lists the processes running on the target.
 ///
-/// The same `ps` the window's system panel reads, parsed the same way, so a pid handed to
-/// `pros kill` comes from here rather than from a raw shell. Prints the columns this project
-/// keeps - pid, state, title, command - and nothing the parser dropped.
+/// The same `ps` the window's system panel reads, parsed the same way; its pids are what
+/// `pros kill` takes.
 fn ps(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let target = pick(name)?;
     let listing = pros_link::shell::run(&target.link(), "ps", SETTLE)?;
@@ -1618,12 +1506,9 @@ fn ps(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
 
 /// Watches the running processes, redrawing on an interval until stopped.
 ///
-/// The live form of [`ps`]: the same table, re-read every `every` seconds until Ctrl-C or the
-/// `--seconds` cap. Read-only, like `ps` - to end something, `pros close` / `pros kill` - so it
-/// needs no interactive key handling and no terminal raw mode. On a terminal it clears between
-/// draws; piped, it prints successive tables so the output stays readable in a file. A target that
-/// blips is reported and the watch goes on, because a monitor that quits on one missed read is one
-/// that is never running when it is wanted.
+/// The [`ps`] table re-read every `every` seconds until Ctrl-C or the `--seconds` cap.
+/// Read-only, so it needs no key handling or raw mode. On a terminal it clears between draws;
+/// piped, it prints successive tables. A failed read is reported and the watch goes on.
 fn top(
     seconds: Option<u64>,
     every: u64,
@@ -1639,8 +1524,8 @@ fn top(
                 let processes = pros_core::system::processes(&listing);
                 let titles = processes.iter().filter(|p| p.is_a_title()).count();
                 if clears {
-                    // Clear the screen and home the cursor, so each draw replaces the last rather
-                    // than scrolling. No raw mode, so nothing to restore on Ctrl-C.
+                    // Clear and home, so each draw replaces the last. No raw mode, so nothing
+                    // to restore on Ctrl-C.
                     print!("\x1b[2J\x1b[H");
                 }
                 println!(
@@ -1668,13 +1553,10 @@ fn top(
 
 /// Waits until the target has the title registered so `launch` can resolve it, up to `timeout`.
 ///
-/// **The files on disk are not the title being registered.** A restore lands the tree under
-/// `/data/homebrew/<id>` at once, but `ShadowMountPlus` has to mount it and the shell has to register
-/// it before it appears in the appmeta list ([`pros_core::titles::APPMETA`], the same list
-/// `pros titles` reads) and before `launch` will start it. So this polls that list for the id -
-/// which is the very thing that gates the launch - rather than the filesystem, which says yes
-/// immediately and would launch too soon. Returns `true` once the id is listed, `false` if the
-/// timeout elapses first.
+/// A restored tree is on disk at once, but `ShadowMountPlus` has to mount and register it
+/// before it appears in the appmeta list ([`pros_core::titles::APPMETA`]) and `launch` can
+/// start it. So this polls that list, not the filesystem. Returns `true` once the id is
+/// listed, `false` if the timeout elapses first.
 fn wait_for_registration(link: &pros_link::Link, id: &str, timeout: Duration) -> bool {
     use std::io::Write as _;
 
@@ -1682,8 +1564,8 @@ fn wait_for_registration(link: &pros_link::Link, id: &str, timeout: Duration) ->
     let _ = std::io::stdout().flush();
     let deadline = std::time::Instant::now() + timeout;
     let listed = loop {
-        // The id is the folder name under appmeta; a listing that fails (the service is not up
-        // yet, say) is simply "not yet", to be retried until the deadline.
+        // The id is the folder name under appmeta; a failed listing is retried until the
+        // deadline.
         let there = pros_link::files::list(link, pros_core::titles::APPMETA)
             .is_ok_and(|entries| entries.iter().any(|e| e.name.eq_ignore_ascii_case(id)));
         if there {
@@ -1702,10 +1584,7 @@ fn wait_for_registration(link: &pros_link::Link, id: &str, timeout: Duration) ->
 
 /// Deploys a homebrew title from a local build, launches it, and follows its log until it ends.
 ///
-/// The probe loop in one command. Each step is an existing capability - close, restore, launch,
-/// follow the log - tied together here the way [`logs`] ties its own stream and watcher, because
-/// this is an interactive orchestration and the pieces it stands on are all in `pros-core`. Two
-/// honest limits, stated at the `Probe` variant and again where they bite below: a parked big-app
+/// Close, restore, launch and follow, each from `pros-core`, in sequence. A parked big-app
 /// ignores the close, and a title that parks rather than exits ends the watch at the cap.
 fn probe(
     id: &str,
@@ -1724,19 +1603,15 @@ fn probe(
     let link = target.link();
     let dest = pros_core::guard::homebrew_path(id);
 
-    // 1. Close it if it is running. **Best-effort.** A parked big-app ignores every signal
-    //    (measured; oops-mesa's b1e4), so this ends a killable process and no more - the launch
-    //    below is what says whether the slot is still held.
+    // Close it if it is running, best-effort: a parked big-app ignores every signal (measured),
+    // and the launch below reports whether the slot is still held.
     match pros_core::probe::close(&link, id) {
         0 => println!("{id} is not running"),
         closed => println!("closed {id} ({closed} process(es))"),
     }
 
-    // 2. Restore the local build into /data/homebrew/<id>, overwriting. A half-landed deploy is
-    //    not launched: `say::copied` prints the count, and its incomplete branch exits non-zero.
-    //    Skip-unchanged by default (the whole point of the deploy loop is that most files are the
-    //    same build to build); `--all` forces every file across. What landed is remembered for
-    //    next time, and a cache that will not write is a note, not a failure.
+    // Restore the build into /data/homebrew/<id>, overwriting. An incomplete deploy is not
+    // launched. Unchanged files are skipped unless `--all`.
     println!("restoring {} -> {dest}", from.display());
     let summary = deploy(&target, from, &dest, all)?;
     let restored = say::copied(&summary, &dest);
@@ -1745,12 +1620,7 @@ fn probe(
         return Ok(restored);
     }
 
-    // 3. **Wait for the console to register the title before launching.** The files are on disk
-    //    the moment the restore finishes, but ShadowMountPlus has to mount and register the title
-    //    before it appears in the appmeta list (the one `pros titles` reads) and before `launch`
-    //    will resolve it - and the hand-run recipe only got away with launching straight after a
-    //    restore because typing the second command gave registration a few seconds. This poll is
-    //    that pause made explicit: the appmeta list, up to a minute.
+    // The title must be registered before `launch` can resolve it.
     if !wait_for_registration(&link, id, Duration::from_secs(60)) {
         eprintln!(
             "{id} did not appear in the title list within 60s - not launching. It restored, but \
@@ -1760,20 +1630,13 @@ fn probe(
     }
     println!("{id} is registered.");
 
-    // 4. **Attach the log follower BEFORE launching.** These probes do their whole job in the
-    //    first second or two and then park silently, so a follower attached *after* the launch
-    //    misses all of it: the output lands in the gap between the launch returning and the stream
-    //    opening, and the run succeeds while its capture is empty (measured, and the reason this
-    //    order matters). The connection is the subscription - `log::follow` returns once it is
-    //    open, and klogsrv buffers what it emits after that - so following first and launching
-    //    second is the fix. `SUBSCRIBE_SETTLE` is a conservative beat so the stream is certainly
-    //    live before the launch it must not miss; it is the same ordering the hand-run recipe got
-    //    with a second window and a sleep.
+    // Follow the log before launching: a probe does its work in the first second or two and
+    // then parks silently, so a follower attached after the launch misses it (measured). The
+    // connection is the subscription; `SUBSCRIBE_SETTLE` makes sure it is live.
     println!("attaching to {id}'s log before launch...");
     let (stopper, lines) = pros_link::log::follow(&link)?;
     std::thread::sleep(pros_core::probe::SUBSCRIBE_SETTLE);
 
-    // 5. Launch it, now that the title is registered and the follower is up to catch it.
     let said = pros_core::probe::launch(&link, id)?;
     println!("launching {id}: {}", said.describe());
     if !matches!(said, pros_core::launch::Said::Asked(_)) {
@@ -1785,9 +1648,7 @@ fn probe(
         return Ok(ExitCode::FAILURE);
     }
 
-    // 6. Follow the attached stream until the title parks, exits, or the cap elapses. The
-    //    stream, the `ps` watcher and the park sentinel are `pros_core::probe`'s, shared with the
-    //    window's probe screen.
+    // Until the title parks, exits, or the cap elapses; shared with the window's probe screen.
     println!("following {id} (until it parks, exits, or {seconds}s)...");
     let mut any = false;
     let ending = pros_core::probe::follow(
@@ -1819,8 +1680,7 @@ fn fetch(
     name: Option<&str>,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     let manifest = if from_target {
-        // The target's own repository carries urls **and** digests, which is what makes
-        // fetching worth doing at all. (D013)
+        // The target's own repository carries urls and digests. (D013)
         let target = pick(name)?;
         let bytes =
             pros_link::files::retrieve(&target.link(), pros_core::manifest::TARGET_REPOSITORY)?;
@@ -1869,18 +1729,14 @@ fn fetch(
     if refused.is_empty() {
         return Ok(ExitCode::SUCCESS);
     }
-    // **Not a footnote.** Anything that did not arrive, or arrived wrong, is the thing
-    // somebody needs to act on.
     println!("{} not: {}", refused.len(), refused.join(", "));
     Ok(ExitCode::FAILURE)
 }
 
 /// Keeps a payload ready to send, having checked it is the one described.
 ///
-/// **The check happens on the way in, not on the way out**, so that everything in the
-/// staging directory is already known to be what it claims. A file dropped there by hand is
-/// not, which is the whole reason this command exists rather than a note saying where to
-/// put things.
+/// The check happens on the way in, so everything in the staging directory is known to be
+/// what it claims; a file dropped there by hand is not.
 fn stage(
     file: &Path,
     name: &str,
@@ -1903,8 +1759,7 @@ fn read_manifest(named: Option<&Path>) -> Result<Manifest, Box<dyn std::error::E
     }
     let path = pros_core::manifest::default_path()
         .ok_or("no home directory, so there is nowhere for a manifest to live")?;
-    // Absent is its own message. *There is none yet* and *this one will not read* are
-    // different problems for different people.
+    // A missing manifest and an unreadable one are different problems, so different messages.
     if !path.exists() {
         return Err(format!("no manifest at {}", path.display()).into());
     }

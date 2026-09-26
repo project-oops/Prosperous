@@ -1,16 +1,11 @@
 //! Turning a Moonlight controller packet into a [`pros_link::pad::Pad`] the target understands.
 //!
-//! **The packet layout is adapted from Moonshine** (Hans Gaiser, BSD-2-Clause; see
-//! `THIRD-PARTY-LICENSES.md`), whose `control/input/gamepad.rs` reads the same multi-controller
-//! packet. The mapping from Moonlight's XInput-style button bits to the target's own buttons is
-//! this project's, because the target's bitmap is not Moonlight's - `pros_link::pad::Button` uses
-//! the values measured on the console, so each Moonlight bit is *translated* through
-//! [`pros_link::pad::Pad::hold`] rather than copied.
+//! The packet layout is adapted from Moonshine's `control/input/gamepad.rs` (BSD-2-Clause; see
+//! `THIRD-PARTY-LICENSES.md`). The target's button bitmap differs from Moonlight's XInput-style
+//! bits, so each bit is translated through [`pros_link::pad::Pad::hold`] rather than copied.
 //!
-//! Sticks are the other translation: Moonlight sends signed 16-bit axes centred on zero with up
-//! positive; the target reads unsigned bytes centred on 128 with up *low* (`pros_link::pad`), so
-//! the vertical axes are inverted as well as rescaled. Getting either wrong is the class of bug
-//! that reads as "a stick that rests off-centre", so it is done in one place and tested.
+//! Moonlight sends signed 16-bit axes centred on zero with up positive; the target reads unsigned
+//! bytes centred on 128 with up low (`pros_link::pad`), so vertical axes are rescaled and inverted.
 
 use pros_link::pad::{Button, Pad};
 
@@ -31,9 +26,8 @@ const MIN_LEN: usize = BUTTONS_HIGH_AT + 2;
 
 /// How each Moonlight button bit maps to a target button.
 ///
-/// Moonlight's values are the XInput-style ones every client sends; the target's are
-/// [`pros_link::pad::Button`]'s. Select maps to the touchpad click, the target pad's nearest
-/// equivalent, and the guide button to the system button.
+/// Moonlight's values are XInput-style; the target's are [`pros_link::pad::Button`]'s. Select maps
+/// to the touchpad click, the nearest equivalent, and the guide button to the system button.
 const BUTTONS: [(u32, Button); 15] = [
     (0x0001, Button::Up),
     (0x0002, Button::Down),
@@ -64,7 +58,7 @@ pub(crate) struct Update {
 /// Decode a Moonlight multi-controller packet payload into a target pad update.
 ///
 /// Returns `None` if the payload is too short to be one, so a stray control message is ignored
-/// rather than turned into a pad resting hard in a corner.
+/// rather than decoded as a pad.
 pub(crate) fn decode(payload: &[u8]) -> Option<Update> {
     if payload.len() < MIN_LEN {
         return None;
@@ -129,14 +123,15 @@ mod tests {
         p
     }
 
+    /// A payload shorter than a controller packet decodes to nothing.
     #[test]
     fn a_short_packet_is_ignored() {
         assert!(decode(&[0, 1, 2, 3]).is_none());
     }
 
+    /// Moonlight A (0x1000) and B (0x2000) become the target's Cross and Circle.
     #[test]
     fn the_face_buttons_map_to_the_target_layout() {
-        // Moonlight A (0x1000) is the target's Cross; B (0x2000) is Circle.
         let update = decode(&packet(1, 0x1000 | 0x2000, 0, 0, 0, 0)).unwrap();
         assert_eq!(update.slot, 1);
         assert!(update.pad.holds(Button::Cross));
@@ -144,6 +139,7 @@ mod tests {
         assert!(!update.pad.holds(Button::Square));
     }
 
+    /// A trigger byte becomes the trigger's pressure and sets its bit.
     #[test]
     fn a_trigger_sets_its_pressure() {
         let update = decode(&packet(0, 0, 200, 0, 0, 0)).unwrap();
@@ -152,15 +148,14 @@ mod tests {
         assert_eq!(update.pad.r2, 0);
     }
 
+    /// A centred stick reads as centre, full up reads low and full right reads high.
     #[test]
     fn a_centred_stick_reads_as_centre_and_up_is_low() {
         let centred = decode(&packet(0, 0, 0, 0, 0, 0)).unwrap();
         assert!((i16::from(centred.pad.left_x) - i16::from(CENTRE)).abs() <= 1);
         assert!((i16::from(centred.pad.left_y) - i16::from(CENTRE)).abs() <= 1);
-        // Full up on Moonlight (positive Y) must read as a low byte on the target.
         let up = decode(&packet(0, 0, 0, 0, 0, 32767)).unwrap();
         assert!(up.pad.left_y < 8, "up is low, got {}", up.pad.left_y);
-        // Full right (positive X) reads high.
         let right = decode(&packet(0, 0, 0, 0, 32767, 0)).unwrap();
         assert!(
             right.pad.left_x > 247,

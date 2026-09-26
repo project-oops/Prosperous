@@ -1,39 +1,17 @@
 //! A Moonlight/GameStream host bridge in front of Porthole's two ports.
 //!
-//! # What this is
-//!
-//! `docs/VIDEO.md` part four states the design in full. In one breath: the target's Porthole
-//! payload serves encoded video on 9805 and reads controller records on 9806, and this crate is a
-//! *second consumer* of those two ports that re-presents them as the NVIDIA GameStream protocol
-//! every Moonlight client already speaks. One LAN hop, no re-encode, and a phone, a Steam Deck or a
-//! TV becomes a screen for a target that never learned their protocol.
-//!
-//! # It invents nothing, and it decodes nothing
-//!
-//! The protocol has no published specification; it is defined by three GPLv3 codebases -
-//! moonlight-common-c, Sunshine and Wolf - and one BSD-2-Clause one, `moonshine`, which proved it
-//! can be spoken in pure Rust. This crate implements the **behaviour** those describe and copies no
-//! code from any of them (`ACKNOWLEDGEMENTS.md`). It never decodes a video frame: it finds NAL
-//! boundaries and keyframes with [`pros_link::stream`] - the same reader Porthole's own `watch`
-//! uses for its counts - and packetises, exactly as far as "[reading is not
-//! decoding](../pros_link/stream/index.html)" allows.
-//!
-//! # The parts, and the order they can be built and tested
-//!
-//! Every part below is verifiable on one machine against a stock Moonlight client, with **no
-//! console involved** - which is how the mesh wants it, obSCEne alone touching hardware. The
-//! [`fake`] target is what makes that true: it stands in for the payload, serving a canned
-//! Annex-B clip on 9805 and printing the controller records that arrive on 9806.
-//!
-//! - [`fake`] - the stand-in target, so the bridge has something to bridge without a console.
-//!
-//! The discovery, pairing, session and streaming parts land on top of this foundation; each is a
-//! port the client talks to, and each is added only once the one below it answers.
+//! Porthole serves encoded video on 9805 and reads controller records on 9806. This crate is a
+//! second consumer of those ports that presents them as the GameStream protocol a Moonlight
+//! client speaks, with no re-encode. It never decodes a frame: it finds NAL boundaries and
+//! keyframes with [`pros_link::stream`] and packetises. It implements the behaviour the public
+//! codebases describe and copies no code from them (`ACKNOWLEDGEMENTS.md`). The design is in
+//! `docs/VIDEO.md`. The [`fake`] target stands in for Porthole, so the whole bridge runs against
+//! a stock client on one machine.
 
 /// What can go wrong in the bridge, told apart.
 pub mod error;
 
-/// A target that is not a target, for driving the bridge without a console.
+/// A stand-in for Porthole, for driving the bridge without hardware.
 pub mod fake;
 
 /// The apps a client sees, one per target.

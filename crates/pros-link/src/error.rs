@@ -1,21 +1,9 @@
 //! What can go wrong talking to a target, told apart.
 //!
-//! # Why this is not `std::io::Error`
-//!
-//! The reference implementation returned one, and for a command-line tool that prints and
-//! exits it was the right call. It is the wrong call for a library two projects call,
-//! because it flattens three situations a caller needs to distinguish:
-//!
-//! - **A refused port is normal.** It means the payload is not loaded, which is the
-//!   ordinary state of a target that has just rebooted. A caller probing five services
-//!   expects several of these and must not treat them as failures.
-//! - **An unresolved address is the operator's mistake**, and no amount of retrying fixes
-//!   it.
-//! - **The wrong file shape is the caller's own bug**, caught before anything is sent.
-//!
-//! An `io::Error` says "something went wrong on a socket" for all three. A diagnostic loop
-//! that branches on the difference - and orbistoun's does - would have to match on error
-//! strings to get it back, which is how a library teaches its callers to be fragile.
+//! A plain `std::io::Error` would flatten cases a caller branches on: a refused port is the
+//! normal state of a service that is not loaded, an unresolved address is the operator's
+//! mistake, and a wrong file shape is the caller's bug caught before sending. Each is its
+//! own variant so no caller matches on error strings.
 
 use std::fmt;
 use std::time::Duration;
@@ -27,17 +15,15 @@ use crate::shape::Shape;
 pub enum Error {
     /// The address did not resolve to anything.
     ///
-    /// Separate from a refusal because retrying will not help and the fix is different: a
-    /// typo in a registration, or a name the network cannot answer for.
+    /// Retrying does not help: the fix is the registration or the network's name service.
     Unresolved {
         /// What was asked for, as the caller wrote it.
         address: String,
     },
     /// Nothing accepted on that port.
     ///
-    /// **Not an error in the usual sense.** A target with a payload unloaded refuses, and
-    /// so does one that is switched off, and telling those apart is what the duration is
-    /// for - see [`crate::service::Reachability`].
+    /// A target with the payload unloaded refuses, and so does one that is switched off;
+    /// the duration tells them apart. See [`crate::service::Reachability`].
     Refused {
         /// The port that refused.
         port: u16,
@@ -46,19 +32,16 @@ pub enum Error {
     },
     /// The file offered is not something the loader can run.
     ///
-    /// Caught **before** anything is sent, because the loader cannot catch it: a vendor
-    /// module and a plain payload share their first four bytes, so its own check passes
-    /// either and then it dies silently on the one it cannot run.
+    /// Caught before anything is sent: a vendor module and a plain payload share their first
+    /// four bytes, so the loader accepts either and dies silently on the one it cannot run.
     WrongShape {
         /// What the bytes turned out to be.
         found: Shape,
     },
     /// The target understood the request and said no.
     ///
-    /// Separate from everything above because **nothing is broken**. A missing file, a
-    /// read-only mount, a path that does not exist: the connection is fine, the service is
-    /// fine, and the answer is no. A caller browsing a filesystem meets several of these
-    /// per session and must not treat them as the link failing.
+    /// A missing file, a read-only mount or a bad path: the link and the service are fine,
+    /// and the answer is no.
     Rejected {
         /// What was being attempted, in the words of the operation rather than the wire.
         doing: String,
@@ -67,10 +50,8 @@ pub enum Error {
     },
     /// The target answered in a shape this crate could not read.
     ///
-    /// The remedy is the opposite of [`Error::Rejected`]: that one is usually the
-    /// operator's path, this one is usually **this crate being wrong** about a server it
-    /// was written against second-hand. So it carries what was actually said, which is the
-    /// only useful thing to put in a bug report.
+    /// Unlike [`Error::Rejected`], this usually means this crate is wrong about the server,
+    /// so it carries what was said for the bug report.
     Unintelligible {
         /// What was being attempted when the answer stopped making sense.
         doing: String,
@@ -90,8 +71,7 @@ impl fmt::Display for Error {
             Self::Refused { port, took } => {
                 write!(f, "nothing accepted on port {port} after {took:?}")
             }
-            // The remedy, not just the diagnosis: a person holding the wrong file wants to
-            // know which tool wants it, and that is knowable from the shape alone.
+            // The shape alone says which tool wants the file, so the message names it.
             Self::WrongShape { found } => {
                 write!(f, "{} - {}", found.describe(), found.remedy())
             }

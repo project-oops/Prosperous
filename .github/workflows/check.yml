@@ -1,9 +1,7 @@
 name: check
 
-# Every job begins the same three steps: check out the collection, check this repository
-# out *into* it, and ask `oops bootstrap` for the siblings this project needs. See
-# docs/BUILDING.md. This workflow is where that shape came from; the other four now match
-# it.
+# Every job checks out the collection, checks this repository out into it, and asks
+# `oops bootstrap` for the siblings this project needs.
 
 on:
   push:
@@ -18,21 +16,14 @@ jobs:
     name: build, lint and test
     runs-on: ubuntu-latest
     steps:
-      # The entry point, without submodules. This job needs Prosperous and the siblings Prosperous
-      # depends on - not the whole collection - so `bootstrap` below asks for exactly those rather than
-      # paying for every checkout to build one.
+      # The collection without submodules; `bootstrap` fetches only the siblings needed.
       - uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/OOPS
           path: OOPS
 
-      # Checked out INTO the OOPS layout, because the layout is a build requirement rather
-      # than a convenience: Prosperous resolves oops-libs and selfish by relative path, as siblings.
-      #
-      # `fetch-depth: 0` is deliberate. The provenance step asks git what is *tracked*,
-      # and a shallow checkout still answers that correctly - but the guard refuses to
-      # pass when it cannot look, so anything that leaves it without a repository turns
-      # into a failure rather than a quiet success. A full checkout removes the question.
+      # Inside the OOPS layout, because oops-libs and selfish are resolved by relative path.
+      # A full clone, so the provenance step always has a repository to ask.
       - uses: actions/checkout@v4
         with:
           path: OOPS/prosperous
@@ -41,23 +32,12 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
 
-      # Fetches oops-libs and selfish, which this workspace takes by path. Without them the build fails as
-      # a missing directory rather than as a missing dependency, which is a much worse error
-      # to read.
       - name: Siblings this build needs
         run: OOPS/bin/oops bootstrap prosperous
         env:
-          # Empty unless the org secret exists, and empty is the old behaviour.
+          # Empty unless the org secret exists.
           OOPS_CI_TOKEN: ${{ secrets.OOPS_CI_TOKEN }}
 
-      # One step, because there is one dev command and CI running something *else* is how
-      # a green pipeline and a broken working copy come to disagree. `oops check prosperous`
-      # is a thin wrapper over `./bin/prosperous check` - the same command, reached the
-      # same way a person reaches it.
-      #
-      # It runs, in order: no payload binaries are tracked, formatting, clippy at
-      # `-D warnings`, the tests, and a doc build with warnings as errors. The integration
-      # tests stand a fake target on the hardware's own port numbers, which are free on a
-      # runner and are checked rather than assumed - a bind failure fails the test by name.
+      # The same gate a person runs: `./bin/prosperous check`.
       - name: oops check prosperous
         run: OOPS/bin/oops check prosperous

@@ -1,45 +1,23 @@
-//! The payload manager's own settings, and changing them.
+//! The payload manager's settings file (`AUTOLOAD_ENABLED=1`, `AUTOLOAD_DELAY=5`, ...), and
+//! edits to it and to the boot list.
 //!
-//! # What this is
-//!
-//! Beside the boot list the manager keeps a settings file: `AUTOLOAD_ENABLED=1`,
-//! `AUTOLOAD_DELAY=5`, and a handful more. Measured on a target rather than taken from
-//! anywhere - the file was read and its keys are what it actually contained.
-//!
-//! # Why editing it needs more care than reading it
-//!
-//! This is the first thing in this project that would **write** to a target. Everything
-//! until now has asked questions.
-//!
-//! The boot list decides what loads at startup, so a file written wrongly is a target that
-//! comes up without its file service, its shell, or its loader - which is exactly the state
-//! where a tool that talks over those services can no longer fix anything. The recovery is
-//! re-running the jailbreak by hand.
-//!
-//! So three rules, all of them about the same fear:
-//!
-//! 1. **Nothing is written that was not read first.** An edit is applied to the text that
-//!    came off the target, in memory, and what goes back is that text - not something
-//!    regenerated from a parsed model. Comments, ordering and directives a person put there
-//!    survive because they were never taken apart.
-//! 2. **What would change is shown before it changes.** [`crate::autoload::Change::diff`]
-//!    renders it line by line, so somebody confirms a specific edit rather than an intention.
-//! 3. **The old text comes back with the change.** Keeping it is what makes an undo possible
-//!    at all, and a tool that can put a target into this state and not out of it again is
-//!    worse than one that refuses.
+//! A wrong boot list leaves a target without the services this tool talks over, and recovery
+//! is re-running the entry point by hand. So an edit is applied to the text read off the
+//! target, never regenerated from a parsed model; [`crate::autoload::Change::diff`] shows it
+//! line by line before it is written; and the old text travels with the change so it can be
+//! undone.
 
 use std::collections::BTreeMap;
 
 /// Where the manager keeps its settings.
 ///
-/// Measured on a target on 2026-08-26, beside the boot list.
+/// Measured on a target, beside the boot list.
 pub const CONFIG: &str = "/data/pldmgr/pldmgr_config.txt";
 
 /// The settings, as read.
 ///
-/// **The original text is kept whole.** Settings are edited by rewriting the one line that
-/// changed, so anything the file carries that this does not understand - a comment, a key
-/// added by a later version - goes back exactly as it arrived.
+/// The original text is kept whole and an edit rewrites only the line that changed, so a
+/// comment or an unknown key goes back exactly as it arrived.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     /// The file as it came off the target.
@@ -55,7 +33,6 @@ impl Settings {
         let mut values = BTreeMap::new();
         for line in text.lines() {
             let line = line.trim();
-            // A comment or a blank is kept in the text and is not a setting.
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -83,9 +60,8 @@ impl Settings {
 
     /// Whether a setting reads as on.
     ///
-    /// `1` is on and anything else is off, which is what the file uses. `None` when the key is
-    /// absent - **not `false`**, because a setting this version of the manager does not have
-    /// is a different thing from one it has turned off.
+    /// `1` is on and anything else is off, as the file uses. `None` when the key is absent,
+    /// not `false`: a setting the manager does not have differs from one turned off.
     #[must_use]
     pub fn is_on(&self, key: &str) -> Option<bool> {
         self.values.get(key).map(|value| value.trim() == "1")
@@ -99,9 +75,8 @@ impl Settings {
 
     /// A change to one setting, ready to be looked at before it is applied.
     ///
-    /// Returns `None` when the value is already that, so a confirm dialog is never shown for
-    /// a write that would do nothing - which is the same class of dishonesty as a progress
-    /// bar for work that is not happening.
+    /// Returns `None` when the value is already that, so no confirmation is asked for a write
+    /// that would do nothing.
     #[must_use]
     pub fn set(&self, key: &str, value: &str) -> Option<Change> {
         if self.get(key) == Some(value) {
@@ -120,7 +95,6 @@ impl Settings {
                 lines.push(line.to_owned());
             }
         }
-        // A key the file did not have is appended rather than dropped silently.
         if !written {
             lines.push(format!("{key}={value}"));
         }
@@ -135,20 +109,15 @@ impl Settings {
 
 /// The one setting a deployed manager chain must guarantee.
 ///
-/// Without it the manager ignores the list this program just wrote - which is the whole point of
-/// writing it, and the thing a person otherwise has to turn on by hand after every deploy. This is
-/// the switch that makes a list run, not a configuration choice: it is the settings-file companion
-/// to [`CONFIG`] and [`crate::chain::PATH`], not an opinion about delays or disc players, which are
-/// the manager's own defaults to keep.
+/// Without it the manager ignores the list written to [`crate::chain::PATH`]. Every other setting
+/// is the manager's own default to keep.
 pub const AUTOLOAD_ON: (&str, &str) = ("AUTOLOAD_ENABLED", "1");
 
-/// The settings text to write so a deployed manager chain is actually read: the target's current
-/// settings with autoload turned on, or - when the target has none yet - the single line that
-/// turns it on and nothing else, leaving every other default to the manager.
+/// The settings text to write so a deployed manager chain is read: the current settings with
+/// autoload turned on, or, when the target has none, the single line that turns it on.
 ///
-/// **`None` means nothing needs writing** - autoload is already on - so a deploy does not offer a
-/// write that would change nothing. When there is a file, other settings are kept exactly as they
-/// were and only autoload is touched; nothing here bakes in a value the manager owns.
+/// `None` means autoload is already on and nothing needs writing. Other settings are kept
+/// exactly as they were.
 #[must_use]
 pub fn ensure_autoload_on(current: Option<&str>) -> Option<String> {
     match current {
@@ -161,9 +130,8 @@ pub fn ensure_autoload_on(current: Option<&str>) -> Option<String> {
 
 /// A pending edit to a file on the target.
 ///
-/// **Carries both texts.** The new one is what would be written; the old one is what makes
-/// putting it back possible, and a change that could not be undone is one nobody should be
-/// asked to confirm.
+/// Carries both texts: the new one is what would be written, the old one is what makes an
+/// undo possible.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
     /// The file as it is now on the target.
@@ -172,47 +140,25 @@ pub struct Change {
     pub now: String,
     /// What the edit was, in one line.
     pub what: String,
-    /// Which file it would be written to.
-    ///
-    /// **Carried with the change**, because there are now two editable files here and a diff
-    /// that did not say which one it belonged to could be confirmed against the wrong one.
-    ///
-    /// Owned: a list's path comes from the chain that declares it, read from a file, rather
-    /// than from a constant in this program.
+    /// Which file it would be written to, so a diff is never confirmed against the wrong
+    /// file. Owned: a list's path comes from the chain that declares it.
     pub into: String,
 }
 
 impl Change {
-    /// The change, line by line.
+    /// The change, line by line, shown before anything is written.
     ///
-    /// **Shown before anything is written**, because confirming *"change the autoload delay"*
-    /// and confirming *these two lines* are different acts, and only the second one catches a
-    /// tool that is about to do something else as well.
-    ///
-    /// # Why this is a real diff and not a walk down two lists
-    ///
-    /// It used to compare line 1 with line 1, line 2 with line 2, and so on. That is correct
-    /// only while nothing is inserted or deleted: **one removal shifts everything below it**,
-    /// and every following line then differs from the one it is paired with. Removing a single
-    /// entry from a startup list of six rendered as four removals and four additions, none of
-    /// which were happening.
-    ///
-    /// That is not a cosmetic problem. This panel is the last thing between somebody and a
-    /// write to their target, and it was describing a different change from the one about to
-    /// be made - which is this project's defect exactly, in the one place built to catch it.
-    ///
-    /// So the longest common subsequence is found first, and everything not in it is an
-    /// addition or a removal. The lists here are tens of lines, so the quadratic table costs
-    /// nothing worth measuring.
+    /// A longest-common-subsequence diff, so one removal reads as one removal rather than
+    /// shifting every line below it. The lists are tens of lines, so the quadratic table is
+    /// cheap.
     #[must_use]
     pub fn diff(&self) -> Vec<Line> {
         let before: Vec<&str> = self.was.lines().collect();
         let after: Vec<&str> = self.now.lines().collect();
         let (rows, columns) = (before.len(), after.len());
 
-        // `common[i][j]` is the length of the longest common subsequence of what is left of
-        // each side from `i` and `j` onwards. Built from the end so the walk below can read it
-        // forwards and keep the output in file order.
+        // `common[i][j]` is the LCS length of each side from `i` and `j` onwards. Built from
+        // the end so the walk below reads it forwards, in file order.
         let mut common = vec![vec![0_usize; columns + 1]; rows + 1];
         for i in (0..rows).rev() {
             for j in (0..columns).rev() {
@@ -294,18 +240,14 @@ mod tests {
         assert_eq!(settings.is_on("SCAN_USB_PAYLOADS"), Some(true));
     }
 
-    /// **A setting the file does not have is unknown, not off.**
-    ///
-    /// A manager that never had the key and one that has it turned off are different
-    /// targets, and showing both as an unticked box would make them look the same.
+    /// A setting the file does not have is unknown, not off.
     #[test]
     fn a_setting_that_is_not_there_is_not_off() {
         let settings = Settings::parse(measured());
         assert_eq!(settings.is_on("SOMETHING_ELSE"), None);
     }
 
-    /// **Only the line that changed changes.** Everything else goes back byte for byte,
-    /// including keys this does not understand.
+    /// Only the line that changed changes; every other line goes back byte for byte.
     #[test]
     fn changing_one_setting_leaves_every_other_line_alone() {
         let settings = Settings::parse(measured());
@@ -327,11 +269,7 @@ mod tests {
         assert!(change.now.contains("LAST_REPOSITORY_UPDATE=1787678611"));
     }
 
-    /// **Setting a value to what it already is produces no change at all.**
-    ///
-    /// Not an empty one: none. A confirm dialog for a write that would do nothing teaches
-    /// somebody to click through confirms, which is precisely the habit that makes the real
-    /// one dangerous.
+    /// Setting a value to what it already is produces no change at all, not an empty one.
     #[test]
     fn setting_a_value_to_itself_is_not_a_change() {
         let settings = Settings::parse(measured());
@@ -392,11 +330,7 @@ mod diffing {
             .collect()
     }
 
-    /// **One removal renders as one removal.**
-    ///
-    /// The real list, and the real fix applied to it. Comparing line by line, this showed four
-    /// removals and four additions - describing a change nobody had asked for, in the panel
-    /// that exists to be checked before a write.
+    /// One removal from a real startup list renders as one removal.
     #[test]
     fn removing_one_entry_does_not_look_like_moving_four() {
         let was = "!3000\nkstuff-lite_v1.09.elf\n!3000\nnanodns.elf\n!3000\nelfldr_v0.24.elf\n\
@@ -404,8 +338,7 @@ mod diffing {
         let now = "!3000\nkstuff-lite_v1.09.elf\n!3000\nnanodns.elf\n!3000\n\
                    ShadowMountPlus_1.6beta16.elf\n!3000\nps5upload-4.1.2.elf\n";
         let lines = change(was, now).diff();
-        // Two lines, because removing an entry takes its `!3000` instruction with it - which
-        // is what the editor does and what the file therefore looks like afterwards.
+        // Two lines: removing an entry takes its `!3000` instruction with it.
         assert_eq!(gone(&lines).len(), 2, "{lines:?}");
         assert!(
             gone(&lines).contains(&"elfldr_v0.24.elf"),
@@ -432,10 +365,7 @@ mod diffing {
         assert_eq!(added(&lines), ["AUTOLOAD_DELAY=9"]);
     }
 
-    /// **What the diff says is added, applied to what was there, is what will be written.**
-    ///
-    /// The property that makes the panel worth reading at all: reconstructing the file from
-    /// the diff has to give back exactly the text about to be sent.
+    /// Rebuilding the file from the diff gives exactly the text about to be written.
     #[test]
     fn the_diff_reconstructs_the_file_about_to_be_written() {
         let was = "!3000\na.elf\n!3000\nb.elf\n!3000\nc.elf\n";
@@ -454,16 +384,8 @@ mod diffing {
 
 /// One entry of a startup list, as it stands and as it would be.
 ///
-/// # Why both positions rather than one list or the other
-///
-/// A panel that showed only the **pending** list could not show a removal: the entry is not in
-/// it, so there is no row, and an account of it had to go somewhere else - which read as
-/// *removing something that is not there*, because that is what it said.
-///
-/// A panel that showed only the **current** list could not show an addition.
-///
-/// So a row carries where it is now and where it would be, and either can be absent. Nothing
-/// about a change then needs explaining outside the table it happened in.
+/// A row carries both positions, either of which can be absent, so one table shows removals
+/// and additions alike.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shown {
     /// Its position in the list on the target, if it is in that list.
@@ -489,8 +411,8 @@ impl Shown {
 
     /// Whether it stays but loads at a different point.
     ///
-    /// **Order is not decoration here.** The manager loads the list top to bottom, so moving an
-    /// entry changes what is running by the time the next one starts.
+    /// The manager loads the list top to bottom, so moving an entry changes what is running
+    /// by the time the next one starts.
     #[must_use]
     pub fn moved(&self) -> bool {
         match (self.was_at, self.now_at) {
@@ -547,11 +469,7 @@ mod showing {
         }
     }
 
-    /// **A removed entry keeps its row and its number.**
-    ///
-    /// This is the whole point: it is in the list on the target, so it appears in the list,
-    /// marked. Dropping the row and accounting for it underneath read as *removing something
-    /// that is not there* - which was a fair description of what it said.
+    /// A removed entry keeps its row and its current position.
     #[test]
     fn a_removed_entry_stays_in_the_table_with_its_position() {
         let rows = change(
@@ -576,8 +494,7 @@ mod showing {
         assert!(rows[1].added());
     }
 
-    /// **What follows a removal keeps its old number and shows a new one.** The manager loads
-    /// the list in order, so moving an entry changes what is up by the time the next starts.
+    /// An entry after a removal carries both its old and its new position.
     #[test]
     fn what_shifts_carries_both_positions() {
         let rows = change("a.elf\nb.elf\nc.elf\n", "b.elf\nc.elf\n").shown();
@@ -612,11 +529,7 @@ mod toggling {
 
     const FILE: &str = "AUTOLOAD_ENABLED=1\nKILL_DISC_PLAYER_ON_STARTUP=1\nAUTOLOAD_DELAY=5\n";
 
-    /// **A setting turned back to what the target has produces the original file.**
-    ///
-    /// The window compares the two to decide there is nothing left to write. Without it, a
-    /// box unticked and re-ticked left a pending change that said nothing had changed, and the
-    /// only way out was discarding every edit.
+    /// A setting turned back to its value on the target gives the original file.
     #[test]
     fn setting_a_value_back_gives_the_original_file() {
         let settings = Settings::parse(FILE);
@@ -643,18 +556,13 @@ mod toggling {
         assert_eq!(both.get("AUTOLOAD_ENABLED"), Some("1"), "untouched");
     }
 
-    /// Setting a value it already has is not a change, so no panel appears for a write that
-    /// would do nothing.
+    /// Setting a value it already has is not a change.
     #[test]
     fn setting_what_is_already_there_is_not_a_change() {
         assert!(Settings::parse(FILE).set("AUTOLOAD_ENABLED", "1").is_none());
     }
 
-    /// **Enabling autoload on deploy keeps the other settings and only touches the one.**
-    ///
-    /// A target that has autoload off gets it turned on without losing its delay or its other
-    /// settings; a target with none gets a one-line file; a target already on gets nothing, so a
-    /// deploy does not write a change that would do nothing.
+    /// Enabling autoload on deploy merges into the settings rather than replacing them.
     #[test]
     fn ensuring_autoload_is_on_is_a_merge_not_a_replace() {
         // Off, among other settings: turned on, everything else kept.

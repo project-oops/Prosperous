@@ -1,26 +1,11 @@
 //! Copying a whole folder off the target, and putting one back.
 //!
-//! # What a backup has to promise
+//! A copy is complete, or its [`Summary`](crate::transfer::Summary) names every entry it did
+//! not copy and why.
 //!
-//! That it is complete, or that it says exactly where it is not.
-//!
-//! A save backup which quietly missed a file is worse than no backup, because it will be
-//! trusted at the moment it matters. So every entry this walk does not copy is **collected
-//! and returned**, and the summary a caller shows says how many. Nothing is skipped
-//! silently, and nothing is skipped for a reason the caller cannot read.
-//!
-//! # Symbolic links are not followed
-//!
-//! A link on a target filesystem can point at its own parent, and a walk that follows one
-//! runs until it fills a disk. Following them safely means tracking identity across a
-//! protocol that does not offer it, so they are **reported as skipped** instead - which is
-//! a fact about the backup, and appears in the same list as everything else that was not
-//! copied.
-//!
-//! # Why the walk is written against a trait
-//!
-//! So that the recursion, the link rule and the skipped list can be tested without a
-//! target. The protocol underneath is one implementation of two methods.
+//! Symbolic links are not followed: one can point at its own parent, and the file protocol
+//! offers no identity to detect the loop, so a link is reported as skipped. The walk is
+//! written against [`Source`](crate::transfer::Source) so it can be tested without a target.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -32,14 +17,12 @@ use crate::deployed::Ledger;
 
 /// How deep a walk may go before it stops.
 ///
-/// A bound rather than a belief. Save folders are shallow, and something that is not one
-/// should stop rather than run.
+/// Save folders are shallow; anything deeper is stopped and reported.
 const DEEPEST: usize = 12;
 
 /// Somewhere directories can be listed and files fetched.
 ///
-/// Two methods, so a test can be a map in memory and the real one can be a logged-in file
-/// session.
+/// A test implements it as a map in memory; the real one is a logged-in file session.
 pub trait Source {
     /// Lists a directory.
     ///
@@ -68,10 +51,7 @@ impl Source for Session {
 
 /// How far a copy has got.
 ///
-/// **Reported as it happens, not at the end.** A folder of any size takes long enough that a
-/// window showing nothing is indistinguishable from a window that has stopped, and the
-/// person watching cannot tell whether to wait or to kill it. Naming the file currently
-/// going across answers both.
+/// Reported after each file, naming it, so a long copy is visibly moving.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Progress {
     /// How many files have been copied so far.
@@ -100,15 +80,10 @@ pub struct Summary {
     pub bytes: u64,
     /// How many files were already on the target, unchanged, and so were not sent again.
     ///
-    /// **Not a skip and not a copy.** A skip is a file the copy failed to move and the summary is
-    /// incomplete without it; an unchanged file is one that did not need moving. Kept apart so a
-    /// restore that sent nothing because nothing changed reads as the success it is, not as a
-    /// backup that copied nothing. See [`upload`] and [`crate::deployed`].
+    /// Neither a skip nor a copy: a restore that sent nothing because nothing changed is
+    /// complete. See [`upload`] and [`crate::deployed`].
     pub unchanged: usize,
     /// Everything that was not copied, and why.
-    ///
-    /// **The field that makes the rest of it mean anything.** A backup is only as good as
-    /// its account of what it left behind.
     pub skipped: Vec<Skipped>,
 }
 
@@ -122,23 +97,13 @@ impl Summary {
 
 /// Copies a directory and everything under it to a local folder.
 ///
-/// # Why a caller can stop it
-///
-/// **A copy that cannot be stopped is one somebody has to kill the process to escape.** This
-/// walks a tree whose size is not known until it has been walked, started by one click, over
-/// a network - all three mean it can turn out to be far larger than whoever asked expected.
-/// `stop` is checked before each entry and before each directory, so asking it to stop takes
-/// effect within one file rather than at the end.
-///
-/// A stopped copy is **recorded as stopped in the summary**. A partial backup that presented
-/// itself as complete would be the worst possible outcome of this, and it is exactly what
-/// returning early without saying so would produce.
+/// `stop` is checked before each entry and each directory, so a stop takes effect within one
+/// file; everything not copied is recorded as stopped, so the summary is not complete.
 ///
 /// # Errors
 ///
-/// Only when the top of the walk cannot be listed at all, or a local write fails. Anything
-/// further down that cannot be copied is **recorded in the summary** rather than abandoning
-/// the rest: a backup that stops at the first unreadable file has saved nothing.
+/// Only when the top of the walk cannot be listed, or a local write fails. Anything further
+/// down that cannot be copied is recorded in the summary and the walk goes on.
 pub fn download(
     source: &mut dyn Source,
     from: &str,
@@ -153,8 +118,8 @@ pub fn download(
 
 /// Whether a listing entry names a way through the tree rather than a thing in it.
 ///
-/// Empty, `.`, `..`, or anything carrying a separator. All four make `Path::join` produce a
-/// path outside the directory it was joined to, which is the whole of the danger.
+/// Empty, `.`, `..`, or anything carrying a separator: each makes `Path::join` produce a path
+/// outside the directory it was joined to.
 fn is_a_step_rather_than_a_name(name: &str) -> bool {
     name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\')
 }
@@ -195,13 +160,9 @@ fn walk(
             });
             continue;
         }
-        // **A name from the target never steers a local path.** The transport already drops
-        // `.` and `..`, and this does not trust it to: `into.join(name)` with a name holding
-        // a separator or a parent step writes outside the folder somebody asked to fill, and
-        // recursing on one walks back up the target's filesystem.
-        //
-        // Belt and braces on purpose. The first version of this had the check in neither
-        // place, and the result was a backup of a 64KB directory quietly copying the system.
+        // A name from the target never steers a local path. The transport drops `.` and `..`
+        // too; this check does not rely on it, because a separator or parent step here writes
+        // outside `into` and recursing on one walks back up the target's filesystem.
         if is_a_step_rather_than_a_name(&entry.name) {
             summary.skipped.push(Skipped {
                 path: format!("{}/{}", from.trim_end_matches('/'), entry.name),
@@ -211,8 +172,7 @@ fn walk(
         }
         let there = format!("{}/{}", from.trim_end_matches('/'), entry.name);
         if !entry.is_usable() {
-            // The transport kept the line it could not read, and here is where that matters:
-            // something is in this directory and the backup does not have it.
+            // A line the transport could not parse is something the backup does not have.
             summary.skipped.push(Skipped {
                 path: from.to_owned(),
                 why: format!("a listing line that could not be read: {}", entry.raw),
@@ -240,7 +200,6 @@ fn walk(
                         current: there.clone(),
                     });
                 }
-                // One unreadable file does not end the backup, and it does not disappear.
                 Err(why) => summary.skipped.push(Skipped { path: there, why }),
             },
             Kind::Unrecognised => {}
@@ -252,12 +211,11 @@ fn walk(
 /// Whether a restore may skip files it has already put on this target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resend {
-    /// Send every file, whatever was sent before. What `restore --all` asks for, and the safe
-    /// choice when the record cannot be trusted - a target reimaged behind the same name, say.
+    /// Send every file, whatever was sent before (`restore --all`), for when the record cannot
+    /// be trusted, such as a target reimaged behind the same name.
     Everything,
-    /// Skip a file whose bytes are already recorded landed at its path and which is still present.
-    /// The default, and on a large title the reason most of a restore becomes a set of cheap size
-    /// checks rather than the whole tree sent again. See [`crate::deployed`].
+    /// Skip a file whose bytes are recorded as landed at its path and which is still present.
+    /// The default. See [`crate::deployed`].
     OnlyChanged,
 }
 
@@ -266,18 +224,16 @@ pub enum Resend {
 pub struct Restored {
     /// What moved, what was skipped as unchanged, and what would not go.
     pub summary: Summary,
-    /// Why the record of what landed could not be written, when it could not. **A note, not a
-    /// failure**: the record is a cache, and the only cost is a full re-send next time.
+    /// Why the record of what landed could not be written, when it could not. A note, not a
+    /// failure: the record is a cache, and the cost is a full re-send next time.
     pub unrecorded: Option<String>,
 }
 
-/// Puts a local folder onto a target - **the one restore**, which `pros restore`, `pros probe` and
-/// the window's restore all call.
+/// Puts a local folder onto a target: the one restore that `pros restore`, `pros probe` and the
+/// window all call.
 ///
 /// Opens the file service, loads the record of what already landed on this target, runs
-/// [`upload`] against it, and writes the record back. It was three copies of those four steps,
-/// one per caller, and a change to one - progress, the record - reached the others only if
-/// somebody remembered; a probe whose copy printed nothing looked hung for as long as it took.
+/// [`upload`] against it, and writes the record back.
 ///
 /// # Errors
 ///
@@ -302,8 +258,7 @@ pub fn restore(
         stop,
     );
     session.close();
-    // Saved whatever the outcome: a restore that failed part way still landed files, and the
-    // record of the ones that verified is as true as it was.
+    // Saved whatever the outcome: a restore that failed part way still landed verified files.
     let unrecorded = crate::deployed::save(&deployed).err();
     Ok(Restored {
         summary: done?,
@@ -316,19 +271,16 @@ pub fn restore(
 /// Directories are made on the way down, and one that already exists is not a failure - see
 /// [`Session::make_directory`].
 ///
-/// **A file already verified landed here is not sent again** unless [`Resend::Everything`] is
-/// asked for: its local bytes are hashed, and if that digest is what `known` records at its path
-/// and the target still reports the file present, the store is skipped and the file counted as
-/// [`Summary::unchanged`]. Every verified store updates `known`, so the next restore can skip it;
-/// a store that does not verify forgets it, so a failed landing is never skipped. Why the record
-/// is kept this side rather than asked of the target - the SELF unwrap - is in [`crate::deployed`]
-/// and at `land`.
+/// Unless [`Resend::Everything`] is asked for, a file whose local digest is what `known`
+/// records at its path, and which the target still lists, is counted as
+/// [`Summary::unchanged`] and not sent. A verified store updates `known`; a failed one forgets
+/// the path. The record is kept on this side because the target unwraps a SELF on access; see
+/// [`crate::deployed`].
 ///
 /// # Errors
 ///
-/// When the local folder cannot be read. A file that will not go across is **recorded in the
-/// summary**, for the same reason as a backup: stopping at the first refusal leaves the
-/// restore half done and unrecorded, which is the worst of both.
+/// When the local folder cannot be read. A file that will not go across is recorded in the
+/// summary and the restore goes on.
 pub fn upload(
     session: &mut Session,
     from: &Path,
@@ -341,13 +293,10 @@ pub fn upload(
     let mut summary = Summary::default();
     let root = to.trim_end_matches('/');
     let _ = session.make_directory(root);
-    // Directory listings, kept as they are read, so an unchanged file costs a listing of its folder
-    // once rather than a round trip of its own. See [`present`].
+    // Directory listings, cached so presence costs one listing per folder. See `present`.
     let mut listings: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     for relative in contents(from)? {
-        // The same reason as a backup: a restore is a walk of unknown size started by one
-        // click, and it stops within one file rather than at the end.
         if stop() {
             summary.skipped.push(Skipped {
                 path: relative.to_string_lossy().into_owned(),
@@ -370,15 +319,8 @@ pub fn upload(
             }
         };
 
-        // **An unchanged file already on the target is not sent again.** The digest is of the
-        // local bytes - the side that can be hashed truthfully, because the target unwraps a SELF
-        // on access (`crate::deployed`, and `land` below). The presence check is not optional: a
-        // record is not a promise the file is still there, and skipping one a delete had removed
-        // would be the quiet miss this module exists to refuse. `--all` is `Resend::Everything`
-        // and passes both by. Presence is read from a directory *listing* rather than a `SIZE`:
-        // `SIZE` is not a reliable existence signal on every target - one measured ftpsrv answered
-        // a size for a path that had been deleted - and a listing both tells the truth and costs
-        // one round trip per folder rather than one per file (`present`).
+        // The digest is of the local bytes, because the target unwraps a SELF on access. A
+        // record does not prove the file is still there, so presence is checked too.
         let digest = Checksum::of(&bytes).to_string();
         if resend == Resend::OnlyChanged
             && known.records(&there, &digest)
@@ -395,9 +337,8 @@ pub fn upload(
 
 /// Makes every directory on the way to a file, in order.
 ///
-/// A server will not make a parent for you, and the second file in a folder should not pay for the
-/// first one's work. A directory that will not be made is recorded and the walk goes on - the
-/// store into it will fail and be recorded too, so nothing is lost by not stopping here.
+/// The server does not make parents. A directory that will not be made is recorded and the
+/// walk goes on; the store into it fails and is recorded too.
 fn make_parents(session: &mut Session, root: &str, relative: &Path, summary: &mut Summary) {
     let Some(parent) = relative.parent() else {
         return;
@@ -417,14 +358,9 @@ fn make_parents(session: &mut Session, root: &str, relative: &Path, summary: &mu
 
 /// Whether the target still holds a file, read from a directory listing.
 ///
-/// **A listing, not a `SIZE`.** The question is only *existence* - a restore must re-send a file the
-/// target no longer has, however the ledger remembers it, which is the case of a title deleted out
-/// from under the cache. A file's size is not a reliable existence signal on every target (a
-/// measured ftpsrv answered a size for a deleted path), whereas a listing is the same truth
-/// `pros ls` shows, and the name in it does not change when the target unwraps a SELF. Each folder
-/// is listed once and remembered in `listings`, so a whole title costs a listing per folder rather
-/// than a round trip per file - and a folder that cannot be listed (it was removed) reads as empty,
-/// so everything in it is sent again.
+/// A listing, not a `SIZE`: a measured ftpsrv answered a size for a deleted path, and a
+/// listed name does not change when the target unwraps a SELF. Each folder is listed once into
+/// `listings`; a folder that cannot be listed reads as empty, so everything in it is resent.
 fn present(
     session: &mut Session,
     there: &str,
@@ -444,24 +380,14 @@ fn present(
 /// Stores one file, then records the outcome: counted and remembered if it verifies, skipped and
 /// forgotten if it does not.
 ///
-/// **A store the server accepted is not yet a file replaced.** The size is read back and checked:
-/// a target that has the title mounted, or an overlay that swallows the write, leaves the old file
-/// in place while `STOR` still completes, and a restore that trusted the reply then reported a
-/// file written that was not.
+/// The size is read back: a mounted title or an overlay that swallows the write leaves the old
+/// file in place while `STOR` still completes. A plain file must match the sent size exactly.
 ///
-/// **A SELF container does not keep its sent size, and must not be compared to it.** On a
-/// jailbroken console the kernel VFS hook unwraps a fake-signed SELF on access, so `SIZE` reports
-/// the decrypted ELF payload - a legitimately different, usually larger number - and comparing it
-/// to the bytes sent condemns a deploy that worked (oops-mesa REQ-20260917T1500Z-3e57). That
-/// unwrapped size cannot be recovered from the container here: the kernel presents the whole
-/// decrypted file, not a sum this side can compute from the segment table, and reimplementing the
-/// SELF+ELF layout to guess it is the format-reinvention principle 6 exists to refuse. So for a
-/// container the check is *presence* - a size came back, so a file is there - which still catches
-/// a store that landed nothing. A plain file is size-checked exactly, and a mismatch is not-copied.
+/// A SELF container is checked for presence only. On a target running the homebrew services
+/// the VFS unwraps a fake-signed SELF on access, so `SIZE` reports the unwrapped ELF, and that
+/// size cannot be computed from the container here.
 ///
-/// **What lands is remembered, what does not is forgotten.** A verified store records `digest`
-/// against the path in `known`, so the next restore can skip it; every failure forgets any record
-/// there, so a file that did not land is sent again next time rather than skipped on a stale one.
+/// A verified store records `digest` against the path in `known`; every failure forgets it.
 fn land(
     session: &mut Session,
     there: String,
@@ -480,8 +406,8 @@ fn land(
         });
         return;
     }
-    // The four bytes at offset zero, asked of SELFish: a SELF container for either generation
-    // (which the target unwraps), or not (an ELF or anything else, which it stores as-is).
+    // A SELF container for either generation, which the target unwraps; anything else is
+    // stored as-is.
     let is_container = bytes
         .get(..4)
         .and_then(|head| <[u8; 4]>::try_from(head).ok())
@@ -523,8 +449,7 @@ fn land(
 
 /// Everything under a local folder, as paths relative to it.
 ///
-/// Separated from the sending so it can be tested, and so a caller can show what is about to
-/// go before any of it does.
+/// Separate from the sending so a caller can show what is about to go before any of it does.
 ///
 /// # Errors
 ///
@@ -544,8 +469,7 @@ fn gather(root: &Path, here: &Path, depth: usize, found: &mut Vec<PathBuf>) -> R
     for entry in std::fs::read_dir(here).map_err(|why| why.to_string())? {
         let entry = entry.map_err(|why| why.to_string())?;
         let path = entry.path();
-        // `is_dir` follows links and `file_type` does not, which is the difference between
-        // walking a loop and noticing one.
+        // `file_type` does not follow links, so a link loop is not walked.
         let kind = entry.file_type().map_err(|why| why.to_string())?;
         if kind.is_dir() {
             gather(root, &path, depth + 1, found)?;
@@ -631,8 +555,7 @@ mod tests {
             "/user/home/PPSA02664/slot2/savedata.bin".to_owned(),
             b"second".to_vec(),
         );
-        // `gone.bin` is listed and cannot be fetched, which is the case a backup must not
-        // paper over.
+        // `gone.bin` is listed and cannot be fetched.
         Pretend { directories, files }
     }
 
@@ -667,10 +590,7 @@ mod tests {
         );
     }
 
-    /// **A backup that quietly missed a file is worse than no backup.**
-    ///
-    /// One file cannot be fetched, one line could not be read, and one entry is a link. All
-    /// three are in the summary, and the backup is not called complete.
+    /// An unfetchable file, an unreadable line and a link are all named in the summary.
     #[test]
     fn everything_not_copied_is_named() {
         let into = scratch("skipped");
@@ -697,9 +617,6 @@ mod tests {
     }
 
     /// One unreadable file does not end the backup.
-    ///
-    /// A walk that stops at the first failure has saved nothing, and the thing it failed on
-    /// is usually the least important file in the folder.
     #[test]
     fn one_unreadable_file_does_not_abandon_the_rest() {
         let into = scratch("continues");
@@ -714,11 +631,11 @@ mod tests {
         assert_eq!(summary.files, 2, "it stopped early");
     }
 
-    /// A link that points at its own parent would otherwise run until the disk filled.
+    /// A self-similar tree stops at the depth bound and says why.
     #[test]
     fn a_loop_cannot_run_away() {
         let mut directories = BTreeMap::new();
-        // Every level contains another level with the same shape, for ever.
+        // Every level contains another level with the same shape.
         for depth in 0..=(DEEPEST + 4) {
             let here = format!("/loop{}", "/down".repeat(depth));
             directories.insert(here, vec![entry("down", Kind::Directory)]);
@@ -740,8 +657,7 @@ mod tests {
         );
     }
 
-    /// **Progress arrives as it happens**, so a window can show which file is going across
-    /// rather than a clock that says only that time is passing.
+    /// Progress is reported once per file, naming it.
     #[test]
     fn progress_is_reported_file_by_file() {
         let into = scratch("progress");
@@ -770,23 +686,14 @@ mod tests {
         );
     }
 
-    /// A directory that cannot be listed at all is the one failure worth refusing on: there
-    /// is no backup to be partially complete.
+    /// A top directory that cannot be listed is an error.
     #[test]
     fn a_top_that_cannot_be_listed_is_an_error() {
         let into = scratch("nothing");
         assert!(download(&mut a_save(), "/nowhere", &into, &mut |_| {}, &|| false).is_err());
     }
 
-    /// **A listing full of path steps copies nothing and escapes nowhere.**
-    ///
-    /// This is the bug that made the rule: asking to back up one small directory walked into
-    /// `.` until the depth bound stopped it and climbed out through `..` into the rest of the
-    /// target. It never errored. It copied, steadily, with a progress line indistinguishable
-    /// from a large folder taking a while.
-    ///
-    /// The transport now drops `.` and `..` before anything sees them; this checks the second
-    /// line, where a name that steers a path is refused even if one arrives.
+    /// Listing entries that are path steps are skipped and recorded, never followed.
     #[test]
     fn a_listing_that_points_at_itself_or_upwards_is_not_followed() {
         let mut directories = BTreeMap::new();
@@ -825,11 +732,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&into);
     }
 
-    /// **Asking it to stop stops it, and the summary says so.**
-    ///
-    /// The failure this guards against is not that a stop is ignored - that is visible. It is
-    /// a stop that works and returns a summary indistinguishable from a completed backup,
-    /// which would be trusted later at exactly the moment it matters.
+    /// A stopped copy says it was stopped and is not complete.
     #[test]
     fn a_copy_that_was_stopped_says_it_was_stopped() {
         let into = scratch("stopped");
@@ -838,8 +741,6 @@ mod tests {
             "/user/home/PPSA02664",
             &into,
             &mut |_| {},
-            // Stopped from the very first check, which is the strongest form: nothing at all
-            // should be copied, and nothing should be quietly reported as complete.
             &|| true,
         )
         .expect("it returns rather than failing");
@@ -859,20 +760,13 @@ mod tests {
         );
     }
 
-    /// **A store the server accepts but does not keep is not a file copied.**
-    ///
-    /// The reported bug: `pros restore` printed success while the on-console `eboot.bin` kept its
-    /// old size. The target acknowledged every `STOR` and replaced nothing - the title was
-    /// mounted - and a restore that trusts the reply reports a backup that is not one. Now the
-    /// size is read back after each store and a mismatch is recorded as not-copied, so the
-    /// summary is incomplete and the caller fails rather than claiming success.
+    /// A store the target acknowledges but does not keep is not counted as copied.
     #[test]
     fn a_store_the_target_did_not_keep_is_not_counted_as_copied() {
         use pros_link::fake::{Behaviour, Fake, Store};
         use pros_link::files::Session;
 
-        // The target already holds an eboot of a different size and swallows every write, so a
-        // STOR is acknowledged and the old bytes stay - exactly the mounted-title case.
+        // A different-sized eboot and a target that swallows writes: the mounted-title case.
         let contents = Store::new(&[(
             "/data/homebrew/MESA00001/eboot.bin",
             b"the old, larger eboot that will not be replaced",
@@ -921,20 +815,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&from);
     }
 
-    /// **A SELF container the target unwraps is not called incomplete.** The console's VFS hook
-    /// unwraps a fake-signed SELF on access, so `SIZE` reports the decrypted payload - a size that
-    /// legitimately differs from the container that was sent. A restore of one must still report
-    /// complete, because the file is there and its prefix says the target will have changed its
-    /// size (oops-mesa REQ-20260917T1500Z-3e57). Modelled with a target that reports a different
-    /// size for the path than was sent, and a sent file carrying the SELF magic SELFish knows.
+    /// A SELF container whose size changes on the target still counts as copied.
     #[test]
     fn a_self_container_the_target_unwraps_is_not_called_incomplete() {
         use pros_link::fake::{Behaviour, Fake, Store};
         use pros_link::files::Session;
 
-        // The target already holds a different-sized file at the path and swallows the write, so
-        // `SIZE` reports that different size afterwards - which is what an unwrap looks like from
-        // here: the bytes on the target are not the bytes that were sent.
+        // A different-sized file at the path and a swallowed write model an unwrap: `SIZE`
+        // afterwards differs from what was sent.
         let contents = Store::new(&[("/data/homebrew/MESA00001/libc.prx", &[0_u8; 200])]);
         let fake = Fake::start(Behaviour::Files {
             contents,
@@ -944,8 +832,7 @@ mod tests {
         })
         .expect("the fake binds");
 
-        // A file that begins with the SELF container magic SELFish defines, so the transfer knows
-        // the target will unwrap it and must not compare its size.
+        // Begins with the SELF container magic, so its size is not compared.
         let mut wrapped = selfish_abi::Generation::Prospero.container_magic().to_vec();
         wrapped.extend_from_slice(b"a fake-signed SELF, smaller than its unwrapped payload");
         let from = scratch("self-unwrapped");
@@ -974,10 +861,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&from);
     }
 
-    /// **A SELF container that did not land at all is still caught.** Skipping the size *value*
-    /// for a container is not skipping the check: presence is still required. A store the target
-    /// acknowledged and kept nothing - no file at the path afterwards - is not-copied, so the SELF
-    /// exemption cannot be used to wave through a transfer that vanished.
+    /// A SELF container that did not land at all is not counted as copied.
     #[test]
     fn a_self_container_that_did_not_land_at_all_is_still_caught() {
         use pros_link::fake::{Behaviour, Fake, Store};
@@ -1041,18 +925,13 @@ mod tests {
         from
     }
 
-    /// **An unchanged file already on the target is not sent again.**
-    ///
-    /// The reported cost: restoring a large title re-sent every file even where nothing had
-    /// changed. With a record of what verified landing and the file still present, the store is
-    /// skipped - proven here by leaving different bytes on the target and showing they are
-    /// untouched, so the skip is the ledger's decision and not a store that happened to match.
+    /// A recorded, present, unchanged file is not sent again.
     #[test]
     fn an_unchanged_file_is_not_resent() {
         use pros_link::files::Session;
 
         let path = "/data/homebrew/MESA00001/thing.bin";
-        // Different bytes on the target on purpose: a skip must not overwrite them.
+        // Different bytes on the target, so an untouched file proves no store happened.
         let (fake, contents) = a_target(&[(path, b"what is already on the target")]);
         let local = b"the local bytes, already verified landed last time";
         let from = a_source("unchanged", "thing.bin", local);
@@ -1088,8 +967,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&from);
     }
 
-    /// **A changed local file is sent even where the ledger knows the path.** The digest is of the
-    /// bytes, so a record from a previous build does not match a rebuilt file, and it goes across.
+    /// A changed local file is sent even where the ledger knows the path.
     #[test]
     fn a_changed_local_file_is_resent() {
         use pros_link::files::Session;
@@ -1130,23 +1008,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&from);
     }
 
-    /// **A file the ledger knows but the target no longer has is sent again.**
-    ///
-    /// The presence half of the check. A record is not a promise the file is still there - a crash
-    /// or a wipe can remove it while the local source is unchanged - so a matching digest alone
-    /// does not skip; the target must still report it present.
+    /// A file the ledger knows but the target no longer has is sent again.
     #[test]
     fn a_recorded_file_the_target_no_longer_has_is_resent() {
         use pros_link::files::Session;
 
         let path = "/data/homebrew/MESA00001/eboot.bin";
-        // The target holds nothing, so SIZE finds no file.
+        // The target holds nothing, so the listing does not name the file.
         let (fake, contents) = a_target(&[]);
         let local = b"back again after a wipe";
         let from = a_source("lost", "eboot.bin", local);
 
-        // The ledger records exactly the current local bytes - the digest matches - but the file
-        // is gone from the target.
+        // The digest matches the local bytes, but the file is gone from the target.
         let mut known = Ledger::default();
         known.record(path, &Checksum::of(local).to_string());
 
@@ -1176,8 +1049,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&from);
     }
 
-    /// **`--all` ignores the ledger and sends everything.** The escape hatch for when the record
-    /// cannot be trusted: even a file recorded landed and still present goes across again.
+    /// `Resend::Everything` ignores the ledger and sends even an unchanged file.
     #[test]
     fn everything_mode_sends_even_an_unchanged_file() {
         use pros_link::files::Session;
@@ -1187,8 +1059,7 @@ mod tests {
         let local = b"send me regardless";
         let from = a_source("forced", "thing.bin", local);
 
-        // The ledger records exactly these local bytes, and the file is present - OnlyChanged
-        // would skip it. Everything must not.
+        // Recorded and present, so `OnlyChanged` would skip it.
         let mut known = Ledger::default();
         known.record(path, &Checksum::of(local).to_string());
 

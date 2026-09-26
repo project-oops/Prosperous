@@ -1,21 +1,14 @@
 //! What this crate does against a target that is not one.
 //!
-//! Every test here is about an awkwardness rather than a happy path, because the happy
-//! paths are three lines each and the awkwardness is the interface: a stream with no end,
-//! a server with no framing, a loader that may not answer.
-//!
-//! What none of this establishes is whether a real target agrees. That needs target,
-//! and the difference between the two kinds of evidence should stay visible.
+//! The tests cover the awkward parts of the interface: a stream with no end, a server with
+//! no framing, a loader that may not answer. Agreement with a real target is not shown here.
 
 use std::time::{Duration, Instant};
 
 use pros_link::fake::{Behaviour, Fake};
 use pros_link::{Error, Shape, log, service, shell};
 
-/// A log that never ends is read for a window and then let go.
-///
-/// The failure this pins: waiting for an EOF that is never coming, which reads as a hang
-/// rather than as a bug.
+/// A log that never ends is read for a window, not until an EOF that never comes.
 #[test]
 fn a_stream_with_no_end_is_read_for_a_window_and_no_longer() {
     let fake =
@@ -35,9 +28,6 @@ fn a_stream_with_no_end_is_read_for_a_window_and_no_longer() {
 }
 
 /// A quiet log is a result, not a failure.
-///
-/// A target with nothing to say has told you something, and turning that into an error
-/// would make silence look like a broken tool.
 #[test]
 fn a_quiet_stream_answers_with_nothing_rather_than_failing() {
     let fake = Fake::start(Behaviour::Silent).expect("the fake binds");
@@ -58,10 +48,7 @@ fn a_server_with_no_framing_is_read_until_it_goes_quiet() {
     assert!(got.contains("total 0"), "the reply did not arrive: {got:?}");
 }
 
-/// The banner is drained before the command is typed.
-///
-/// Otherwise the command lands in the middle of the greeting and the reply contains both,
-/// which is the shape of bug that looks like the server being strange.
+/// The banner is drained before the command is typed, so it is not in the answer.
 #[test]
 fn the_banner_does_not_end_up_in_the_answer() {
     let fake = Fake::start(Behaviour::Shell {
@@ -81,7 +68,7 @@ fn the_banner_does_not_end_up_in_the_answer() {
 /// A port that nothing is listening on refuses, and says which port.
 #[test]
 fn a_closed_port_is_a_refusal_naming_the_port() {
-    // Bound and dropped, so the port is almost certainly free and certainly not ours.
+    // Bound and dropped, so the port is almost certainly free.
     let port = {
         let fake = Fake::start(Behaviour::Silent).expect("the fake binds");
         fake.port()
@@ -98,7 +85,7 @@ fn a_closed_port_is_a_refusal_naming_the_port() {
     );
 }
 
-/// A probe carries how long the answer took, because the two kinds of no differ.
+/// A probe carries how long the answer took.
 #[test]
 fn a_probe_reports_its_own_duration() {
     let fake = Fake::start(Behaviour::Silent).expect("the fake binds");
@@ -112,8 +99,6 @@ fn a_probe_reports_its_own_duration() {
 }
 
 /// An address that resolves to nothing is a different answer from a refusal.
-///
-/// Retrying fixes neither, but only one of them is a typo somebody can correct.
 #[test]
 fn an_unresolvable_address_is_not_a_refusal() {
     let error = log::read(
@@ -128,17 +113,13 @@ fn an_unresolvable_address_is_not_a_refusal() {
 }
 
 /// The guard refuses a vendor module before opening a connection.
-///
-/// This is the whole reason the crate reads an ELF header at all: the loader accepts this
-/// file, maps it, and dies without printing anything.
 #[test]
 fn a_vendor_module_is_refused_before_anything_is_sent() {
     let mut module = vec![0_u8; 64];
     module[..4].copy_from_slice(&[0x7f, 0x45, 0x4c, 0x46]);
     module[0x10..0x12].copy_from_slice(&0xFE10_u16.to_le_bytes());
 
-    // A host that cannot resolve: if the guard were checked after connecting, this would
-    // fail with an address error instead, and that difference is the assertion.
+    // An unresolvable host: a guard checked after connecting would give an address error.
     let error = pros_link::loader::send(
         &pros_link::Link::to("no-such-host.invalid"),
         &module,
@@ -159,10 +140,7 @@ fn a_vendor_module_is_refused_before_anything_is_sent() {
     }
 }
 
-/// A payload that says nothing is not an error.
-///
-/// The loader duplicates its socket onto the payload output, but a payload started any
-/// other way has no such socket - so a send that hears nothing back has still worked.
+/// A send that hears nothing back from the payload has still succeeded.
 #[test]
 fn a_payload_that_never_answers_is_still_a_successful_send() {
     let fake = Fake::start(Behaviour::Accepts {

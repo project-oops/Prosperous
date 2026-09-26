@@ -1,28 +1,14 @@
 //! What the target loads when it comes back.
 //!
-//! # Why this is worth reading at all
+//! A check says what is answering now; the payload manager's boot list says what will answer
+//! after the next power cycle. A service missing after a reboot is most often one that was
+//! never in the list, so a report that a service is not loaded also says whether it is listed.
 //!
-//! A check says what is answering **now**. It does not say what will be answering after the
-//! next power cycle, and those are different questions with the same-looking answer.
-//!
-//! The payload manager loads a list, in order, from a file somebody edited. That file is the
-//! reason a service is missing far more often than anything going wrong is: it was never in
-//! the list. A tool that reports *klogsrv is not loaded* without being able to add *and it
-//! is not in the boot list either* has left the useful half of the finding out.
-//!
-//! # The path here is measured, unlike the repository's
-//!
-//! `/data/pldmgr/autoload.txt`, measured against a target on 2026-08-25 along
-//! with the order it produced. That is why it is a constant here while the repository's path
-//! is a parameter the caller supplies - one was seen, the other was reasoned about, and the
-//! difference between those is the whole grading discipline of the sibling projects. (D007)
+//! The list's path was measured on a target, so it is a constant here.
 
 use pros_link::files;
 
-/// Where the payload manager keeps its boot list.
-///
-/// **Confirmed against a target on 2026-08-26**, which is the difference between this and
-/// every other path in this project.
+/// Where the payload manager keeps its boot list, as measured on a target.
 pub const PATH: &str = "/data/pldmgr/autoload.txt";
 
 /// The payloads a target loads at boot, in the order it loads them.
@@ -43,14 +29,10 @@ impl Chain {
                 .lines()
                 .map(str::trim)
                 .filter(|line| !line.is_empty() && !line.starts_with('#'))
-                // **`!` lines are instructions to the manager, not payloads.** A real list
-                // interleaves `!3000` between entries - a wait, by every appearance - and
-                // reading those as payloads put six of them in a boot order of twelve. Found
-                // by asking a target rather than by thinking about it.
+                // `!` lines are instructions to the manager (a real list interleaves `!3000`
+                // between entries), not payloads.
                 .filter(|line| !line.starts_with('!'))
                 // The list names files; the manifest and the service table name payloads.
-                // Comparing them means dropping the extension, which is the only translation
-                // this does and is worth being explicit about.
                 .map(|line| bare_name(line).to_owned())
                 .collect(),
         }
@@ -60,30 +42,19 @@ impl Chain {
     ///
     /// # Errors
     ///
-    /// Propagates the transfer. **A chain that could not be read is not an empty chain**, so
-    /// this reports the failure rather than answering with nothing - the caller turns that
-    /// into *unknown*, which is a different column from *not in the list*.
+    /// Propagates the transfer. A chain that could not be read is not an empty chain; the
+    /// caller reports it as unknown, which differs from not in the list.
     pub fn read(link: &pros_link::Link) -> pros_link::Result<Self> {
         let bytes = files::retrieve(link, PATH)?;
         Ok(Self::parse(&String::from_utf8_lossy(&bytes)))
     }
 
     /// Where a payload appears in the list, if it does.
-    /// # Why this is not an equality test
     ///
-    /// A real list carries `elfldr_v0`, `kstuff-lite_v1` and `ps5upload-4`. Those are the
-    /// same payloads as `elfldr`, `kstuff-lite` and `ps5upload` with a version stuck on the
-    /// end, and an equality test reported every one of them as **absent from a list they
-    /// were plainly in** - which is exactly the wrong answer, because it says a service will
-    /// not come back after a reboot when it will.
-    ///
-    /// So a name matches when it is the whole entry, or when what follows it is a
-    /// **separator and then a version**.
-    ///
-    /// That last part is not fussiness. A first attempt accepted any separator, and on a
-    /// real target `kstuff` then matched `kstuff-lite_v1` - two different payloads, one
-    /// reported as the other, in the column that says what comes back after a reboot. A
-    /// version looks like a version: a digit, or a `v` and a digit.
+    /// A real list carries versioned names such as `elfldr_v0` and `kstuff-lite_v1`, so a name
+    /// matches the whole entry, or the entry's start followed by `_` or `-` and something
+    /// version-shaped (a digit, or `v` and a digit). Requiring the version keeps `kstuff` from
+    /// matching `kstuff-lite_v1`, which is a different payload.
     #[must_use]
     pub fn position(&self, name: &str) -> Option<usize> {
         let wanted = bare_name(name);
@@ -128,28 +99,10 @@ fn is_version(tail: &str) -> bool {
 
 /// A file name without its directory or extension.
 ///
-/// # The last dot, not the first
-///
-/// This split on the **first** dot, and every versioned filename in the wild has dots in its
-/// version. So `pldmgr_v0.5.1.elf` became `pldmgr_v0`, and - worse - `ftpsrv_v0.21.elf` and
-/// `ftpsrv_v0.21.1.elf` both became `ftpsrv_v0` and were **the same payload** as far as
-/// anything here could tell.
-///
-/// That was not cosmetic. A list entry naming the internal `ftpsrv_v0.21` matched a copy of a
-/// different build on a USB stick, was judged unreachable because of where that copy was, and
-/// was **removed from somebody's startup list** as dead weight. Two builds of one payload have
-/// to be distinguishable or every judgement about either is a coin toss.
-///
-/// Lookups by service name still work: `elfldr` against `elfldr_v0.24` matches on the name plus
-/// a separator plus something version-shaped, which is a different rule and is applied after
-/// this one.
-/// # A known extension, not "whatever follows a dot"
-///
-/// Splitting at *any* dot is what caused all of the above, and splitting at the **last** one
-/// only moves the problem: this is applied to the thing being looked for as well as to the
-/// list, so `ftpsrv_v0.21` searched for as a whole name would lose its `.21` and match
-/// nothing. The extensions are known - the manager accepts `.elf` and `.bin`, measured in its
-/// own source - so those are what comes off, and a name that has neither is already bare.
+/// Only the known extensions `.elf` and `.bin` come off (the ones the manager accepts, from
+/// its source), never whatever follows a dot: versions contain dots, and `ftpsrv_v0.21.elf`
+/// and `ftpsrv_v0.21.1.elf` must stay two different builds. The same rule applies to the
+/// name being looked for, so `ftpsrv_v0.21` keeps its `.21`.
 fn bare_name(line: &str) -> &str {
     let file = line.rsplit(['/', '\\']).next().unwrap_or(line);
     for extension in [".elf", ".bin"] {
@@ -177,7 +130,7 @@ mod tests {
                             klogsrv.elf\n\
                             /data/payloads/shsrv.elf\n";
 
-    /// The list is an order, and the order is the point: what loads before what.
+    /// The list keeps its order: what loads before what.
     #[test]
     fn the_list_keeps_its_order() {
         let chain = Chain::parse(AUTOLOAD);
@@ -189,10 +142,7 @@ mod tests {
         );
     }
 
-    /// The list a real target had on 2026-08-26, verbatim.
-    ///
-    /// Kept as it was found. Every rule below is here because this text broke the version
-    /// that was written without it.
+    /// A boot list read verbatim from a target.
     const REAL: &str = "!3000
                         kstuff-lite_v1
                         !3000
@@ -207,10 +157,7 @@ mod tests {
                         ftpsrv_v0
 ";
 
-    /// **A line beginning `!` is an instruction to the manager, not a payload.**
-    ///
-    /// Reading them as payloads made a boot order of six into one of twelve, with every
-    /// real position doubled.
+    /// A line beginning `!` is an instruction to the manager, not a payload.
     #[test]
     fn a_directive_is_not_a_payload() {
         let chain = Chain::parse(REAL);
@@ -221,10 +168,7 @@ mod tests {
         );
     }
 
-    /// **A version suffix does not make it a different payload.**
-    ///
-    /// The list says `elfldr_v0`. An equality test called that absent, which would have told
-    /// somebody their loader will not come back after a reboot when it plainly will.
+    /// A version suffix does not make it a different payload.
     #[test]
     fn a_version_suffix_still_matches_the_payload() {
         let chain = Chain::parse(REAL);
@@ -234,11 +178,7 @@ mod tests {
         assert_eq!(chain.position("ftpsrv"), Some(5));
     }
 
-    /// **Two payloads whose names share a prefix are two payloads.**
-    ///
-    /// A real target lists `kstuff-lite_v1` and its repository describes both `kstuff` and
-    /// `kstuff-lite`. Accepting any separator made `kstuff` match, which reported one
-    /// payload as another in the column that says what survives a reboot.
+    /// Two payloads whose names share a prefix are two payloads.
     #[test]
     fn a_name_that_is_the_start_of_another_name_does_not_match_it() {
         let chain = Chain::parse(REAL);
@@ -262,23 +202,20 @@ ftpsrvng
         assert_eq!(chain.position("ftpsrv"), None);
     }
 
-    /// This target runs a shell that is not in its boot list, which is the case the boot
-    /// column exists for: **there until the target is turned off.**
+    /// A running service can be absent from the boot list, so it is gone after a power cycle.
     #[test]
     fn a_service_can_be_running_and_absent_from_the_real_list() {
         assert_eq!(Chain::parse(REAL).position("shsrv"), None);
         assert_eq!(Chain::parse(REAL).position("klogsrv"), None);
     }
 
-    /// A payload not in the list is absent from it, which is a real finding: it explains why
-    /// a service will still be missing after the next reboot.
+    /// A payload not in the list is reported absent from it.
     #[test]
     fn a_payload_not_in_the_list_is_absent_from_it() {
         assert_eq!(Chain::parse(AUTOLOAD).position("ftpsrv"), None);
     }
 
-    /// The list names files and everything else names payloads, so the comparison drops the
-    /// extension and any directory - and does it in one place.
+    /// A directory and an extension are not part of the name.
     #[test]
     fn a_path_and_an_extension_are_not_part_of_the_name() {
         let chain = Chain::parse(AUTOLOAD);
@@ -298,12 +235,7 @@ ftpsrvng
 mod versioned_names {
     use super::Chain;
 
-    /// **Two builds of one payload are two different entries.**
-    ///
-    /// They were not: splitting a filename at its first dot made `ftpsrv_v0.21.elf` and
-    /// `ftpsrv_v0.21.1.elf` identical, so a list entry naming the internal one matched a
-    /// different build sitting on a USB stick - and was removed from a real startup list as
-    /// dead weight because of where that other copy happened to be.
+    /// Two builds of one payload are two different entries.
     #[test]
     fn two_builds_of_one_payload_are_not_the_same_entry() {
         let chain = Chain::parse("ftpsrv_v0.21.elf\n");
@@ -318,7 +250,7 @@ mod versioned_names {
         );
     }
 
-    /// A whole version survives, so anything reporting an entry names it in full.
+    /// A version with dots in it is kept whole.
     #[test]
     fn a_version_with_dots_in_it_is_kept_whole() {
         assert_eq!(
@@ -333,8 +265,7 @@ mod versioned_names {
         assert_eq!(Chain::parse("etaHEN_2.5B.bin").order(), ["etaHEN_2.5B"]);
     }
 
-    /// Looking a service up by its bare name still works, which is the rule that made the
-    /// truncation survive unnoticed for so long.
+    /// A service is found by its bare name under a versioned filename.
     #[test]
     fn a_service_is_still_found_under_its_versioned_filename() {
         let chain = Chain::parse(
@@ -346,7 +277,7 @@ mod versioned_names {
         assert_eq!(chain.position("shsrv"), None);
     }
 
-    /// **And a different build does not answer to another build's full name.**
+    /// One build does not answer to another build's full name.
     #[test]
     fn one_build_does_not_match_another_by_full_name() {
         let chain = Chain::parse("ftpsrv_v0.21.1.elf\n");
@@ -360,26 +291,17 @@ pub const DEVICE: &str = "{device}";
 
 /// The placeholder for a USB stick, and only a stick.
 ///
-/// **Not the same set, and the difference is measured.** The autoloader composes its search
-/// from `USB_BASES[]` - `/mnt/usb0` through `/mnt/usb7` - and nothing else; `/mnt/ext0` and
-/// `/mnt/ext1` are not in it. A chain that said `{device}` there would put two paths on the
-/// screen that the autoloader will never read, which is the shape of every wrong answer this
-/// project keeps finding: a plausible path somebody will believe.
+/// The autoloader searches `USB_BASES[]` (`/mnt/usb0` to `/mnt/usb7`) and not `/mnt/ext0` or
+/// `/mnt/ext1`, so `{device}` there would offer paths the autoloader never reads.
 pub const USB: &str = "{usb}";
 
 /// A startup list a target may have, and what may be done with it.
 ///
-/// # Why there is more than one, and why they are not interchangeable
-///
-/// The manager keeps a list at a **compile-time constant** path, so that one cannot move. The
-/// autoloader that runs before it looks for its own list in several places - a stick first,
-/// then the internal drive - and that list is the one that decides whether the manager runs at
-/// all.
-///
-/// They are audited by different rules. The loader is **kept out** of an autoloader's list (the
-/// autoloader loads it itself) and belongs **last** in the manager's own; the manager is the
-/// mirror - required in the autoloader's list, which starts it, and **impossible** in its own.
-/// So which list is being looked at is not a detail.
+/// The manager's list sits at a compile-time constant path. The autoloader that runs before
+/// it looks for its own list in several places, a stick first, then the internal drive, and
+/// that list decides whether the manager runs at all. The audit rules invert between them:
+/// the loader is kept out of an autoloader's list and belongs last in the manager's; the
+/// manager is required in an autoloader's list and impossible in its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Held {
     /// What to call it.
@@ -388,9 +310,8 @@ pub struct Held {
     pub path: String,
     /// Whether this program will write to it.
     ///
-    /// **Only the internal one.** A list on removable storage is somebody's way back in when
-    /// the internal setup is broken; a tool that can damage the recovery path is worse than one
-    /// that only reads it.
+    /// Only the internal one: a list on removable storage is the recovery path when the
+    /// internal setup is broken, and is only read.
     pub editable: bool,
     /// Whether it is the manager's own list or an autoloader's.
     pub autoloader: bool,
@@ -398,20 +319,11 @@ pub struct Held {
 
 /// Every startup list the loaded chains know about.
 ///
-/// # Why this is read rather than declared
+/// The union of the lists the loaded chains declare, so a path is here because a chain file
+/// says so and can be changed without rebuilding. If none is declared, the manager's measured
+/// [`PATH`] remains.
 ///
-/// It was a constant: four paths, chosen by whoever wrote them, unchangeable by the person
-/// holding the console. Two of them were disputed and there was no way to settle the dispute
-/// except by editing this file and rebuilding - which is the wrong shape for a fact about
-/// somebody else's program that somebody else may change next month.
-///
-/// So a chain says where its lists are, and this is the union of what the loaded chains say.
-/// A path is on this list because a file said so.
-///
-/// # Reading this costs a file read
-///
-/// It parses the chains, including somebody's own file. Call it once and keep the answer; the
-/// window does, because doing it per frame would read a file from disk to draw a menu.
+/// This parses the chains, including the user's own file; call it once and keep the answer.
 #[must_use]
 pub fn lists() -> Vec<Held> {
     let mut found: Vec<Held> = Vec::new();
@@ -419,9 +331,7 @@ pub fn lists() -> Vec<Held> {
         for one in preset.lists {
             for at in &one.at {
                 for (path, label) in spread(at, &one.label) {
-                    // **By path, because two chains naming the same file mean one list.** The
-                    // manager's own list is in every chain that runs the manager, and a chooser
-                    // offering it three times is three ways to open one file.
+                    // By path: two chains naming the same file mean one list.
                     if found.iter().any(|kept| kept.path == path) {
                         continue;
                     }
@@ -435,9 +345,7 @@ pub fn lists() -> Vec<Held> {
             }
         }
     }
-    // **Never nothing.** A chains file somebody has emptied, or one that failed to parse, would
-    // otherwise leave the screen with no list to look at and no way to say why. The manager's
-    // path is the one this project has measured, so it is what remains.
+    // Never empty: an emptied or unparseable chains file still leaves the measured manager list.
     if found.is_empty() {
         found.push(Held {
             label: "manager (internal)".to_owned(),
@@ -453,19 +361,10 @@ pub fn lists() -> Vec<Held> {
 /// label.
 ///
 /// The declared [`crate::recovery::baseline::Capture`] paths, with `{device}` / `{usb}` expanded
-/// over a target's removable mounts the same way a list's places are - so a file declared once on
-/// "any stick" becomes the eight paths a stick can be at, each labelled, and a placeholder never
-/// reaches a caller as itself. Deduplicated by path, because two chains naming the same settings
-/// file mean one file to read.
+/// over a target's removable mounts as a list's places are, and deduplicated by path. A pair
+/// rather than a [`Held`], because a captured file is not a startup list.
 ///
-/// **A pair, not a [`Held`].** A captured file is read and written back; it is not a startup list
-/// and has no autoloader/manager kind or recovery-path caution, so it borrows none of that
-/// structure. The path is where to read and write; the label is for the person reviewing it.
-///
-/// # Reading this costs a file read
-///
-/// Like [`lists`], it parses the chains including somebody's own file; call it once and keep the
-/// answer rather than asking per frame.
+/// This parses the chains, including the user's own file; call it once and keep the answer.
 #[must_use]
 pub fn capture_spots() -> Vec<(String, String)> {
     let mut found: Vec<(String, String)> = Vec::new();
@@ -484,9 +383,8 @@ pub fn capture_spots() -> Vec<(String, String)> {
 
 /// One declared place, as the paths it actually means.
 ///
-/// A path naming [`DEVICE`] is every removable device a target can have; anything else is
-/// itself. The label gains the device's name, so eight sticks read as eight entries rather than
-/// as one repeated.
+/// A path naming [`DEVICE`] is every removable device a target can have, [`USB`] every stick;
+/// anything else is itself. The label gains the device's name.
 fn spread(at: &str, label: &str) -> Vec<(String, String)> {
     let (mark, sticks_only) = if at.contains(USB) {
         (USB, true)
@@ -512,10 +410,7 @@ fn spread(at: &str, label: &str) -> Vec<(String, String)> {
 mod lists {
     use super::{DEVICE, PATH, USB, lists};
 
-    /// **Only the internal list is written to.** A list on a stick is the way back in when the
-    /// internal setup is broken, and a tool that can damage the recovery path is worse than one
-    /// that only reads it. `editable` defaults to off, so this holds for a chain somebody adds
-    /// without having read about the field.
+    /// Nothing on removable storage is editable.
     #[test]
     fn nothing_on_removable_storage_is_editable() {
         for held in lists() {
@@ -525,7 +420,7 @@ mod lists {
         }
     }
 
-    /// The manager's own list is the editable one, and it is the path the manager compiles in.
+    /// The manager's own list is the only editable one.
     #[test]
     fn the_managers_list_is_the_one_that_can_be_edited() {
         let editable: Vec<String> = lists()
@@ -536,8 +431,7 @@ mod lists {
         assert_eq!(editable, [PATH.to_owned()]);
     }
 
-    /// **Which kind each is, because the rules invert.** The loader is required in an
-    /// autoloader's list and impossible in the manager's.
+    /// Each list says whether it is the manager's or an autoloader's.
     #[test]
     fn each_list_says_which_kind_it_is() {
         let all = lists();
@@ -549,11 +443,7 @@ mod lists {
         );
     }
 
-    /// **A device placeholder becomes every device, and never reaches the screen as itself.**
-    ///
-    /// A path still carrying `{device}` would be offered as a directory nothing can read, and
-    /// the failure would look like a target that has no such file rather than like a chain this
-    /// program failed to expand.
+    /// A device placeholder expands to every device and never reaches the chooser as itself.
     #[test]
     fn a_removable_list_is_offered_once_per_device() {
         let all = lists();
@@ -570,11 +460,7 @@ mod lists {
         }
     }
 
-    /// **A stick placeholder does not become an external drive.**
-    ///
-    /// The autoloader searches `USB_BASES[]` - eight sticks - and `/data`. `/mnt/ext0` is not
-    /// in that list, so a chain writing `{usb}` must not produce one: a path on screen that
-    /// nothing will ever read is worse than no path, because somebody will put a file there.
+    /// A stick placeholder never expands to an external drive.
     #[test]
     fn a_stick_placeholder_stays_on_sticks() {
         let stuck: Vec<String> = lists()
@@ -589,9 +475,7 @@ mod lists {
         assert!(stuck.iter().any(|path| path.starts_with("/mnt/usb7")));
     }
 
-    /// **One file is one entry**, however many chains name it. The manager's own list is in
-    /// every chain that runs the manager, and three ways to open one file is a chooser that
-    /// makes somebody wonder which one they are looking at.
+    /// A path that several chains name is offered once.
     #[test]
     fn a_path_two_chains_share_is_offered_once() {
         let all = lists();
@@ -602,9 +486,7 @@ mod lists {
         assert_eq!(paths, once, "a path is offered twice");
     }
 
-    /// **The declared capture paths reach a caller as real paths, deduplicated.** The set is
-    /// read from the tracked chain file, not from a constant, and what ships names the manager's
-    /// settings - the file `export chain` copies and a deploy puts back.
+    /// The shipped capture paths, including the manager's settings, arrive expanded and once.
     #[test]
     fn the_declared_capture_paths_are_offered() {
         let spots = super::capture_spots();

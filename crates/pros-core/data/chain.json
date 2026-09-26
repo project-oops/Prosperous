@@ -55,7 +55,7 @@
     "",
     "IT SEARCHES USB STICKS ONLY. /mnt/ext0 and /mnt/ext1 are not in USB_BASES, so `{usb}` is the placeholder here rather than `{device}` - offering a path on an external drive would be offering a file nothing will ever read.",
     "",
-    "A TITLE-ID CONFIG WINS OVER ALL OF THESE. The same function looks first for <base>/ps5_autoloader_<TITLEID>/autoload.txt, where the id is whichever application was the entry point. That is not listed here because this program does not know which application launched the jailbreak; add the path yourself if you use one.",
+    "A TITLE-ID CONFIG WINS OVER ALL OF THESE. The same function looks first for <base>/ps5_autoloader_<TITLEID>/autoload.txt, where the id is whichever application was the entry point. That is not listed here because this program does not know which application was the entry point; add the path yourself if you use one.",
     "",
     "WITH NO CONFIG AT ALL, PAYLOAD MANAGER STARTS ANYWAY. From y2jb's README: \"If no autoload.txt config is found, the autoloader will automatically launch Payload Manager\", and \"When an autoload.txt config is found, Payload Manager is not launched automatically.\" So a list that exists and does not name the manager is the one dangerous case, and it is the case this program audits.",
     "",
@@ -238,8 +238,8 @@
         {
           "name": "etaHEN",
           "order": 10,
-          "why": "brings up the jailbreak daemon and loads kstuff itself, then serves the loader on 9021 and starts FTP, the kernel log and the package installer. When it is present it is what establishes the environment everything else assumes, so nothing may precede it - and the payloads it already contains must not be listed again beside it.",
-          "unlocks": "run the jailbreak daemon, kernel patch and servers"
+          "why": "brings up its own resident daemon and loads kstuff itself, then serves the loader on 9021 and starts FTP, the kernel log and the package installer. When it is present it is what establishes the environment everything else assumes, so nothing may precede it - and the payloads it already contains must not be listed again beside it.",
+          "unlocks": "run the resident daemon, kernel patch and servers"
         },
         {
           "name": "ShadowMountPlus",

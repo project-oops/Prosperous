@@ -1,27 +1,10 @@
-//! Getting a payload, by asking something that already knows how.
+//! Getting a payload, by running a downloader the machine already has.
 //!
-//! # Why this is not an HTTP client
-//!
-//! Payload mirrors are served over a secured transport, so fetching from one means a
-//! security stack: certificate verification, a root store, a protocol implementation. That
-//! is a large dependency for a project that argues for each of the three it has, and it was
-//! the reason downloading stayed unbuilt.
-//!
-//! Every machine this runs on already has a program that does it. So this runs that, exactly
-//! as watching a stream runs a player that already decodes video - and for the same reason. The
-//! command is **a line of text in a file**, so a person whose machine names it differently
-//! changes one line rather than waiting for a release.
-//!
-//! # The download is not the interesting part
-//!
-//! **The verification is.** A payload arrives from a mirror somebody else controls and is
-//! then run with kernel-adjacent privileges. So nothing fetched is kept until its digest
-//! matches what the manifest says, and the check happens before the file reaches the place
-//! that only holds verified things.
-//!
-//! That is why this could be built the moment a target handed over a repository with real
-//! digests in it, and not before: **a download nobody can check is worse than no download**,
-//! because it looks the same as one that worked.
+//! Mirrors are served over TLS, and a TLS stack is a large dependency, so this runs an
+//! external command (`curl` by default) configured as one line in a file. A local build on
+//! this machine is tried before any address. Nothing fetched from a mirror is kept until its
+//! digest matches the manifest, and an entry with no checkable digest is refused before
+//! anything is downloaded.
 
 use std::path::{Path, PathBuf};
 
@@ -80,8 +63,7 @@ pub fn example() -> String {
 ///
 /// # Errors
 ///
-/// When there is nothing to run. Launching nothing quietly looks exactly like launching
-/// something that failed.
+/// When there is nothing to run.
 pub fn parts(template: &str, url: &str, into: &Path) -> Result<(String, Vec<String>), String> {
     let filled = template
         .replace("{url}", url)
@@ -97,19 +79,13 @@ pub fn parts(template: &str, url: &str, into: &Path) -> Result<(String, Vec<Stri
 ///
 /// # Errors
 ///
-/// [`NotFetched`] for anything that stops it arriving, and **[`NotFetched::NotStaged`] when
-/// it arrives and is not what the manifest says it is** - which is the case this whole
-/// module is arranged around. Nothing wrong is kept.
+/// [`NotFetched`] for anything that stops it arriving, and [`NotFetched::NotStaged`] when it
+/// arrives and is not what the manifest describes. Nothing wrong is kept.
 pub fn fetch(payload: &Payload) -> Result<PathBuf, NotFetched> {
     keep(payload, None)
 }
 
-/// The same, landing in a directory the caller names.
-///
-/// **So that a download appears where somebody is looking for it.** A window that shows a
-/// folder and offers to fill it must fill *that* folder; a file verified into a different
-/// directory is on disk, correct, and invisible, which is indistinguishable from the download
-/// never having run.
+/// The same, landing in a directory the caller names, such as the folder a window shows.
 ///
 /// # Errors
 ///
@@ -120,14 +96,14 @@ pub fn fetch_into(payload: &Payload, dir: &Path) -> Result<PathBuf, NotFetched> 
 
 /// Finds a local build for a payload on this machine, if one exists.
 ///
-/// Looks first at `source_local` (relative to the repository root), then checks conventional
-/// build and dist directories under sibling projects (e.g. `oops-apps/src/<name>/dist/<filename>`).
+/// Looks first at `source_local` (relative to the repository root), then at conventional
+/// build and dist directories under sibling projects (e.g.
+/// `oops-apps/src/<name>/dist/<filename>`).
 #[must_use]
 pub fn local_build(payload: &Payload) -> Option<PathBuf> {
     let filename = payload.filename.as_deref().unwrap_or(payload.name.as_str());
 
     for root in candidate_roots() {
-        // 1. If explicit relative source_local is specified, check against root.
         if let Some(explicit) = payload.source_local.as_deref() {
             let candidate = root.join(explicit);
             if candidate.is_file() {
@@ -135,7 +111,6 @@ pub fn local_build(payload: &Payload) -> Option<PathBuf> {
             }
         }
 
-        // 2. Conventional relative paths under oops-apps (src/ or root) or project root.
         let bare = filename.strip_suffix(".elf").unwrap_or(filename);
         let prospero_name = format!("{bare}-prospero.elf");
         let candidates = [
@@ -236,7 +211,7 @@ fn candidate_roots() -> Vec<PathBuf> {
         }
     }
 
-    // Deduplicate and prioritize roots that contain an `oops-apps` directory or `.git`
+    // Roots holding `oops-apps` or `.git` first, each root once.
     let mut prioritized = Vec::new();
     let mut others = Vec::new();
     for r in roots {
@@ -266,8 +241,8 @@ fn keep(payload: &Payload, dir: Option<&Path>) -> Result<PathBuf, NotFetched> {
         return Err(NotFetched::NoUrl);
     }
 
-    // Refused before anything is downloaded if remote-only. A local build on localhost
-    // can be staged even without an established remote checksum.
+    // Remote-only entries need a checkable digest before anything is downloaded; a local
+    // build can be staged without one.
     let has_local = sources.iter().any(|(w, _)| matches!(w, Where::Local(_)));
     if !has_local {
         let _ = payload.checksum().map_err(|why| {
@@ -285,7 +260,6 @@ fn keep(payload: &Payload, dir: Option<&Path>) -> Result<PathBuf, NotFetched> {
         })?;
     }
 
-    // Each address in turn, trying local build first (primary source), then remote addresses.
     let mut refused: Vec<String> = Vec::new();
     let mut got = None;
     for (which, target) in &sources {
@@ -327,9 +301,7 @@ fn keep(payload: &Payload, dir: Option<&Path>) -> Result<PathBuf, NotFetched> {
 
 /// Where a download lands before it has been checked.
 ///
-/// Beside the staging directory rather than inside it: **that directory's whole promise is
-/// that everything in it was verified**, and an unchecked file sitting in it for the length
-/// of a download is that promise being false for a while.
+/// In the cache directory rather than staging, since everything in staging is verified.
 fn temporary(payload: &Payload) -> Result<PathBuf, NotFetched> {
     let name = payload
         .filename
@@ -364,8 +336,7 @@ impl std::fmt::Display for Where {
 
 /// Everywhere a description says this file can be got, in the order to try them.
 ///
-/// A local build first (primary source): what has been compiled on this machine beats
-/// reaching across the network. The listed address second, and upstream direct third.
+/// A local build first, then the listed address, then the upstream address when it differs.
 #[must_use]
 pub fn wheres(payload: &Payload) -> Vec<(Where, String)> {
     let mut found: Vec<(Where, String)> = Vec::new();
@@ -387,8 +358,7 @@ pub fn wheres(payload: &Payload) -> Vec<(Where, String)> {
 ///
 /// # Errors
 ///
-/// What the downloader said, without the address - the caller adds that, because it is the
-/// caller that knows there was more than one to try.
+/// What the downloader said, without the address; the caller, which tries several, adds it.
 fn pull(url: &str, into: &Path) -> Result<(), String> {
     let (program, arguments) = parts(&configured(), url, into)?;
     let finished = std::process::Command::new(&program)
@@ -398,8 +368,7 @@ fn pull(url: &str, into: &Path) -> Result<(), String> {
     if finished.status.success() {
         return Ok(());
     }
-    // Removed here as well as by the caller: a partial file left behind would be handed to the
-    // next address as though it were the start of that download.
+    // A partial file must not be left for the next address's download.
     let _ = std::fs::remove_file(into);
     Err(format!(
         "{program} failed: {}",
@@ -447,10 +416,7 @@ impl std::error::Error for NotFetched {}
 
 #[cfg(test)]
 mod tests {
-    /// **The listed address first, and the project's own only when it differs.**
-    ///
-    /// The order is the point: what somebody wrote down is what gets used, and the second
-    /// address exists for the day the first one stops answering.
+    /// The listed address is tried before the upstream one.
     #[test]
     fn a_description_with_two_addresses_tries_the_listed_one_first() {
         let payload = Payload {
@@ -492,7 +458,7 @@ mod tests {
         assert_eq!(found[0].0, super::Where::Upstream);
     }
 
-    /// **A description with nowhere to get it is refused before anything is spent.**
+    /// An entry with no address has no sources.
     #[test]
     fn an_entry_with_no_address_at_all_has_nowhere_to_try() {
         let payload = Payload {
@@ -521,11 +487,7 @@ mod tests {
         assert!(arguments.iter().any(|word| word.contains("a.elf")));
     }
 
-    /// **An entry nobody can verify is refused before a byte is downloaded.**
-    ///
-    /// There is no point spending somebody's bandwidth on a file that could not be checked
-    /// when it arrived, and a download that cannot be checked is worse than none - it looks
-    /// exactly like one that worked.
+    /// An entry with no checkable digest is refused before anything is downloaded.
     #[test]
     fn a_payload_with_no_usable_digest_is_refused_before_downloading() {
         let payload = Payload {
@@ -541,8 +503,7 @@ mod tests {
         ));
     }
 
-    /// An entry with a digest and nowhere to get it is a description somebody has not
-    /// finished, and it says so rather than failing obscurely at the downloader.
+    /// An entry with a digest and no address reports that it has no address.
     #[test]
     fn a_payload_with_no_url_says_so() {
         let payload = Payload {
@@ -556,14 +517,14 @@ mod tests {
         assert!(matches!(fetch(&payload), Err(NotFetched::NoUrl)));
     }
 
-    /// The default needs nothing installed on most machines, and the file says what it is.
+    /// The example file names the default command and the digest check.
     #[test]
     fn the_example_explains_the_default() {
         assert!(example().contains(DEFAULT));
         assert!(example().contains("checked against the manifest's digest"));
     }
 
-    /// **A local build on localhost is the primary source when it exists.**
+    /// A local build is the first source, before the listed and upstream addresses.
     #[test]
     fn a_local_build_is_tried_first_as_primary_source() {
         let test_dir = PathBuf::from("target").join("test-local-src");
@@ -593,7 +554,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&test_dir);
     }
 
-    /// **A local build is fetched and staged directly without touching the network.**
+    /// A local build is staged directly, without the network.
     #[test]
     fn a_local_build_is_fetched_and_staged_directly() {
         let test_dir = PathBuf::from("target").join("test-local-fetch");
@@ -619,7 +580,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&test_dir);
     }
 
-    /// **pltauth-patch in recommended list resolves to the local build artifact.**
+    /// The recommended `pltauth-patch` resolves to its local build, which matches its digest.
     #[test]
     fn recommended_pltauth_patch_resolves_local_source() {
         let manifest = crate::manifest::recommended();

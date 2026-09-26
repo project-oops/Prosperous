@@ -1,42 +1,24 @@
 //! Where things live on a target, per storage device.
 //!
-//! # Why this is a table and not constants scattered through the code
-//!
-//! Every path here belongs to somebody else's program. `pldmgr` decides where payloads are;
-//! the `y2jb` autoloader decides where *its* payloads are, and it is not the same place;
-//! `ShadowMountPlus` decides where games are, and it looks in ten roots this project had never
-//! heard of. Each of those was learnt separately and written down wherever it was first
-//! needed, which is how the same question came to have two answers in two files.
-//!
-//! # Why devices are a list rather than an assumption
-//!
-//! **There are eight USB mounts and two external ones**, and this project knew about two of
-//! the first and none of the second. A screen pinned to internal storage cannot answer *is it
-//! actually on the stick*, which is the question a person asks when a list they deployed does
-//! not load - and answering it by inference from a scan of four hardcoded directories is how
-//! three separate wrong diagnoses got made in one afternoon.
-//!
-//! # Everything here is cited
-//!
-//! No path in this file is a guess. Each carries where it came from, and a place nobody has
-//! measured is **absent rather than plausible** - the packages directory on a stick is not
-//! here for exactly that reason.
+//! Every path here belongs to another program: `pldmgr` decides where its payloads are, the
+//! `y2jb` autoloader decides where its own are, and `ShadowMountPlus` decides where games are.
+//! One table answers each question once. Devices are a list (internal, eight USB mounts, two
+//! external drives) so a screen can show what is on a stick rather than infer it. Each path
+//! cites its source; a place nobody has measured is absent rather than plausible.
 
 /// A storage device on the target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Device {
-    /// The console's own drive.
+    /// The target's own drive.
     Internal,
     /// A USB stick, `0` to `7`.
     ///
-    /// **Eight, not two.** `pldmgr.h` declares `SCAN_DIRS_COUNT 9` - its own directory plus
-    /// `/mnt/usb0/pldmgr` through `/mnt/usb7/pldmgr` - and `ShadowMountPlus` scans the same
-    /// eight roots.
+    /// `pldmgr.h` declares `SCAN_DIRS_COUNT 9` - its own directory plus `/mnt/usb0/pldmgr`
+    /// through `/mnt/usb7/pldmgr` - and `ShadowMountPlus` scans the same eight roots.
     Usb(u8),
     /// An external drive, `0` or `1`.
     ///
     /// From `ShadowMountPlus`, which scans `/mnt/ext0` and `/mnt/ext1` beside the sticks.
-    /// Nothing else this project talks to mentions them, which is why they carry fewer places.
     Ext(u8),
 }
 
@@ -49,9 +31,8 @@ impl Device {
 
     /// Every device a target could have, in the order to offer them.
     ///
-    /// **All of them, whether or not they are plugged in.** Asking the target which exist is a
-    /// listing per device and this is a menu; a device with nothing on it lists as empty, which
-    /// is the same answer for less work and no waiting.
+    /// All of them, plugged in or not: a missing device lists as empty, which needs no extra
+    /// round trip per device to find out.
     #[must_use]
     pub fn all() -> Vec<Self> {
         let mut found = vec![Self::Internal];
@@ -70,7 +51,7 @@ impl Device {
         }
     }
 
-    /// Where the device is mounted, when it is not the console's own drive.
+    /// Where the device is mounted, when it is not the target's own drive.
     #[must_use]
     pub fn root(self) -> Option<String> {
         match self {
@@ -115,8 +96,8 @@ pub struct Spot {
 
 /// Everywhere worth looking, for this kind of thing on this device.
 ///
-/// Empty when nothing has been measured for that pair - which is an answer, and a different one
-/// from a directory that exists and is empty.
+/// Empty when nothing has been measured for that pair, which is a different answer from a
+/// directory that exists and is empty.
 #[must_use]
 pub fn where_to_look(looking: Looking, device: Device) -> Vec<Spot> {
     match looking {
@@ -124,7 +105,6 @@ pub fn where_to_look(looking: Looking, device: Device) -> Vec<Spot> {
         Looking::Titles => title_places(device),
         Looking::Packages => package_places(device),
         Looking::Cheats => cheat_places(device),
-        // Anywhere at all: the device's own root, and nothing claimed about what is in it.
         Looking::Anything => vec![Spot {
             path: device.root().unwrap_or_else(|| "/".to_owned()),
             label: "the whole device",
@@ -138,10 +118,9 @@ fn spot(path: String, label: &'static str, note: &'static str) -> Spot {
     Spot { path, label, note }
 }
 
-/// Where payloads live, which is two different answers on one device.
+/// Where payloads live: the manager's directory and the autoloader's are different places.
 fn payload_places(device: Device) -> Vec<Spot> {
     match device.root() {
-        // ---- payloads -------------------------------------------------------------------
         None => vec![
             spot(
                 crate::payloads::INTERNAL.to_owned(),
@@ -226,9 +205,8 @@ fn title_places(device: Device) -> Vec<Spot> {
 
 /// Where packages wait to be registered.
 ///
-/// **Nothing for a removable device, on purpose.** Both internal directories were measured on a
-/// real target; where an installer looks on a stick was not, and a plausible path in a menu is
-/// one somebody will believe.
+/// Nothing for a removable device: both internal directories were measured on a target, and
+/// no removable one has been.
 fn package_places(device: Device) -> Vec<Spot> {
     if device.is_removable() {
         return Vec::new();
@@ -273,9 +251,7 @@ fn cheat_places(device: Device) -> Vec<Spot> {
 
 /// Which device a path is on, read from the path itself.
 ///
-/// **So a chooser can follow somebody who navigated rather than picked.** A person who walks
-/// into `/mnt/usb1/homebrew` from somewhere else has changed device, and a menu still saying
-/// *internal* would be describing a different screen from the one they are looking at.
+/// Lets a chooser follow somebody who navigated onto another device rather than picking it.
 #[must_use]
 pub fn device_of(path: &str) -> Device {
     let after = |prefix: &str| -> Option<u8> {
@@ -300,7 +276,7 @@ pub fn device_of(path: &str) -> Device {
 mod tests {
     use super::{Device, Looking, device_of, where_to_look};
 
-    /// **Eight sticks and two drives**, because that is what the payloads that use them say.
+    /// Internal, eight sticks and two drives are offered, as the payloads that use them say.
     #[test]
     fn every_device_a_target_can_have_is_offered() {
         let all = Device::all();
@@ -313,7 +289,7 @@ mod tests {
         );
     }
 
-    /// A device's places are built from its own root, not from a table of eleven copies.
+    /// A device's places are under its own root.
     #[test]
     fn a_sticks_places_are_under_that_stick() {
         for spot in where_to_look(Looking::Payloads, Device::Usb(3)) {
@@ -324,11 +300,7 @@ mod tests {
         }
     }
 
-    /// **The two payload directories on a stick are not the same directory.**
-    ///
-    /// `pldmgr` resolves `<stick>/pldmgr`; the autoloader reads `<stick>/ps5_autoloader` and
-    /// loads what is directly inside it. A screen offering only one of them cannot answer why
-    /// a list that names a file which is plainly present still fails to load it.
+    /// A stick offers both the manager's and the autoloader's payload directories.
     #[test]
     fn a_stick_offers_both_payload_directories() {
         let paths: Vec<String> = where_to_look(Looking::Payloads, Device::Usb(0))
@@ -342,7 +314,7 @@ mod tests {
         );
     }
 
-    /// **Nothing is offered that nobody measured.** A plausible path in a menu is believed.
+    /// No unmeasured package directory is offered for a stick.
     #[test]
     fn a_stick_offers_no_package_directory() {
         assert!(where_to_look(Looking::Packages, Device::Usb(0)).is_empty());
@@ -352,7 +324,7 @@ mod tests {
         );
     }
 
-    /// Every place says whose it is, so a person can tell why it is on the list.
+    /// Every place has a label, a note on whose it is, and an absolute path.
     #[test]
     fn every_place_says_where_it_came_from() {
         for device in Device::all() {
@@ -372,7 +344,7 @@ mod tests {
         }
     }
 
-    /// **A path names its own device**, so navigating changes the chooser.
+    /// A path names its own device, and an out-of-range mount is internal.
     #[test]
     fn a_path_says_which_device_it_is_on() {
         assert_eq!(device_of("/mnt/usb0/pldmgr"), Device::Usb(0));
@@ -380,7 +352,6 @@ mod tests {
         assert_eq!(device_of("/mnt/ext1/homebrew"), Device::Ext(1));
         assert_eq!(device_of("/data/pldmgr/payloads"), Device::Internal);
         assert_eq!(device_of("/user/app"), Device::Internal);
-        // Not a device this project believes in, so not a device.
         assert_eq!(device_of("/mnt/usb9"), Device::Internal);
     }
 }

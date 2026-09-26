@@ -1,19 +1,12 @@
 //! Grouping an Annex-B H.264 stream into frames, so the packetiser has whole pictures to send.
 //!
-//! The bridge reads the target's encoded stream off 9805 as a byte stream and has to hand the
-//! Moonlight packetiser one **access unit** (one coded picture, with its parameter sets) at a
-//! time. This finds NAL boundaries by their start codes and groups them: parameter sets and other
-//! non-picture units accumulate and attach to the next picture, and each picture NAL closes a
-//! frame. It classifies each unit with [`pros_link::stream::Kind`] - the same reader Porthole's
-//! `watch` counts with - so "is this a keyframe" is decided in one place, not two.
+//! The packetiser takes one access unit (a coded picture with its parameter sets) at a time. NAL
+//! units are split at start codes; non-picture units attach to the next picture, and each picture
+//! NAL closes a frame. Units are classified with [`pros_link::stream::Kind`], the reader Porthole's
+//! `watch` uses, so keyframe detection has one owner. Only the header byte of each unit is read.
 //!
-//! This is single-slice-per-picture grouping: a stream that splits one picture across several VCL
-//! NALs would see each treated as its own frame. The target's encoder emits one slice per picture,
-//! which is the case this serves; a multi-slice source is a later refinement, noted rather than
-//! pretended away.
-//!
-//! **Reading is not decoding** still holds - this finds unit boundaries and reads one header byte
-//! per unit, exactly what `pros_link::stream` already does, and never interprets the picture.
+//! Grouping assumes one slice per picture, which is what the target's encoder emits: a picture
+//! split across several VCL NALs would become several frames.
 
 use pros_link::stream::Kind;
 
@@ -47,7 +40,7 @@ impl Frames {
 
     /// Feed more stream bytes, returning any frames that completed.
     ///
-    /// A NAL is only complete once the **next** start code appears, so the bytes from the last
+    /// A NAL is only complete once the next start code appears, so the bytes from the last
     /// start code onward stay in `pending` for next time; [`Frames::finish`] flushes them.
     pub(crate) fn feed(&mut self, more: &[u8]) -> Vec<Frame> {
         self.pending.extend_from_slice(more);
@@ -154,13 +147,14 @@ fn start_codes(bytes: &[u8]) -> Vec<usize> {
 mod tests {
     use super::Frames;
 
-    // Annex-B units: 4-byte start code then a header byte whose low 5 bits are the type.
+    /// An Annex-B unit: 4-byte start code, then a header byte whose low 5 bits are the type.
     fn nal(kind: u8, body: &[u8]) -> Vec<u8> {
         let mut unit = vec![0, 0, 0, 1, kind];
         unit.extend_from_slice(body);
         unit
     }
 
+    /// Parameter sets travel in the same frame as the IDR that follows them.
     #[test]
     fn a_keyframe_groups_its_parameter_sets_with_the_idr() {
         let mut frames = Frames::new();
@@ -183,6 +177,7 @@ mod tests {
         assert!(!out[1].keyframe);
     }
 
+    /// A unit split across feeds is held, and `finish` flushes it at end of stream.
     #[test]
     fn a_unit_split_across_feeds_is_held_until_complete() {
         let mut frames = Frames::new();
@@ -193,7 +188,6 @@ mod tests {
             "an incomplete unit yields nothing"
         );
         frames.feed(tail);
-        // Nothing is emitted until a following start code closes the picture; finish() flushes it.
         let last = frames
             .finish()
             .expect("the held picture flushes at end of stream");

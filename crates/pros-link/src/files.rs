@@ -1,23 +1,12 @@
 //! Browsing the target's filesystem, and moving files across.
 //!
-//! # Anonymous, and that is the design rather than an oversight
+//! The server accepts any credentials, so this logs in with the conventional anonymous pair.
 //!
-//! The server takes any credentials and checks none of them. Every service in the chain is
-//! unauthenticated on the local network by design - that is what a payload chain is - so
-//! this logs in with a conventional anonymous pair and does not pretend the exchange means
-//! anything.
-//!
-//! # Two guards, both against silence
-//!
-//! **Binary mode is checked, not assumed.** A transfer in the default text mode rewrites
-//! line endings, and a payload that has had four bytes changed in the middle still arrives,
-//! still reports a byte count, and still fails to run - with nothing anywhere saying why.
-//! So the session refuses to open at all if the server will not agree to binary.
-//!
-//! **The address in a passive reply is thrown away.** A small server behind any kind of
-//! translation reports the address it believes it has, which is regularly not the one that
-//! reached it. The host already in hand is reachable by proof - a connection is open on it -
-//! so only the port is taken from the reply. See [`crate::files::port_from_passive`].
+//! A session refuses to open unless the server agrees to binary mode, because text mode
+//! rewrites line endings and a payload altered that way arrives intact-looking and fails to
+//! run. The address in a passive reply is ignored and only its port used, because a server
+//! behind address translation reports an address that may not be reachable. See
+//! [`crate::files::port_from_passive`].
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{Shutdown, TcpStream};
@@ -26,10 +15,10 @@ use std::time::Duration;
 use crate::error::{Error, Result};
 use crate::wire;
 
-/// Port the file service listens on.
-/// Which service an override names when it moves this off its usual port.
+/// Service name a port override uses to move the file service off its usual port.
 const SERVICE: &str = "ftpsrv";
 
+/// Port the file service listens on.
 const PORT: u16 = 2121;
 
 /// How long to wait for either connection.
@@ -37,9 +26,7 @@ const CONNECT: Duration = Duration::from_secs(6);
 
 /// How long a transfer may be silent before it is called dead.
 ///
-/// This is an **inactivity** window, not a total. A large file over a link measured at
-/// tens of megabytes a second is minutes of legitimate transfer, and a total budget would
-/// cut it off for being big.
+/// An inactivity window, not a total: a large file legitimately takes minutes.
 const QUIET: Duration = Duration::from_secs(30);
 
 /// What kind of thing a listing line describes.
@@ -49,14 +36,12 @@ pub enum Kind {
     File,
     /// A directory.
     Directory,
-    /// A symbolic link. Followed or not is the server's business, not this crate's.
+    /// A symbolic link. Whether it is followed is up to the server.
     Link,
     /// The line did not have the shape this crate knows how to read.
     ///
-    /// **Kept rather than dropped.** A listing that silently omits what it could not parse
-    /// tells a person a directory is empty when it is not, which is the worst answer
-    /// available. An entry marked this way carries the server's line verbatim so it can be
-    /// shown, and [`Entry::is_usable`] says it must not be used as a path.
+    /// Kept rather than dropped, so a listing never looks emptier than it is. The entry
+    /// carries the line verbatim, and [`Entry::is_usable`] says it is not a path.
     Unrecognised,
 }
 
@@ -71,17 +56,15 @@ pub struct Entry {
     pub size: Option<u64>,
     /// Exactly what the server sent, minus the line ending.
     ///
-    /// Carried because a listing format is a server's choice and this one was written for
-    /// a target rather than for a standard. When a parse looks wrong, this is the evidence
-    /// of what it was parsing.
+    /// The listing format is the server's choice; this is the evidence when a parse looks
+    /// wrong.
     pub raw: String,
 }
 
 impl Entry {
     /// Whether [`Entry::name`] may be used as a path.
     ///
-    /// False for a line that was not understood, where the name field holds the whole line
-    /// and using it would produce a request for a file that was never there.
+    /// False for a line that was not understood, whose name field holds the whole line.
     #[must_use]
     pub const fn is_usable(&self) -> bool {
         !matches!(self.kind, Kind::Unrecognised)
@@ -90,12 +73,8 @@ impl Entry {
 
 /// One logged-in connection, reused across operations.
 ///
-/// # Why a session rather than a function per operation
-///
-/// Every other service here is one exchange, so a free function is the whole interface.
-/// This one is not: browsing is a login followed by a listing followed by another listing,
-/// and a function that logged in each time would pay four round trips per directory a
-/// person clicks on. The one-shot forms below exist for callers doing exactly one thing.
+/// Browsing is a login followed by many listings, so the login is paid once. The free
+/// functions below are one-shot forms for callers doing exactly one thing.
 #[derive(Debug)]
 pub struct Session {
     control: BufReader<TcpStream>,
@@ -108,8 +87,7 @@ impl Session {
     /// # Errors
     ///
     /// [`Error::Refused`] when the service is not loaded. [`Error::Rejected`] if the server
-    /// declines the login or **declines binary mode**, which fails the whole session rather
-    /// than continuing in a mode that corrupts payloads quietly.
+    /// declines the login or declines binary mode.
     pub fn open(link: &crate::Link) -> Result<Self> {
         Self::open_at(&link.address, link.port(SERVICE, PORT))
     }
@@ -135,8 +113,7 @@ impl Session {
         if hello.code == 331 {
             session.command("PASS anonymous", &[230, 202])?;
         }
-        // Not a formality. See the module note: text mode edits the bytes in transit and
-        // nothing downstream can tell that it happened.
+        // Required: text mode edits the bytes in transit. See the module note.
         session.command("TYPE I", &[200])?;
         Ok(session)
     }
@@ -145,8 +122,7 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// [`Error::Rejected`] when the path does not exist, which is an ordinary answer and
-    /// distinguishable from the connection failing.
+    /// [`Error::Rejected`] when the path does not exist.
     pub fn list(&mut self, path: &str) -> Result<Vec<Entry>> {
         let mut data = self.open_data(&format!("LIST {path}"))?;
         let mut bytes = Vec::new();
@@ -167,8 +143,7 @@ impl Session {
     /// # Errors
     ///
     /// [`Error::Rejected`] when the file is not there. A transfer that stops early is an
-    /// [`Error::Io`] rather than a short result - a truncated payload that reports success
-    /// is the failure this crate exists to prevent.
+    /// [`Error::Io`], never a short result.
     pub fn retrieve(&mut self, path: &str) -> Result<Vec<u8>> {
         let mut data = self.open_data(&format!("RETR {path}"))?;
         let mut bytes = Vec::new();
@@ -188,8 +163,7 @@ impl Session {
         let mut data = self.open_data(&format!("STOR {path}"))?;
         data.write_all(bytes)?;
         data.flush()?;
-        // The server is waiting for an end it can only learn from the socket closing.
-        // Dropping alone would do it; saying so is clearer about why.
+        // The server learns the end of the file only from the socket closing.
         data.shutdown(Shutdown::Write)?;
         drop(data);
         self.expect("storing", &[226, 250])?;
@@ -198,23 +172,16 @@ impl Session {
 
     /// The size of a file on the target, in bytes.
     ///
-    /// # Why a caller wants this after a store
-    ///
-    /// A `STOR` the server accepts is not proof the bytes landed. A file the target has mounted,
-    /// or an overlay that swallows the write, can leave the old file in place while `STOR` still
-    /// completes with a success reply - and a copy that trusts the reply then reports a file
-    /// replaced that was not. The one cheap way to tell is to ask the size back and compare it to
-    /// what was sent; this is that ask.
+    /// A successful `STOR` does not prove the bytes landed: a mounted file or an overlay can
+    /// keep the old file and still reply with success. Comparing the size is the cheap check.
     ///
     /// # Errors
     ///
-    /// [`Error::Rejected`] when the server will not answer - the file is not there, or the
-    /// server does not implement `SIZE`. [`Error::Unintelligible`] when it answers `213` without
-    /// a number, which no caller can do anything with.
+    /// [`Error::Rejected`] when the file is not there or the server does not implement
+    /// `SIZE`. [`Error::Unintelligible`] when it answers `213` without a number.
     pub fn size(&mut self, path: &str) -> Result<u64> {
         let reply = self.command(&format!("SIZE {path}"), &[213])?;
-        // `213 <n>` - the number is the last whitespace-separated token, so a server that pads
-        // the line or adds a word before it is still read.
+        // The number is the last token, so padding or an extra word before it is tolerated.
         reply
             .text
             .split_whitespace()
@@ -228,21 +195,17 @@ impl Session {
 
     /// Makes a directory, and is content if it is already there.
     ///
-    /// **Already existing is not a failure.** Restoring a folder tree means asking for every
-    /// directory on the way down, most of which will exist by the time the second file is
-    /// written, and a caller that had to tell those two apart would have to parse replies -
-    /// which is this crate's job, not theirs.
+    /// Restoring a tree asks for every directory on the way down, most of which already
+    /// exist, so an existing directory is success.
     ///
     /// # Errors
     ///
-    /// [`Error::Rejected`] for a refusal that is not *it is already there*: a read-only
-    /// mount, or a parent that does not exist.
+    /// [`Error::Rejected`] for any other refusal: a read-only mount, or a missing parent.
     pub fn make_directory(&mut self, path: &str) -> Result<()> {
         self.send(&format!("MKD {path}"))?;
         let reply = self.reply("making a directory")?;
-        // 2xx is completion (standard 257, or 226/250/200 used by embedded servers);
-        // 521 and 550 are the two ways servers say it is already there. A directory that
-        // exists is the state the caller wanted either way.
+        // 2xx is completion (standard 257, or 226/250/200 from embedded servers); 521 and
+        // 550 are how servers say it already exists.
         if succeeded(reply.code) || matches!(reply.code, 521 | 550) {
             return Ok(());
         }
@@ -254,19 +217,12 @@ impl Session {
 
     /// Removes a file.
     ///
-    /// # Why this is not called `remove` and does not take a directory
-    ///
-    /// A directory is a different command and a different risk. Deleting a file loses one
-    /// thing somebody named; deleting a directory loses whatever is inside it, which they may
-    /// not have looked at. **A caller that could pass either would sometimes pass the wrong
-    /// one**, so the two are separate calls and the one that is dangerous is the one that has
-    /// to be typed out.
+    /// Files and directories are separate calls, so removing a directory is always explicit.
     ///
     /// # Errors
     ///
-    /// [`Error::Rejected`] when the server will not - it is not there, it is a directory, or
-    /// the mount is read-only. The server's own words come back, because *no such file* and
-    /// *permission denied* need different work from different people.
+    /// [`Error::Rejected`] with the server's own words when it is not there, is a directory,
+    /// or the mount is read-only.
     pub fn delete_file(&mut self, path: &str) -> Result<()> {
         self.send(&format!("DELE {path}"))?;
         let reply = self.reply("deleting a file")?;
@@ -281,14 +237,8 @@ impl Session {
 
     /// Removes a directory, which every server refuses unless it is empty.
     ///
-    /// **Nothing here empties one first.** A recursive delete over this protocol is a walk
-    /// that issues a command per entry, and a walk that has gone wrong deletes things nobody
-    /// listed - which is the same shape as the backup that climbed out of its own directory,
-    /// with the consequences pointing the other way.
-    ///
-    /// So the server's refusal is passed on as it stands, and the walk lives a level up in
-    /// `pros_core::remove`, where it can be tested against a pretend target and where its
-    /// guards sit beside the backup's.
+    /// Nothing here empties it first. The recursive walk lives in `pros_core::remove`, where
+    /// its guards are tested against the fake.
     ///
     /// # Errors
     ///
@@ -307,9 +257,7 @@ impl Session {
 
     /// Says goodbye.
     ///
-    /// A server with a small connection table notices the difference between this and
-    /// walking away. The reply is not waited for: there is nothing a caller could do about
-    /// a server that will not acknowledge a farewell.
+    /// Frees the slot in a small server's connection table. The reply is not awaited.
     pub fn close(mut self) {
         let _ = self.send("QUIT");
     }
@@ -317,8 +265,7 @@ impl Session {
     /// Opens a data connection and starts a transfer on it.
     fn open_data(&mut self, command: &str) -> Result<TcpStream> {
         let port = self.passive()?;
-        // Connect first, then ask. The other order lets a fast server finish before there
-        // is anywhere for the answer to go.
+        // Connect before the command, or a fast server finishes with nowhere to send.
         let data = wire::connect(&self.address, port, CONNECT)?;
         data.set_read_timeout(Some(QUIET))?;
         data.set_write_timeout(Some(QUIET))?;
@@ -371,9 +318,8 @@ impl Session {
         })?;
 
         let mut text = first.clone();
-        // A hyphen in the fourth column means more lines follow, until one repeats the
-        // code with a space. Reading only the first line of one of these leaves the rest
-        // in the buffer, where it becomes the answer to the *next* command.
+        // A hyphen in the fourth column means more lines follow, until one repeats the code
+        // with a space. Unread lines would become the answer to the next command.
         if first.as_bytes().get(3) == Some(&b'-') {
             loop {
                 let next = self.line(doing)?;
@@ -413,19 +359,8 @@ struct Reply {
 
 /// Whether a reply code means the command worked.
 ///
-/// # Why the whole 2xx family and not a list
-///
-/// It was `250 | 200`, which is what the standard suggests for `DELE` and `RMD` - and this
-/// target answers **`226 File deleted`**. Measured on a console on 2026-09-02: a hundred and
-/// sixty-two files were deleted, and every one of them was reported as *the target refused*,
-/// with the server's own word `deleted` quoted inside the refusal. The directories holding them
-/// were then left alone, because nothing believed their contents had gone.
-///
-/// That is this project's own defect turned inside out: an outcome reported as failure that
-/// worked. A list of codes is a guess about a server somebody else wrote, and the next one will
-/// pick a different member of the family. **2xx is the family**, defined by the protocol as
-/// completion, so that is what is read - and anything else still carries the server's own words
-/// back rather than being interpreted here.
+/// The whole 2xx family, which the protocol defines as completion: the target's ftpsrv
+/// answers `DELE` with `226 File deleted` rather than the standard `250`.
 const fn succeeded(code: u16) -> bool {
     code >= 200 && code < 300
 }
@@ -468,17 +403,10 @@ pub fn store(link: &crate::Link, path: &str, bytes: &[u8]) -> Result<()> {
 
 /// The port from a passive-mode reply, ignoring the address in it.
 ///
-/// # Why the address is discarded
-///
-/// The reply carries six numbers: four of address and two of port. A server reports the
-/// address it believes it has, which behind any translation is not the one that reached
-/// it - and a client that dials it connects to a machine on the wrong network, or to
-/// nothing. The host already in hand arrived at this server by proof.
-///
-/// # Why the numbers are found rather than pattern-matched
-///
-/// The conventional reply parenthesises them and not every server does. Scanning for a run
-/// of six that fit costs nothing and does not care about the punctuation around it.
+/// The reply carries four address numbers and two port numbers. The address is what the
+/// server believes it has, which behind translation is not the one that reached it, so the
+/// host already connected to is used instead. The six numbers are found by scanning, since
+/// not every server parenthesises them.
 #[must_use]
 pub fn port_from_passive(reply: &str) -> Option<u16> {
     reply
@@ -515,39 +443,24 @@ fn first_word(command: &str) -> &str {
 
 /// Whether a line is the listing's own header rather than an entry.
 ///
-/// **Not a guess.** `total 8` is part of the long-form listing format, and every listing
-/// begins with one. Leaving it in as an unreadable line makes every directory look partly
-/// unread - and a caller that reports what it could not copy would name it in every backup
-/// it ever made, which is how a real warning gets ignored.
+/// `total <n>` begins every long-form listing; reported as unreadable it would appear as a
+/// warning in every backup.
 fn is_header(line: &str) -> bool {
     line.strip_prefix("total ")
         .is_some_and(|rest| !rest.is_empty() && rest.trim().chars().all(|c| c.is_ascii_digit()))
 }
 
-/// Reads one listing line.
-///
-/// The format is the long-form listing every server of this lineage produces. A line that
-/// does not fit becomes a [`Kind::Unrecognised`] entry carrying the line itself rather
-/// than disappearing - see [`Kind::Unrecognised`] for why that matters.
 /// Whether this listing entry is the directory itself, or the one above it.
 ///
-/// # Why this is filtered here and not by each caller
-///
-/// `.` and `..` are artefacts of how a listing is written, not things in the directory.
-/// **Every caller wants them gone, so a caller that forgets is the only possible outcome** -
-/// and one did: the browser filtered them and the recursive copy did not, so asking to back
-/// up a 64KB folder walked into `.` twelve times and climbed out through `..` into the rest
-/// of the filesystem.
-///
-/// That failure is quiet in the worst way. It does not error; it copies, steadily, with a
-/// progress line that looks exactly like a large folder taking a while. The paths give it
-/// away only if somebody reads them: `/data/homebrew/pkg/./././././././../../mini-syscore.elf`.
-///
-/// Filtering at the source means the next caller cannot make the same mistake.
+/// Filtered here rather than by each caller, because a recursive walk that follows `.` or
+/// `..` copies without end or escapes the directory it was asked for.
 fn is_itself_or_its_parent(name: &str) -> bool {
     name == "." || name == ".."
 }
 
+/// Reads one long-form listing line.
+///
+/// A line that does not fit becomes a [`Kind::Unrecognised`] entry carrying the line.
 fn parse_entry(line: &str) -> Entry {
     let raw = line.trim_end_matches(['\r', '\n']).to_owned();
     let unrecognised = || Entry {
@@ -579,8 +492,7 @@ fn parse_entry(line: &str) -> Entry {
 
 /// Splits off `count` whitespace-separated columns, returning them and the rest.
 ///
-/// Not `split_whitespace`: the last field is a file name, which may contain spaces, so the
-/// tail has to be kept whole rather than tokenised with the rest.
+/// Not `split_whitespace`: the tail is a file name that may contain spaces.
 fn split_columns(line: &str, count: usize) -> Option<(Vec<&str>, &str)> {
     let mut rest = line;
     let mut columns = Vec::with_capacity(count);
@@ -597,12 +509,7 @@ fn split_columns(line: &str, count: usize) -> Option<(Vec<&str>, &str)> {
 mod tests {
     use super::{Kind, parse_entry, port_from_passive, succeeded};
 
-    /// **`226 File deleted` is a deletion that happened.**
-    ///
-    /// Measured on a target on 2026-09-02. `DELE` was matched against `250 | 200`, so a hundred
-    /// and sixty-two files that were deleted came back as refusals - quoting, inside the word
-    /// *refused*, the server saying `deleted`. The directories holding them were then left,
-    /// because nothing believed they had been emptied.
+    /// Every 2xx code the target uses for completion, `226 File deleted` included, is success.
     #[test]
     fn a_completion_code_this_target_uses_is_read_as_success() {
         for code in [200, 226, 250] {
@@ -610,11 +517,7 @@ mod tests {
         }
     }
 
-    /// **Anything outside the completion family is not success**, whatever it says.
-    ///
-    /// The fix for the above is not "be generous": a `550` carrying the word *deleted* in its
-    /// text is still a refusal, and reading the text rather than the code is how the opposite
-    /// mistake gets made.
+    /// A code outside the 2xx family is not success, whatever its text says.
     #[test]
     fn a_refusal_is_still_a_refusal() {
         for code in [110, 150, 331, 425, 500, 550, 553] {
@@ -622,7 +525,7 @@ mod tests {
         }
     }
 
-    /// The two numbers that matter are the last two, and they combine as a pair of bytes.
+    /// The port is the last two numbers, combined as high and low bytes.
     #[test]
     fn a_passive_reply_gives_up_its_port() {
         assert_eq!(
@@ -631,7 +534,7 @@ mod tests {
         );
     }
 
-    /// The punctuation is a convention, not a rule, and a server is allowed to differ.
+    /// A passive reply without brackets still parses.
     #[test]
     fn a_passive_reply_without_brackets_still_parses() {
         assert_eq!(
@@ -640,8 +543,7 @@ mod tests {
         );
     }
 
-    /// Something that is not a passive reply produces nothing, rather than a plausible
-    /// port number assembled out of whatever digits were lying around.
+    /// A reply without six byte-sized numbers yields no port.
     #[test]
     fn a_reply_with_no_six_numbers_in_it_gives_nothing() {
         assert_eq!(port_from_passive("500 Unknown command"), None);
@@ -657,8 +559,7 @@ mod tests {
         assert_eq!(entry.size, Some(1_048_576));
     }
 
-    /// A directory is told from a file by the first character, which is the only part of
-    /// the mode field this needs.
+    /// A directory is recognised by the first character of the mode field.
     #[test]
     fn a_directory_is_recognised_as_one() {
         let entry = parse_entry("drwxr-xr-x   2 root root        0 Aug 25 12:00 pldmgr");
@@ -666,10 +567,7 @@ mod tests {
         assert_eq!(entry.name, "pldmgr");
     }
 
-    /// The listing's own header is not an entry and is not an unreadable line.
-    ///
-    /// Every listing has one. Reporting it as something that could not be read would name
-    /// it in every backup ever taken, which is how a real warning stops being read.
+    /// The listing's `total` header is recognised, and a file named like it is not.
     #[test]
     fn the_listing_header_is_not_an_entry() {
         assert!(super::is_header("total 48"));
@@ -684,8 +582,7 @@ mod tests {
         );
     }
 
-    /// A line that is not understood is kept and marked, because a listing that quietly
-    /// drops what it could not read says a directory is empty when it is not.
+    /// A line that is not understood is kept, verbatim, and marked unusable as a path.
     #[test]
     fn an_unreadable_line_is_kept_and_marked_unusable() {
         let entry = parse_entry("total 48");

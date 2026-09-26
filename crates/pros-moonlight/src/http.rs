@@ -1,12 +1,8 @@
-//! The little HTTP server the GameStream endpoints are served over.
+//! The small HTTP server the GameStream endpoints are served over.
 //!
-//! # Why this is hand-written rather than a framework
-//!
-//! Every request is a `GET` with query parameters and a small XML reply. That is the whole
-//! surface, and it is served over both a plain socket (47989) and a TLS one (47984) with the same
-//! routing - so a request handler generic over "something you can read and write" is all it takes,
-//! and a full HTTP stack would be weight for a job this size does not have. The requests are read
-//! up to the blank line that ends the headers; a `GET` has no body.
+//! Every request is a `GET` with query parameters and a small XML reply, served identically over
+//! plain TCP (47989) and TLS (47984). One handler generic over `Read + Write` covers both, with no
+//! HTTP framework. A request is read up to the blank line that ends the headers.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -17,8 +13,8 @@ use crate::host::{Host, RTSP_PORT};
 use crate::pairing::Pairing;
 use crate::session::{Sessions, StreamConfig};
 
-/// The largest request head accepted, so a peer cannot make the bridge buffer without bound. The
-/// client certificate in a pairing request is the biggest thing sent and is a few kilobytes.
+/// The largest request line or header accepted, so a peer cannot make the bridge buffer without
+/// bound. The largest thing sent, the client certificate in a pairing request, is a few kilobytes.
 const MAX_HEAD: usize = 64 * 1024;
 
 /// Everything the routes need: who we are, the pairing state, the apps, and the stream sessions.
@@ -61,10 +57,9 @@ impl Bridge {
             "/serverinfo" => self.host.serverinfo(self.pairing.is_paired(request.id())),
             "/pair" => self.pair(request),
             "/applist" => self.apps.applist(),
-            // launch and resume both begin a stream; resume differs only in that the client is
-            // returning to one, which for this bridge is the same setup.
+            // For this bridge, resuming a stream is the same setup as launching one.
             "/launch" | "/resume" => self.launch(request, peer),
-            // A control path of ours, not the protocol's: how the PIN read off the client gets in.
+            // The bridge's own path, not the protocol's: it takes the PIN the client displays.
             "/pin" => {
                 self.pairing.submit_pin(request.get("pin"));
                 "<?xml version=\"1.0\"?><root status_code=\"200\"><accepted>1</accepted></root>"
@@ -145,7 +140,6 @@ fn read_request<S: Read>(stream: &mut S) -> io::Result<Request> {
     // "GET /path?query HTTP/1.1"
     let target = line.split_whitespace().nth(1).unwrap_or("/");
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    // Drain the remaining header lines up to the blank one, so the socket is left at the body.
     loop {
         let mut header = String::new();
         let n = (&mut reader).take(MAX_HEAD as u64).read_line(&mut header)?;
@@ -212,6 +206,7 @@ fn write_response<S: Write>(stream: &mut S, body: &str) -> io::Result<()> {
 mod tests {
     use super::{parse_query, percent_decode};
 
+    /// A query string splits on `&` and `=` into its parameters.
     #[test]
     fn a_query_splits_into_pairs() {
         let q = parse_query("uniqueid=abc&phrase=getservercert&salt=00ff");
@@ -220,6 +215,7 @@ mod tests {
         assert_eq!(q.get("salt").unwrap(), "00ff");
     }
 
+    /// `+` decodes to a space and `%XX` to its byte.
     #[test]
     fn percent_and_plus_decode() {
         assert_eq!(percent_decode("a+b"), "a b");

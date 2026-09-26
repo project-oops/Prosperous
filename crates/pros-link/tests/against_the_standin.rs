@@ -1,14 +1,8 @@
 //! The input half of the stand-in, against a payload that is not a payload.
 //!
-//! # What this is for
-//!
-//! `pad` builds a 24-byte record, `pads` decides when one is worth sending, and `feed` puts it
-//! on a socket. All three had unit tests and **none of them had ever been parsed by anything**,
-//! which is a wire format nobody has read from the other end.
-//!
-//! The bits in that record are measured, credited to Ghostpad, and were wrong in three
-//! separate ways before somebody read a working implementation. Testing them against a reader
-//! is the cheapest way to keep them right.
+//! `pad` builds a 24-byte record, `pads` decides when to send one, and `feed` puts it on a
+//! socket. These tests read the records back from the other end of a real socket. The bit
+//! layout is measured and credited to Ghostpad.
 
 use std::time::Duration;
 
@@ -27,9 +21,7 @@ fn connected() -> (Standin, pros_link::feed::Feed) {
     (fake, feed)
 }
 
-/// **A record survives the wire.** What is pressed here is what arrives there.
-///
-/// The whole point of the format, and until now an assertion.
+/// A record survives the wire: what is pressed here is what arrives there.
 #[test]
 fn what_is_pressed_here_is_what_arrives_there() {
     let (fake, mut feed) = connected();
@@ -61,11 +53,7 @@ fn what_is_pressed_here_is_what_arrives_there() {
     assert_eq!(read.right_y, 40);
 }
 
-/// **A resting pad is not a zeroed one**, and this is where that would bite.
-///
-/// A zeroed record decodes to both sticks held hard left and up. If a resting pad ever
-/// serialised as zeroes, a target would see a permanent diagonal - and the pad would look
-/// broken in a way nothing on this side would explain.
+/// A resting pad arrives centred, not zeroed (zero is both sticks hard left and up).
 #[test]
 fn a_resting_pad_arrives_resting() {
     let (fake, mut feed) = connected();
@@ -93,10 +81,7 @@ fn a_resting_pad_arrives_resting() {
     assert!(read.is_at_rest(), "and it must say so");
 }
 
-/// **Every button survives the wire, one at a time.**
-///
-/// The bit table is measured and was wrong in three ways before it was checked against a
-/// working implementation. A button that arrived as a different button would show here.
+/// Every button arrives as itself and as no other.
 #[test]
 fn every_button_arrives_as_itself() {
     let (fake, mut feed) = connected();
@@ -118,7 +103,6 @@ fn every_button_arrives_as_itself() {
     for (at, button) in Button::ALL.iter().enumerate() {
         let read = Pad::from_wire(&fake.received().records()[at]).expect("each must decode");
         assert!(read.holds(*button), "{} did not survive", button.name());
-        // And nothing else came with it, which is what a wrong bit looks like.
         for other in Button::ALL {
             if other != *button {
                 assert!(
@@ -132,11 +116,7 @@ fn every_button_arrives_as_itself() {
     }
 }
 
-/// **A batch is not a promise about how it arrives.**
-///
-/// The feed writes a frame's records in one call. TCP is free to split or join those however
-/// it likes, so the other end has to reassemble by length - and a reader that assumed one read
-/// is one record would pass every test above.
+/// A batch written in one call is reassembled by record length, in order.
 #[test]
 fn a_batch_is_reassembled_by_length_not_by_read() {
     let (fake, mut feed) = connected();
@@ -145,7 +125,7 @@ fn a_batch_is_reassembled_by_length_not_by_read() {
     let sending: Vec<[u8; RECORD]> = (0..many)
         .map(|at| {
             let mut pad = Pad::rest();
-            // Something different in each, so an off-by-one in reassembly cannot hide.
+            // A distinct value per record exposes an off-by-one in reassembly.
             pad.left_x = u8::try_from(at % 256).unwrap_or(0);
             pad.slot = 1;
             pad.sequence = u32::try_from(at).unwrap_or(0);
@@ -171,10 +151,7 @@ fn a_batch_is_reassembled_by_length_not_by_read() {
     }
 }
 
-/// A feed with nowhere to go counts what it dropped rather than losing it quietly.
-///
-/// **The difference that matters:** a mapping that works with nothing listening and a mapping
-/// that does not work at all produce the same picture on screen unless something counts.
+/// A feed with nowhere to go counts what it dropped.
 #[test]
 fn a_feed_that_is_not_open_counts_what_it_could_not_send() {
     let mut feed = pros_link::feed::Feed::default();
@@ -197,7 +174,7 @@ fn a_feed_that_is_not_open_counts_what_it_could_not_send() {
     assert_eq!(feed.sent, 0);
 }
 
-/// A target that goes away is noticed, rather than silently swallowing everything after.
+/// A feed notices when the other end goes away.
 #[test]
 fn a_feed_notices_when_the_other_end_goes() {
     let (fake, mut feed) = connected();
@@ -211,12 +188,9 @@ fn a_feed_notices_when_the_other_end_goes() {
     );
     assert!(fake.received().wait_for(1, PATIENCE));
 
-    // The fake stops listening when it is dropped.
     drop(fake);
 
-    // A closed socket is not always noticed on the first write - the first one lands in a
-    // buffer for a connection that is gone. What matters is that it is noticed at all rather
-    // than reporting success forever.
+    // The first write after a close can land in a buffer, so allow several attempts.
     let mut noticed = false;
     for at in 0..200 {
         feed.send(&[Pad {

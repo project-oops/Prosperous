@@ -1,29 +1,12 @@
 //! What the target is: firmware, target, storage, and what is running.
 //!
-//! # Why this is worth a view of its own
+//! The firmware version decides which entry point, payloads and titles run on a target.
+//! These are pure parsers of the shell's `sysctl`, `df` and `ps` output, written from what a
+//! target printed rather than from another system's manual pages; running the commands is
+//! left to the shim. (D027)
 //!
-//! **Firmware version decides almost everything else on this platform.** Which jailbreak
-//! works, which payloads run, whether a game needs backporting before it will start. It is
-//! the first thing anybody asks and the first thing anybody has to go and look up somewhere
-//! else.
-//!
-//! # Measured, through the shell, and parsed carefully
-//!
-//! The shell answers `sysctl`, `df` and `ps`. All three were run against a target and their
-//! output shapes are what these parsers were written from - not from a manual page for a
-//! different system that happens to have commands with the same names.
-//!
-//! `sysctl` prints a hex dump rather than a value, so a fact has to be reassembled from the
-//! bytes. **The bytes rather than the dump's own ASCII column**, because that column replaces
-//! anything unprintable with a dot and there is no way afterwards to tell a real dot from a
-//! substituted one.
-//!
-//! # Nothing here is inferred from anything else here
-//!
-//! A target that answers `sysctl hw.model` and not `hw.ncpu` reports the model and says
-//! nothing about processors. Every fact is separately present or separately absent, because
-//! a panel that filled a gap with a plausible value would be indistinguishable from one
-//! reporting a measurement.
+//! Every fact is separately present or absent: nothing is inferred from another fact, and a
+//! gap is never filled with a plausible value.
 
 use std::collections::BTreeMap;
 
@@ -56,16 +39,9 @@ pub struct Filesystem {
 impl Filesystem {
     /// Whether this is one of a running application's sandbox mounts.
     ///
-    /// # Why this matters more than it sounds like it should
-    ///
-    /// A target measured here listed **1183 filesystems**. Twenty-two of them are the
-    /// machine's storage; the other 1161 are bind mounts inside `/mnt/sandbox/<app>`, dozens
-    /// per running application, remounting the same handful of pools under different names.
-    ///
-    /// That is a real property of the platform and not noise to be discarded - so they are
-    /// counted and shown, behind a fold, rather than dropped. **What would be wrong is
-    /// listing all 1183 flat**, because the ones that answer *how much room is left* would
-    /// be somewhere in the middle of it.
+    /// On a measured target nearly all `df` rows were bind mounts under `/mnt/sandbox/<app>`,
+    /// remounting the same few pools. They are shown behind a fold rather than dropped, so the
+    /// machine's own storage is not lost among them.
     #[must_use]
     pub fn is_a_sandbox_mount(&self) -> bool {
         self.at.starts_with("/mnt/sandbox/")
@@ -84,9 +60,8 @@ pub struct Memory {
 impl Memory {
     /// The current figure as a number, for sorting a listing by it.
     ///
-    /// `None` when what the target printed was not a plain number, so a row that cannot be
-    /// ordered sorts as absent rather than as zero - the same reason a missing fact is absent
-    /// rather than blank.
+    /// `None` when what the target printed was not a plain number, so such a row sorts as
+    /// absent rather than as zero.
     #[must_use]
     pub fn current_mib(&self) -> Option<f64> {
         self.current.parse().ok()
@@ -102,17 +77,14 @@ pub struct Process {
     pub state: String,
     /// The title it belongs to, when it belongs to one.
     ///
-    /// **Empty for anything that is not a game or application** - a payload, a shell, the
-    /// system's own processes. Kept as an empty string rather than a placeholder so a caller
-    /// filtering for titles gets titles.
+    /// Empty for anything that is not a game or application: a payload, a shell, the system's
+    /// own processes.
     pub title: String,
     /// What it is called.
     pub command: String,
     /// How much memory it is using, when the listing carried the figure.
     ///
-    /// **`None` rather than zero for a row without it.** The measured `ps` prints `current / peak`
-    /// MiB; a listing shaped some other way says nothing about memory, and a plausible zero would
-    /// be indistinguishable from a process that is genuinely using none.
+    /// `None` rather than zero for a row without the measured `current / peak` MiB shape.
     pub memory: Option<Memory>,
 }
 
@@ -120,17 +92,15 @@ impl Process {
     /// Whether this is a game or application rather than a payload or a system process.
     #[must_use]
     pub fn is_a_title(&self) -> bool {
-        // The title column is only filled for a game or application - see [`processes`] for
-        // how that column is told apart from the system's own identifiers.
+        // `processes` fills the title only for a game or application.
         !self.title.is_empty()
     }
 }
 
 /// The `sysctl` keys worth asking about, and what to call them.
 ///
-/// **Each was tried on a target.** `machdep.idle` and `hw.physmem` were not: they answered
-/// *no such file or directory*, so they are not here. A key that only exists on some other
-/// system would show as permanently unavailable and look like a fault.
+/// Each answers on a target. `machdep.idle` and `hw.physmem` answer "no such file or
+/// directory" there, so they are left out rather than shown as permanently unavailable.
 pub const FACTS: &[(&str, &str)] = &[
     ("kern.version", "firmware"),
     ("hw.model", "model"),
@@ -140,20 +110,18 @@ pub const FACTS: &[(&str, &str)] = &[
 
 /// Reassembles the value out of what `sysctl` prints.
 ///
-/// The shell prints a hex dump: an offset, the bytes, then a rendering. **The bytes are what
-/// is read**, because the rendering shows a dot for anything unprintable and nothing
-/// afterwards can tell those apart from real ones.
+/// The shell prints a hex dump: an offset, the bytes, then a rendering. The bytes are read,
+/// because the rendering shows unprintable bytes as dots indistinguishable from real ones.
 ///
-/// Returns the text with trailing padding and zero bytes removed - both of which the measured
-/// values carried.
+/// Returns the text with trailing padding and zero bytes removed; the measured values carry
+/// both.
 #[must_use]
 pub fn value_in(dump: &str) -> Option<String> {
     let mut bytes = Vec::new();
     for line in dump.lines() {
-        // Everything up to the rendering, minus the offset that starts the line.
         let hex = line.split('|').next()?;
         let mut columns = hex.split_whitespace();
-        // The offset itself is eight hex digits and is not data.
+        // The offset is eight hex digits and is not data.
         let first = columns.next()?;
         if first.len() != 8 || !first.chars().all(|c| c.is_ascii_hexdigit()) {
             continue;
@@ -178,7 +146,7 @@ pub fn value_in(dump: &str) -> Option<String> {
 
 /// A `sysctl` value that is a number rather than text.
 ///
-/// Four bytes, least significant first, which is what the target returned for `hw.ncpu`.
+/// Four bytes, least significant first, as the target returns for `hw.ncpu`.
 #[must_use]
 pub fn number_in(dump: &str) -> Option<u32> {
     let mut bytes = Vec::new();
@@ -233,11 +201,10 @@ pub fn storage(output: &str) -> Vec<Filesystem> {
 
 /// Whether `column` has the shape of a title identifier: four capital letters, then five digits.
 ///
-/// Measured off a target's `ps`: `PPSA02664` and `CUSA` ids are retail games, `NPXS40087` is the
+/// Measured off a target's `ps`: `PPSA` and `CUSA` ids are retail games, `NPXS40087` is the
 /// system's own shell, `GLCB00001` and `PUWX90000` are homebrew. Matching the shape rather than
-/// the two retail prefixes is what lets a homebrew title be found and closed. The placeholder
-/// the listing leaves for a process that has none is a memory figure such as `4.7`, which does
-/// not fit.
+/// the retail prefixes finds homebrew titles too. A process with no title shows a memory
+/// figure such as `4.7` in that column, which does not fit.
 #[must_use]
 pub fn is_a_title_id(column: &str) -> bool {
     column.len() == 9
@@ -256,10 +223,9 @@ pub fn is_the_systems_own(id: &str) -> bool {
 
 /// Reads a `ps` listing.
 ///
-/// The columns measured are: pid, ppid, pgid, sid, uid, state, appid, titleid, memory, then
+/// The measured columns are: pid, ppid, pgid, sid, uid, state, appid, titleid, memory, then
 /// the command. The title column is blank for anything that is not a title, so counting from
-/// the left puts the memory figure in its place for most rows; [`is_a_title_id`] is what tells
-/// the two apart.
+/// the left puts the memory figure there for most rows; [`is_a_title_id`] tells them apart.
 #[must_use]
 pub fn processes(output: &str) -> Vec<Process> {
     let mut found = Vec::new();
@@ -286,11 +252,9 @@ pub fn processes(output: &str) -> Vec<Process> {
 
 /// The memory figure at the end of a `ps` row, when it has the measured `current / peak` shape.
 ///
-/// **Read from the end, not by column number.** The title column is present for a game and blank
-/// for everything else, which shifts every fixed index - but the command is always the last token
-/// and the memory always the three just before it (`current / peak`). Both figures must parse as
-/// numbers, so a command or a column that happens to carry a slash is not mistaken for a memory
-/// reading; a row without the shape is `None` rather than a guess.
+/// Read from the end, because the optional title column shifts every fixed index: the command
+/// is the last token and `current / peak` the three before it. Both figures must parse as
+/// numbers, so a stray slash is not mistaken for a memory reading.
 #[must_use]
 fn memory_in(columns: &[&str]) -> Option<Memory> {
     let n = columns.len();
@@ -322,9 +286,8 @@ pub struct Report {
 impl Report {
     /// Builds one from the outputs of the three commands.
     ///
-    /// `answers` maps a `sysctl` key to what the target printed for it. **A key that is
-    /// missing from the map is missing from the report** rather than present and empty - the
-    /// difference between *this target did not say* and *this target said nothing*.
+    /// `answers` maps a `sysctl` key to what the target printed for it. A key missing from the
+    /// map is missing from the report rather than present and empty.
     #[must_use]
     pub fn from(answers: &BTreeMap<String, String>, df: &str, ps: &str) -> Self {
         let mut facts = Vec::new();
@@ -332,7 +295,7 @@ impl Report {
             let Some(dump) = answers.get(*key) else {
                 continue;
             };
-            // Processors came back as a four-byte number; everything else as text.
+            // Processors come back as a four-byte number; everything else as text.
             let value = if *key == "hw.ncpu" {
                 number_in(dump).map(|count| count.to_string())
             } else {
@@ -350,26 +313,19 @@ impl Report {
     }
 }
 
-// --- Process control ---------------------------------------------------------------------
-//
-// Ending a process on the target, over the same shell the listing above is read from. Two
-// jobs a caller reaches for: restarting the user interface to clear a softlock, and closing a
-// title to free what it holds open. Both are the same primitive - find a process, signal it -
-// and both are expressed here as builders and selectors so the effect (running the command)
-// stays in the shim, exactly as `launch` does.
+// Process control: find a process in the listing and build the command that signals it, to
+// restart the user interface or close a title. Running the command stays in the shim.
 
 /// The command name the current-generation user interface runs under.
 ///
-/// Killing this process is how a UI softlock is cleared without a reboot: the system's own
-/// `SceSysCore` respawns it, so the screen comes back on its own. Measured on a target; the
-/// respawn is the platform's behaviour, not anything this arranges.
+/// Killing it clears a UI softlock without a reboot: the system's own `SceSysCore` respawns
+/// it (measured on a target).
 pub const SHELL_UI: &str = "SceShellUI";
 
 /// A signal to send with the target's `kill`, by the number its builtin takes.
 ///
-/// Only the three the work needs. `Terminate` is what a bare `kill` sends and is right for the
-/// user interface, which is meant to come back; `Kill` is for a title that must go now;
-/// `Continue` wakes a stopped process so its own teardown can finish before it is killed.
+/// `Terminate` suits the user interface, which is meant to come back; `Kill` is for a title
+/// that must go now; `Continue` wakes a stopped process so its teardown can finish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
     /// SIGTERM. Ask a process to end - what a bare `kill` sends.
@@ -394,8 +350,7 @@ impl Signal {
 
 /// The shell command that sends `signal` to `pid`.
 ///
-/// Explicit `-s <n>` rather than a bare `kill`, so the signal is stated rather than defaulted -
-/// the same reason a magic number does not belong at a call site.
+/// Always an explicit `-s <n>`, so the signal is stated rather than defaulted.
 #[must_use]
 pub fn kill(pid: &str, signal: Signal) -> String {
     format!("kill -s {} {}", signal.number(), pid.trim())
@@ -409,11 +364,8 @@ pub fn shell_ui(processes: &[Process]) -> Option<&Process> {
 
 /// The process with this pid in a listing, if it is running.
 ///
-/// **One process, matched exactly.** A pid names a single process, unlike a title, which several
-/// processes can share - so this returns at most one. It is trimmed because the pid a person
-/// hands in on a command line arrives with whatever whitespace the shell left on it, the same way
-/// [`kill`] trims what it signals. A caller whose pid is not here is told, rather than left to
-/// signal into a number nothing is using.
+/// Matched exactly after trimming, as [`kill`] trims what it signals. `None` lets the caller
+/// report a pid nothing is using rather than signal it.
 #[must_use]
 pub fn by_pid<'a>(processes: &'a [Process], pid: &str) -> Option<&'a Process> {
     let pid = pid.trim();
@@ -422,9 +374,8 @@ pub fn by_pid<'a>(processes: &'a [Process], pid: &str) -> Option<&'a Process> {
 
 /// Every process a listing attributes to a title.
 ///
-/// Matched by the title column first; also by the command carrying the id, because a
-/// homebrew title launched as a bare payload has no title column of its own and is only
-/// findable by what it is running.
+/// Matched by the title column, and also by the command carrying the id, because a homebrew
+/// title launched as a bare payload has no title column of its own.
 #[must_use]
 pub fn of_title<'a>(processes: &'a [Process], id: &str) -> Vec<&'a Process> {
     let id = id.trim();
@@ -436,9 +387,9 @@ pub fn of_title<'a>(processes: &'a [Process], id: &str) -> Vec<&'a Process> {
 
 /// The kill commands that end one process, in the order they must be sent.
 ///
-/// A process in `STOP` state is sent `Continue` first: a stopped title does not run its own
-/// exit teardown, and killing it while stopped left locked vnodes behind until it was woken.
-/// Anything else is a single `Kill`. Measured on a target.
+/// A process in `STOP` state is sent `Continue` first: a stopped title does not run its exit
+/// teardown, and killing it while stopped leaves locked vnodes behind (measured on a target).
+/// Anything else is a single `Kill`.
 #[must_use]
 pub fn end(process: &Process) -> Vec<String> {
     let mut commands = Vec::new();
@@ -464,8 +415,7 @@ mod tests {
          00000010  2f 31 32 2e 34 30 20 4e 6f 76 20 32 37 20 32 30 | /12.40 Nov 27 20\n"
     }
 
-    /// **The firmware comes out of the bytes**, which is the fact everything else on this
-    /// platform depends on.
+    /// The firmware version is reassembled from the dump's bytes.
     #[test]
     fn the_firmware_is_reassembled_from_what_the_target_printed() {
         let value = value_in(firmware_dump()).expect("it reads");
@@ -479,8 +429,7 @@ mod tests {
         assert_eq!(number_in(dump), Some(16));
     }
 
-    /// **Nothing at all gives nothing**, rather than an empty string that would sit in the
-    /// panel looking like a target that answered.
+    /// A key that printed nothing is absent, not an empty string.
     #[test]
     fn a_key_that_printed_nothing_is_absent_rather_than_blank() {
         assert_eq!(value_in("sysctl: No such file or directory"), None);
@@ -503,11 +452,7 @@ mod tests {
         assert_eq!(user.full, "1%");
     }
 
-    /// **A title is found by its shape, not by its column.**
-    ///
-    /// The column is blank for every process that is not a game, so counting across would put
-    /// the memory figure in the title field for most rows - and `4.7` would look like an
-    /// identifier to anything that did not know better.
+    /// A title is recognised by its id's shape, so a memory figure in that column is not one.
     #[test]
     fn a_running_title_is_recognised_and_a_payload_is_not() {
         let ps = "     PID      PPID     PGID      SID      UID      State  AppId    TitleId     Memory (MiB)  Command\n\
@@ -533,11 +478,7 @@ mod tests {
         );
     }
 
-    /// **A homebrew title is found by the same shape as a retail one, and the system's own
-    /// processes are not titles at all.**
-    ///
-    /// Measured on a target running a homebrew title: `close GLCB00001` found nothing while
-    /// the process sat in `RUN`, because only the two retail prefixes were recognised.
+    /// A homebrew title is a title, and the system's own `NPXS` processes are not.
     #[test]
     fn a_homebrew_title_is_a_title_and_the_system_is_not() {
         let ps = "     PID      PPID     PGID      SID      UID      State  AppId    TitleId     Memory (MiB)  Command\n\
@@ -570,9 +511,7 @@ mod tests {
         assert!(!is_a_title_id("PPSA0266"));
     }
 
-    /// **The memory figure `ps` prints is captured, read from the end** so the title column - which
-    /// a game fills and a payload leaves blank - cannot shift it. Both rows end
-    /// `current / peak command` and are read the same way.
+    /// The memory figure is read from the end, for titles and payloads alike.
     #[test]
     fn the_memory_figure_is_read_for_titles_and_payloads_alike() {
         let ps = "     PID      PPID     PGID      SID      UID      State  AppId    TitleId     Memory (MiB)  Command\n\
@@ -610,8 +549,7 @@ mod tests {
         );
     }
 
-    /// A listing shape without the measured `current / peak` figure says nothing about memory
-    /// rather than guessing a zero.
+    /// A row without the `current / peak` shape reports no memory rather than zero.
     #[test]
     fn a_row_without_the_memory_shape_reports_none() {
         let ps = "PID PPID PGID SID UID STATE APPID TITLEID MEM COMMAND\n\
@@ -642,10 +580,7 @@ mod tests {
         assert!(report.storage.is_empty());
     }
 
-    /// **The machine's storage is told apart from a running application's mounts.**
-    ///
-    /// A target listed 1183 filesystems, twenty-two of which are the machine. Without this
-    /// the figure somebody came to read is one row in a thousand.
+    /// The machine's storage is told apart from a running application's sandbox mounts.
     #[test]
     fn a_sandbox_mount_is_not_the_targets_storage() {
         let df = "Filesystem   Size   Used  Avail  Capacity  Mounted on
@@ -701,8 +636,7 @@ mod tests {
         assert_eq!(mine[0].pid, "200");
     }
 
-    /// A process is found by its exact pid, whitespace and all, and a pid nothing is using is
-    /// `None` rather than a wrong match.
+    /// A process is found by its trimmed pid, and an unused pid is `None`.
     #[test]
     fn a_process_is_found_by_its_pid() {
         let found = listing();
@@ -714,8 +648,7 @@ mod tests {
         assert!(by_pid(&found, "999999").is_none());
     }
 
-    /// A running process is killed outright; a stopped one is woken first so its own teardown
-    /// can complete before it is killed.
+    /// A running process is killed outright; a stopped one is woken first.
     #[test]
     fn a_stopped_process_is_woken_before_it_is_killed() {
         let found = listing();

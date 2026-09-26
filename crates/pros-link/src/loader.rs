@@ -1,21 +1,12 @@
 //! Sending a payload to the target and running it.
 //!
-//! # The guard is the point
+//! The loader accepts anything beginning `7f 45 4c 46` and dies silently on what it cannot
+//! run, so the bytes are checked before sending. See [`crate::shape`].
 //!
-//! The loader accepts anything beginning `7f 45 4c 46` and then dies silently on the ones
-//! it cannot run. It cannot tell a payload from a vendor module, so this does, before a
-//! byte leaves the machine. See [`crate::shape`].
-//!
-//! # The read-back is a convenience and never a mechanism
-//!
-//! The loader duplicates the connection socket onto the payload standard output and
-//! standard error, so a payload sent this way reports over the socket it arrived on.
-//!
-//! **Nothing may be built on that.** A payload installed as a package, or started from the
-//! home screen, has no such socket and its output goes wherever its own sink puts it. This
-//! is offered as an optional window on the send call, and a caller that requires output to
-//! appear here has written something that works only when the payload is delivered one
-//! particular way.
+//! The loader duplicates the connection socket onto the payload's standard output and error,
+//! so a payload sent this way reports over that socket. A payload installed as a package or
+//! started from the home screen has no such socket, so the read-back is optional and nothing
+//! depends on it.
 
 use std::io::Write as _;
 use std::time::Duration;
@@ -30,21 +21,18 @@ const CONNECT: Duration = Duration::from_secs(6);
 
 /// How long to allow for the transfer.
 ///
-/// Generous: a payload is small but the link is a target on somebody home network, and a
-/// send that fails halfway leaves the loader holding a partial file.
+/// Generous: a send that fails halfway leaves the loader holding a partial file.
 const TRANSFER: Duration = Duration::from_secs(30);
 
 /// Sends a payload and listens for whatever it says.
 ///
-/// `listen` may be zero, which sends and returns immediately. That is the honest choice
-/// for a payload that reports somewhere else - see the module note.
+/// A zero `listen` sends and returns immediately, for a payload that reports elsewhere.
 ///
 /// # Errors
 ///
 /// [`Error::WrongShape`] before anything is sent, if the bytes are not a payload.
-/// [`Error::Unresolved`] or [`Error::Refused`] if the loader cannot be reached, which for
-/// this service usually means the jailbreak needs re-running rather than a payload
-/// reloading.
+/// [`Error::Unresolved`] or [`Error::Refused`] if the loader cannot be reached, which usually
+/// means the entry point needs re-running.
 pub fn send(link: &crate::Link, payload: &[u8], listen: Duration) -> Result<String> {
     send_at(
         &link.address,
@@ -56,19 +44,14 @@ pub fn send(link: &crate::Link, payload: &[u8], listen: Duration) -> Result<Stri
 
 /// Sends a payload to a loader on a port other than the usual one.
 ///
-/// # Why this is public rather than a test hatch
-///
-/// A target is not always where it says it is. Reached through a tunnel or a forward it
-/// answers on whatever port the tunnel chose, and a library that only knows the default
-/// has decided that case is not real. It is - and it is also what lets a caller point this
-/// at a fake without a second implementation to keep in step.
+/// Public because a target reached through a tunnel or forward answers on the port the
+/// tunnel chose, and because it lets a caller point this at a fake.
 ///
 /// # Errors
 ///
 /// As [`send`].
 pub fn send_at(address: &str, port: u16, payload: &[u8], listen: Duration) -> Result<String> {
-    // Before the connection, not after: refusing early costs the caller nothing, and a
-    // connection opened to be abandoned is a connection the loader has to clean up.
+    // Checked before connecting, so the loader never cleans up an abandoned connection.
     let found = shape::identify(payload);
     if !found.is_payload() {
         return Err(Error::WrongShape { found });

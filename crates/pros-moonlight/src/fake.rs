@@ -1,25 +1,12 @@
-//! A target that is not a target, for driving the bridge without a console.
+//! A stand-in for Porthole, for driving the bridge without hardware.
 //!
-//! # Why this exists
+//! It serves encoded video on 9805 and reads controller records on 9806, as Porthole does. It
+//! loops a canned Annex-B clip, which the bridge cannot tell from a live encoder since it never
+//! decodes, and prints each [`pros_link::pad::Pad`] record it receives.
 //!
-//! The bridge's whole point is that it can be built and tested against a stock Moonlight client
-//! on one LAN with no console in the room (`docs/VIDEO.md` part four, item 5). That is only true
-//! if something stands in for Porthole's payload: a thing that **serves encoded video on 9805**
-//! and **reads controller records on 9806**, the two ports the real payload will serve. This is
-//! that thing.
-//!
-//! It is deliberately dumb. It does not encode - it loops a canned Annex-B clip, because the
-//! bridge only reads the bytes and never decodes them, so a real recording played on repeat is
-//! indistinguishable from a live encoder as far as the code under test can tell. And it does not
-//! act on input - it decodes each [`pros_link::pad::Pad`] record and prints it, because the thing being tested is
-//! that the bridge *produces* correct records, and a printed line is the cheapest possible proof.
-//!
-//! # The direction of each port, which is easy to get backwards
-//!
-//! The **target listens; the host connects.** Porthole's payload is the server on both ports -
-//! the host (the bridge, or Porthole's own `watch`/`feed`) connects *out* to it. So the fake
-//! target is two listeners: a client that connects to `Ports::video` is fed the clip, and a
-//! client that connects to `Ports::input` has its records read.
+//! The target listens and the host connects: Porthole is the server on both ports, so the fake is
+//! two listeners. A client of `Ports::video` is fed the clip; a client of `Ports::input` has its
+//! records read.
 
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -28,11 +15,10 @@ use std::time::Duration;
 
 use pros_link::pad::{Button, Pad, RECORD};
 
-/// Porthole's video port, from `docs/VIDEO.md` part three's measured port map.
+/// Porthole's video port, from the port map in `docs/VIDEO.md`.
 ///
-/// Chosen there, not measured - 9805 sits with 9806 as a memorable pair and clear of every port
-/// the boot chain uses. It lives as a constant here because the fake has to serve the same port
-/// the bridge will read.
+/// Chosen rather than measured: it pairs with 9806 and is clear of every port the boot chain
+/// uses. The fake serves the same port the bridge reads.
 pub const VIDEO_PORT: u16 = 9805;
 
 /// The two ports a fake target listens on, mirroring Porthole.
@@ -53,12 +39,10 @@ impl Default for Ports {
     }
 }
 
-/// How much of the clip is written per burst, and the pauses that pace it.
+/// How much of the clip is written per burst.
 ///
-/// The clip is looped rather than streamed from an encoder, so it has to be paced to something a
-/// reader treats like a live stream instead of one enormous burst. These are not measured - they
-/// are a rate that reads smoothly and is cheap to change; the bridge's own counts are the thing
-/// that has to be right, not this.
+/// The burst size and pauses pace the looped clip like a live stream. They are chosen, not
+/// measured, and nothing depends on their exact values.
 const BURST: usize = 32 * 1024;
 /// The pause between bursts within one pass of the clip.
 const BURST_PAUSE: Duration = Duration::from_millis(2);
@@ -67,9 +51,8 @@ const LOOP_PAUSE: Duration = Duration::from_millis(16);
 
 /// A one-line human description of what a pad is doing.
 ///
-/// Names the held buttons and any stick or trigger that has left its rest position, so a record
-/// arriving on 9806 can be read at a glance. A pad at rest is said to be so rather than printed as
-/// an empty line, because "nothing held" and "no record arrived" must not look the same.
+/// Names the held buttons and any stick or trigger away from rest. A pad at rest prints as
+/// "at rest", so "nothing held" and "no record arrived" do not look the same.
 #[must_use]
 pub fn describe(pad: &Pad) -> String {
     if pad.is_at_rest() {
@@ -99,10 +82,9 @@ pub fn describe(pad: &Pad) -> String {
 /// Read 24-byte controller records from `from` until it closes, handing each decoded
 /// [`pros_link::pad::Pad`] to `on_pad`. Returns how many valid records were read.
 ///
-/// A record that does not decode - wrong magic, a reserved byte set, a slot out of range - is
-/// counted as read but reported through `tracing` and not passed on, because a bridge that sent a
-/// malformed record is exactly the fault this stand-in exists to catch, and swallowing it would
-/// hide it.
+/// A record that does not decode (wrong magic, a reserved byte set, a slot out of range) is
+/// counted, logged as a warning and not passed on: a malformed record from the bridge is the
+/// fault this stand-in exists to show.
 ///
 /// # Errors
 ///
@@ -132,7 +114,7 @@ pub fn drain_input<R: Read>(from: &mut R, mut on_pad: impl FnMut(Pad)) -> io::Re
 /// # Errors
 ///
 /// Propagates a write error. A peer that hangs up mid-clip surfaces as a broken pipe, which the
-/// caller treats as the client having stopped watching rather than as a fault.
+/// caller treats as the client leaving, not a fault.
 fn pump_once<W: Write>(to: &mut W, clip: &[u8]) -> io::Result<()> {
     for burst in clip.chunks(BURST) {
         to.write_all(burst)?;
@@ -155,12 +137,11 @@ fn serve_video(mut stream: TcpStream, clip: &[u8]) {
     }
 }
 
-/// Bind both listeners. Port `0` asks the OS for a free one, which is how a test gets an address
-/// nothing else is using.
+/// Bind both listeners. Port `0` asks the OS for a free port.
 ///
 /// # Errors
 ///
-/// If either port cannot be bound - most often because a previous run is still holding it.
+/// If either port cannot be bound, most often because a previous run still holds it.
 pub fn bind(ports: &Ports) -> io::Result<(TcpListener, TcpListener)> {
     let video = TcpListener::bind(("0.0.0.0", ports.video))?;
     let input = TcpListener::bind(("0.0.0.0", ports.input))?;
@@ -170,13 +151,12 @@ pub fn bind(ports: &Ports) -> io::Result<(TcpListener, TcpListener)> {
 /// Run the fake target forever: feed the clip to every client of the video listener, and print
 /// every record that arrives on the input listener.
 ///
-/// Blocks. Each connection is handled on its own thread, so several clients - or a client that
-/// reconnects - are all served. A single failed accept is logged and does not bring the stand-in
-/// down, because one client hanging up is not a reason to stop serving the next.
+/// Blocks. Each connection has its own thread, so several clients, or one that reconnects, are
+/// all served. A failed accept is logged and serving continues.
 ///
 /// # Errors
 ///
-/// Reserved for a future fatal condition; today it runs until the process is stopped.
+/// None in practice: it runs until the process is stopped.
 pub fn run(video: &TcpListener, input: &TcpListener, clip: &[u8]) -> io::Result<()> {
     thread::scope(|scope| {
         scope.spawn(|| {
@@ -217,12 +197,14 @@ mod tests {
     use std::net::TcpStream;
     use std::thread;
 
+    /// A pad at rest prints "at rest", not an empty line.
     #[test]
     fn a_pad_at_rest_says_so_rather_than_printing_nothing() {
         let line = describe(&Pad::rest());
         assert!(line.contains("at rest"), "{line}");
     }
 
+    /// A held button appears by name.
     #[test]
     fn a_held_button_is_named() {
         let mut pad = Pad::rest();
@@ -231,6 +213,7 @@ mod tests {
         assert!(line.contains(Button::Cross.name()), "{line}");
     }
 
+    /// A pulled trigger prints its pressure.
     #[test]
     fn a_pulled_trigger_shows_its_pressure_not_just_its_bit() {
         let mut pad = Pad::rest();
@@ -239,6 +222,7 @@ mod tests {
         assert!(line.contains("R2=200"), "{line}");
     }
 
+    /// Draining reads every whole record in order and returns `Ok` at end of stream.
     #[test]
     fn draining_reads_every_whole_record_and_stops_clean_at_eof() {
         let mut wire = Vec::new();
@@ -253,6 +237,7 @@ mod tests {
         assert_eq!(seen, vec![0, 1, 2]);
     }
 
+    /// A trailing partial record is not counted.
     #[test]
     fn a_trailing_partial_record_is_not_a_read() {
         let mut wire = Pad::rest().to_wire().to_vec();
@@ -261,24 +246,20 @@ mod tests {
         assert_eq!(read, 1, "the whole record counts; the fragment does not");
     }
 
+    /// Over real sockets, a client reads the clip and a record it sends arrives decoded.
     #[test]
     fn a_client_reads_the_clip_and_its_records_arrive() {
-        // Bind ephemeral ports so the test uses addresses nothing else holds.
         let clip = b"\x00\x00\x00\x01\x67 a fake stream of bytes \x00\x00\x00\x01\x65 keyframe";
         let (video, input) = bind(&Ports { video: 0, input: 0 }).unwrap();
-        // Bound on 0.0.0.0 so a real fake target accepts LAN clients; a test connects on the
-        // loopback with the port the OS actually chose.
         let video_addr = ("127.0.0.1", video.local_addr().unwrap().port());
         let input_addr = ("127.0.0.1", input.local_addr().unwrap().port());
 
-        // The bridge side: connect to the video port and read some bytes.
         let reader = thread::spawn(move || {
             let mut stream = TcpStream::connect(video_addr).unwrap();
             let mut got = [0_u8; 16];
             stream.read_exact(&mut got).unwrap();
             got
         });
-        // ... and connect to the input port and send one record.
         let mut pad = Pad::rest();
         pad.hold(Button::Triangle, true);
         pad.sequence = 7;
@@ -313,10 +294,9 @@ mod tests {
         assert_eq!(seen[0].sequence, 7);
     }
 
+    /// `run` keeps its signature; it never returns, so only its type is checked.
     #[test]
     fn run_is_wired_up() {
-        // A smoke test that the accept-loop signature composes; it never returns, so only its
-        // type is exercised here.
         fn _assert(video: &std::net::TcpListener, input: &std::net::TcpListener, clip: &[u8]) {
             let _: fn(
                 &std::net::TcpListener,

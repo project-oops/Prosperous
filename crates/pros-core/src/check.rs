@@ -1,27 +1,12 @@
-//! What a target can currently do, and what to do about what it cannot.
+//! What a target can do now, and what to do about what it cannot.
 //!
-//! # Not up or down
+//! A check reports what each service unlocks, and separates required services (no workflow
+//! without them) from optional ones (their absence costs visibility).
 //!
-//! A reader told that 3232 is closed has been given a worse answer than one told that the
-//! kernel log cannot be read. A check therefore reports **what each service unlocks**, and
-//! separates the services without which there is no workflow from the ones whose absence
-//! only costs visibility. Those two fail differently and call for different work.
-//!
-//! # The loader's failure has a different remedy from every other failure
-//!
-//! The payload manager launches everything through the loader - including, if asked, the
-//! loader itself. So when the loader dies **nothing can bring anything back**, and the
-//! dashboard that would have said so keeps answering, because it is a separate listener that
-//! is already running. The only recovery is re-running the jailbreak.
-//!
-//! That is the one finding here that changes what a person does next, so it is not left for
-//! a reader to work out from a table: [`Report::verdict`] says it.
-//!
-//! # The decisions are separate from the probing
-//!
-//! Everything that turns findings into a verdict is pure, and tested without a network. What
-//! needs a target is one function that fills in the timings. A rule about what a missing
-//! loader means should not be reachable only by switching a real target off.
+//! The payload manager launches everything through the loader, so a dead loader cannot be
+//! reloaded; the only recovery is re-running the entry point, and [`Report::verdict`] says
+//! so. Turning findings into a verdict is pure and tested without a network; only the probe
+//! functions need a target.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -33,9 +18,7 @@ use crate::target::Target;
 
 /// How slow an answer has to be before it is worth remarking on.
 ///
-/// A port that refuses instantly and one that takes a second and a half mean different
-/// things - the first is a machine saying no, the second is usually a network deciding - and
-/// a reader who cannot tell them apart blames the wrong thing.
+/// An instant refusal is the target saying no; a slow one is usually the network.
 pub const REMARKABLE: Duration = Duration::from_millis(400);
 
 /// How long to wait for any one service before calling it absent.
@@ -61,11 +44,9 @@ impl Finding {
 /// What to do about what is missing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Remedy {
-    /// The loader is gone, so nothing can be loaded - including the loader.
-    ///
-    /// **Its own variant rather than one missing service among others.** Everything else on
-    /// this list is fixed by loading a payload, and this is the one that cannot be.
-    RerunTheJailbreak,
+    /// The loader is gone, so nothing can be loaded, including the loader. Every other missing
+    /// service is fixed by loading a payload.
+    RerunTheEntryPoint,
     /// Something required is missing, and the loader can put it back.
     LoadThese {
         /// Which services, by name.
@@ -97,22 +78,12 @@ pub struct Report {
     pub name: String,
     /// Where it is.
     pub address: String,
-    /// One per service, in the order they are checked - the loader first.
+    /// One per service, in the order they are checked, the loader first. Includes declared
+    /// services, so the verdict sees them.
     pub findings: Vec<Finding>,
-    /// The same declared services again, keyed by name, for looking one up.
+    /// The declared services again, keyed by name for the payload table.
     ///
-    /// # This used to be the only place they went, and that was the bug
-    ///
-    /// It said that a declared port was *worth probing and not worth promoting to the same
-    /// list*. The consequence was that [`Report::verdict`] never saw one - so a payload
-    /// somebody had marked required could be down while the check reported *ready*. The
-    /// program took the measurement and then ignored it, which is this project's own recurring
-    /// defect committed against its own data.
-    ///
-    /// They are now in `findings` as well, which is what the verdict reads. This remains
-    /// because the payload table looks up by name and a map is the right shape for that.
-    ///
-    /// Empty when no manifest was consulted, or when nothing answered at all - see
+    /// Empty when no manifest was consulted, or when nothing answered at all; see
     /// [`check_declaring`].
     pub declared: BTreeMap<String, Reachability>,
 }
@@ -120,8 +91,8 @@ pub struct Report {
 impl Report {
     /// Builds a report from findings that have already been gathered.
     ///
-    /// Public so the reasoning below can be tested without a target, and so a caller that
-    /// probes differently - through a tunnel, or on other ports - can still use the verdict.
+    /// Public so the verdict can be tested without a target and used by a caller that probes
+    /// differently.
     #[must_use]
     pub fn new(name: &str, address: &str, findings: Vec<Finding>) -> Self {
         Self {
@@ -143,8 +114,8 @@ impl Report {
 
     /// What was found about one service, by name.
     ///
-    /// The one place anything asks *is this answering*, so that a panel needing a service
-    /// and the check reporting on it cannot disagree.
+    /// The one place that answers whether a service is up, so a panel and the check cannot
+    /// disagree.
     #[must_use]
     pub fn about(&self, service: &str) -> Option<&Finding> {
         self.findings
@@ -154,9 +125,7 @@ impl Report {
 
     /// Whether the loader itself is gone.
     ///
-    /// Answered by name rather than by position: the loader being first in the table is a
-    /// presentation choice, and a rule that depended on it would break quietly the day
-    /// somebody sorted the list.
+    /// Answered by name, not position: the loader being first is a presentation choice.
     #[must_use]
     pub fn loader_is_down(&self) -> bool {
         self.findings.iter().any(|finding| {
@@ -169,7 +138,7 @@ impl Report {
     pub fn verdict(&self) -> Verdict {
         if self.loader_is_down() {
             return Verdict::Blocked {
-                remedy: Remedy::RerunTheJailbreak,
+                remedy: Remedy::RerunTheEntryPoint,
             };
         }
         let required: Vec<String> = self
@@ -207,7 +176,7 @@ impl Report {
 
 /// Asks a target what it can currently do.
 ///
-/// Every service, every time, because a cached answer is a claim that expires without notice.
+/// Every service, every time: a cached answer expires without notice.
 #[must_use]
 pub fn check(target: &Target) -> Report {
     check_with(target, TIMEOUT)
@@ -215,17 +184,14 @@ pub fn check(target: &Target) -> Report {
 
 /// The same, with a timeout of the caller's choosing.
 ///
-/// A target on the other side of a link somebody is tunnelling through needs longer than one
-/// on the same network, and a caller that knows that should be able to say so.
+/// A target behind a tunnel needs longer than one on the same network.
 #[must_use]
 pub fn check_with(target: &Target, timeout: Duration) -> Report {
     let link = target.link();
     let findings = SERVICES
         .iter()
         .map(|service| {
-            // **The registered port, not the compiled-in one**, and the finding carries the
-            // port it actually used - a check that probed 2122 and reported 2121 would be a
-            // report about a machine nobody has.
+            // The registered port, and the finding carries the port actually probed.
             let port = link.port(&service.name, service.port);
             Finding {
                 service: Service {
@@ -241,26 +207,13 @@ pub fn check_with(target: &Target, timeout: Duration) -> Report {
 
 /// The same, and then whatever ports the manifest declared.
 ///
-/// # Why a manifest gets to widen a check
+/// A manifest entry that declares a port makes its presence checkable without a rebuild. The
+/// port is a deliberate field, never scraped from a description, because a wrong one reports
+/// another listener's state.
 ///
-/// Five services have ports this project measured. Everything else in a repository has no
-/// port anything here knows, so its presence is unanswerable - which is honest, and is not
-/// useful when a person is looking at twenty rows of *nothing here can tell*.
-///
-/// A manifest entry that declares a port makes itself answerable. That is the whole of it:
-/// **the list is editable, so presence becomes something a person can extend without a
-/// rebuild.** A wrong port reports one payload's state from another's socket, which is why
-/// the field is a deliberate entry in a file rather than a number scraped out of a
-/// description.
-///
-/// # Why a dead target is not probed twenty-five times
-///
-/// If nothing at all answered, the target is not there, and every further probe is a full
-/// timeout spent learning what the first five already established. So the extra probes are
-/// skipped and those entries read as unknown - which is exactly what they are.
-///
-/// Without that, a manifest growing would quietly turn an offline check from seconds into
-/// minutes, and the waiting would look like the tool having hung.
+/// When none of the compiled-in services answered, the target is not there and the declared
+/// probes are skipped (they read as unknown), so an offline check does not spend one timeout
+/// per manifest entry.
 #[must_use]
 pub fn check_declaring(target: &Target, manifest: &Manifest, timeout: Duration) -> Report {
     let mut report = check_with(target, timeout);
@@ -275,15 +228,11 @@ pub fn check_declaring(target: &Target, manifest: &Manifest, timeout: Duration) 
         let Some(mut service) = payload.as_service() else {
             continue;
         };
-        // A declared service can be overridden per target too. Two ways of saying where
-        // something is, and the registration is the more specific.
+        // The target's registration overrides the declared port.
         service.port = target.link().port(&service.name, service.port);
         let reachability = pros_link::probe(&target.address, service.port, timeout);
         report.declared.insert(payload.name.clone(), reachability);
-        // **Also a finding, which is what makes it count.** Kept in `declared` too, because
-        // the payload table looks things up by name there; but a finding is what the verdict
-        // reads, and a declared service that could not reach the verdict was a measurement
-        // this program took and then ignored.
+        // Also a finding, because the verdict reads only `findings`.
         report.findings.push(Finding {
             service,
             reachability,
@@ -327,6 +276,7 @@ mod tests {
             .collect()
     }
 
+    /// Every service answering is ready.
     #[test]
     fn everything_answering_is_ready() {
         let report = Report::new("prospero", "10.0.0.1", all(true));
@@ -334,29 +284,26 @@ mod tests {
         assert!(report.missing().is_empty());
     }
 
-    /// The finding that changes what a person does next.
-    ///
-    /// Not "the loader is one of three services that are down": nothing on this machine can
-    /// put it back, and every other remedy on the list assumes it is there.
+    /// A missing loader asks for the entry point to be re-run, not a payload reloaded.
     #[test]
-    fn a_missing_loader_says_rerun_the_jailbreak_rather_than_reload_a_payload() {
+    fn a_missing_loader_says_rerun_the_entry_point_rather_than_reload_a_payload() {
         let report = Report::new("prospero", "10.0.0.1", without(LOADER.name.as_ref()));
         assert_eq!(
             report.verdict(),
             Verdict::Blocked {
-                remedy: Remedy::RerunTheJailbreak
+                remedy: Remedy::RerunTheEntryPoint
             }
         );
     }
 
-    /// Even when several things are down, the loader is the one that decides the remedy.
+    /// When several services are down, the loader decides the remedy.
     #[test]
     fn the_loader_decides_the_remedy_when_several_are_down() {
         let report = Report::new("prospero", "10.0.0.1", all(false));
         assert_eq!(
             report.verdict(),
             Verdict::Blocked {
-                remedy: Remedy::RerunTheJailbreak
+                remedy: Remedy::RerunTheEntryPoint
             }
         );
     }
@@ -379,8 +326,7 @@ mod tests {
         );
     }
 
-    /// An optional service missing is a different kind of important: the work can proceed,
-    /// and less of it will be visible if it goes wrong.
+    /// A missing optional service dims rather than blocks.
     #[test]
     fn an_optional_service_missing_dims_rather_than_blocks() {
         let optional = SERVICES
@@ -440,12 +386,7 @@ mod declared_tests {
         }
     }
 
-    /// **A declared payload marked required can block, which it could not before.**
-    ///
-    /// This is the whole point of the field. A declared port used to be probed and the answer
-    /// kept in a map the verdict never read - so the program could measure that a required
-    /// thing was down and still report *ready*, which is its own recurring defect committed
-    /// against its own measurement.
+    /// A missing declared service marked required blocks.
     #[test]
     fn a_declared_required_service_blocks_when_it_is_missing() {
         let mut findings = all_present();
@@ -468,8 +409,7 @@ mod declared_tests {
         );
     }
 
-    /// Declared and **not** required dims rather than blocks - the same distinction the five
-    /// compiled-in services already draw, applied to one that came from a file.
+    /// A missing declared optional service dims rather than blocks.
     #[test]
     fn a_declared_optional_service_only_dims() {
         let mut findings = all_present();
@@ -490,9 +430,7 @@ mod declared_tests {
         );
     }
 
-    /// **A declared service says which kind it is**, because a wrong compiled-in port was
-    /// measured and a wrong declared one is somebody's typing - and the second reports another
-    /// listener's state under this name.
+    /// A declared service is marked as declared, and no compiled-in one is.
     #[test]
     fn a_declared_service_knows_it_was_declared() {
         let one = Service::declared("x".to_owned(), 1, "y".to_owned(), false, false, false);

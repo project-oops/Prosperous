@@ -1,26 +1,11 @@
 //! A target that is not a target, for tests.
 //!
-//! # Why this ships rather than hiding in a test module
+//! It ships outside `#[cfg(test)]` so every consumer tests against the same fake instead of
+//! building its own; it is std-only and costs nothing to ignore.
 //!
-//! The hardest constraint on this project is that its subject is a physical object on a
-//! network that is usually switched off. Every consumer of this crate has the same problem,
-//! and a fake behind `#[cfg(test)]` would be invisible to all of them - so each would build
-//! its own, which is three copies of the thing this crate exists to stop being copied.
-//!
-//! It is small, it is std-only like the rest, and it costs a consumer nothing to ignore.
-//!
-//! # What is worth faking
-//!
-//! Not the happy path. The awkward parts, because they are where the bugs are:
-//!
-//! - a stream with **no end**, so a reader has to stop on its own window
-//! - a server with **no framing**, so a reader has to stop on silence
-//! - a loader that **may not answer**, so a reader has to be correct when it does not
-//! - a port that refuses **instantly** against one that refuses **slowly**
-//!
-//! What it deliberately cannot test is whether the real target agrees. That is what a
-//! registered target and a manual run are for, and the difference between the two should
-//! stay visible in how results are reported.
+//! It fakes the awkward parts: a stream with no end, a server with no framing, a loader that
+//! may not answer, a file service whose transfers use a second connection, and a web service
+//! with chunked bodies. Whether the real target agrees is for a registered target to show.
 
 use std::fmt::Write as _;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
@@ -32,12 +17,8 @@ use std::time::Duration;
 
 /// What a fake file service holds, and where anything written to it lands.
 ///
-/// Shared with whoever started the fake, because **a store that worked and a store that
-/// reported success are different things** and only the contents afterwards tell them
-/// apart.
-///
-/// Names are matched exactly as the client asks for them. There is no directory tree here
-/// and inventing one would be faking the wrong thing.
+/// Shared with whoever started the fake, so a test checks the contents rather than the
+/// reply. Names are full paths matched exactly; there is no directory tree.
 #[derive(Debug, Clone, Default)]
 pub struct Store(Held);
 
@@ -83,23 +64,15 @@ impl Store {
 /// How a fake service behaves once something connects.
 #[derive(Debug, Clone)]
 pub enum Behaviour {
-    /// Say nothing, ever, and hold the connection open.
-    ///
-    /// The quiet log, and the loader that does not echo.
+    /// Say nothing and hold the connection open: the quiet log, the loader that does not echo.
     Silent,
-    /// Send this once, then hold the connection open without closing.
+    /// Send this once, then hold the connection open.
     ///
-    /// **Holding it open is the point.** A server that closes gives the reader an EOF to
-    /// stop on, which is precisely the signal the real ones do not provide.
+    /// The real services give no EOF to stop on, so neither does this.
     Says(String),
-    /// Send this repeatedly until the client goes away.
-    ///
-    /// The log, which streams and never ends.
+    /// Send this repeatedly until the client goes away, like the log.
     Streams(String),
-    /// Read a line, then answer it. Repeats.
-    ///
-    /// The shell: a banner first, then a reply per command, with no marker saying where a
-    /// reply stops.
+    /// The shell: a banner, then a reply per line read, with no end-of-reply marker.
     Shell {
         /// Sent unprompted on connect, before anything is typed.
         banner: String,
@@ -113,48 +86,32 @@ pub enum Behaviour {
         /// What to do once the client stops sending.
         then: Box<Behaviour>,
     },
-    /// A file service, with a second connection per transfer.
-    ///
-    /// The awkward part is not the commands, it is that a transfer happens somewhere else:
-    /// the server names a port, the client dials it, and everything worth getting wrong is
-    /// in the handover.
+    /// A file service, where each transfer uses a second connection on a port the server
+    /// names.
     Files {
         /// What it holds, and where a stored file lands.
         contents: Store,
         /// The address it claims when it names a data port.
         ///
-        /// **Wrong on purpose in the tests.** A server behind any translation reports the
-        /// address it believes it has, and a client that dials what it is told instead of
-        /// what already reached it works on a bench and fails in a house.
+        /// Tests set it wrong: a server behind address translation reports the address it
+        /// believes it has, so the client must dial the address that already reached it.
         claims: [u8; 4],
-        /// Whether it agrees to binary mode.
-        ///
-        /// A server that says no is the interesting case: continuing anyway is a transfer
-        /// that arrives with its bytes quietly edited.
+        /// Whether it agrees to binary mode; continuing after a refusal would edit the bytes.
         binary: bool,
-        /// Whether a `STOR` is acknowledged but kept nothing.
+        /// Whether a `STOR` is acknowledged but keeps nothing.
         ///
-        /// **The fault worth having a fake for**, and the one the [`Store`] note names: a store
-        /// that reports success and a store that happened are different things. A real target
-        /// with the title mounted, or an overlay that swallows the write, answers `226` and
-        /// leaves the old file in place - so a client that trusts the reply reports a file
-        /// replaced that was not. With this set, the fake does exactly that: it drains the data
-        /// connection, says `226`, and does not keep what arrived.
+        /// A real target with the title mounted, or an overlay that swallows the write,
+        /// answers `226` and leaves the old file in place. With this set the fake drains the
+        /// data connection, says `226`, and discards what arrived.
         swallows_stores: bool,
     },
     /// A web service answering one request.
-    ///
-    /// Enough of one to be worth testing against: a status that is not success, and a body
-    /// framed by pieces rather than by a length.
     Serves {
         /// The status code to answer with.
         status: u16,
         /// The body to send.
         body: String,
         /// Whether to send it in sized pieces with no overall length.
-        ///
-        /// What a server does when it is generating the answer as it goes and does not
-        /// know how long it will be.
         chunked: bool,
     },
 }
@@ -172,31 +129,22 @@ pub struct Fake {
 impl Fake {
     /// Starts a fake on an operating-system-chosen port.
     ///
-    /// The port is chosen rather than requested so that tests can run at the same time as
-    /// each other, and at the same time as a real target on the same machine.
+    /// An OS-chosen port lets tests run in parallel with each other and with a real target.
     ///
     /// # Errors
     ///
-    /// Propagates the failure to bind, which on a machine with no loopback is worth seeing
-    /// rather than papering over.
+    /// Propagates a failure to bind.
     pub fn start(behaviour: Behaviour) -> std::io::Result<Self> {
         Self::start_at(0, behaviour)
     }
 
     /// Starts a fake on a port of the caller's choosing, or any port when given zero.
     ///
-    /// # Why this exists
-    ///
-    /// A target answers on known ports, and anything tested through a real command line
-    /// reaches for those numbers rather than being handed one. A stand-in that can only be
-    /// put somewhere arbitrary cannot stand in for a target **end to end** - only for the
-    /// parts that were already willing to be told where to look.
+    /// A fixed port lets it stand in end to end for code that uses a target's known ports.
     ///
     /// # Errors
     ///
-    /// Propagates the failure to bind, which for a named port usually means something else
-    /// on this machine already holds it. Worth failing on rather than working around: a
-    /// test that quietly moves elsewhere is no longer testing what it says it is.
+    /// Propagates a failure to bind, usually because something else holds a named port.
     pub fn start_at(port: u16, behaviour: Behaviour) -> std::io::Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", port))?;
         let port = listener.local_addr()?.port();
@@ -207,16 +155,9 @@ impl Fake {
             thread::spawn(move || serve(&listener, &behaviour, &stop, &ready))
         };
 
-        // **Wait for the thread before saying the fake has started.**
-        //
-        // The socket is bound above, so a client can connect straight away and its
-        // connection sits in the backlog - which means a fake that is not yet serving looks
-        // exactly like one that is silent. Measured on the machine this was written on, a
-        // spawned thread took **230 ms** to be scheduled, and a caller reading on a 300 ms
-        // window spent all of it waiting for something that had not started. (D003)
-        //
-        // Bounded, so a machine that cannot start a thread reports a slow fake rather than
-        // hanging inside a test.
+        // Wait for the thread to run: a connection to the bound socket sits in the backlog, so
+        // a fake not yet serving looks silent. A spawned thread was measured taking 230 ms to
+        // be scheduled. Bounded, so a stuck thread cannot hang a test.
         let _ = waiting.recv_timeout(Duration::from_secs(5));
 
         Ok(Self {
@@ -242,14 +183,9 @@ impl Fake {
 impl Drop for Fake {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        // **Knock, so the accept notices.**
-        //
-        // The listener blocks rather than polling, which is what makes it answer a real
-        // client in microseconds - and a blocking accept cannot be interrupted by setting a
-        // flag. One throwaway connection wakes it, it sees the flag, and it stops. The
-        // alternative, a non-blocking listener asked over and over whether anything had
-        // arrived, was measured taking up to **487 ms** to notice a connection that was
-        // already there. (D003)
+        // Knock: a blocking accept cannot see the flag, so one throwaway connection wakes it.
+        // A polling listener instead was measured taking up to 487 ms to notice a
+        // connection.
         let _ = TcpStream::connect(("127.0.0.1", self.port));
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -259,8 +195,7 @@ impl Drop for Fake {
 
 /// Accepts connections until told to stop.
 ///
-/// `ready` is signalled once, before the first accept, so whoever started this knows the
-/// thread is running rather than merely spawned.
+/// `ready` is signalled once before the first accept, when the thread is running.
 fn serve(
     listener: &TcpListener,
     behaviour: &Behaviour,
@@ -272,8 +207,7 @@ fn serve(
         let Ok((stream, _)) = listener.accept() else {
             return;
         };
-        // Checked after the accept rather than before it: the connection that woke this may
-        // be the knock from `Drop`, and answering it would be talking to nobody.
+        // Checked after the accept: this connection may be the knock from `Drop`.
         if ended(stop) {
             return;
         }
@@ -283,12 +217,8 @@ fn serve(
 
 /// Plays one behaviour at one client.
 fn handle(mut stream: TcpStream, behaviour: &Behaviour, stop: &Arc<AtomicBool>) {
-    // **A connection accepted from a listener inherits its non-blocking mode**, and the
-    // listener has to be non-blocking so the accept loop can be told to stop. Left that
-    // way, every read here returns immediately whether or not anything arrived - so a
-    // wait for the client to go quiet does not wait, and a read that means "nothing yet"
-    // is indistinguishable from one that means "gone". Blocking with a short timeout is
-    // what the code below is written against, so it is set before anything reads.
+    // Blocking with a short timeout is what the reads below assume. An accepted stream can
+    // inherit a listener's non-blocking mode, so the mode is set explicitly.
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
     match behaviour {
@@ -323,15 +253,9 @@ fn handle(mut stream: TcpStream, behaviour: &Behaviour, stop: &Arc<AtomicBool>) 
             }
         }
         Behaviour::Accepts { then } => {
-            // Drain until the client stops sending, then switch. A real loader reads the
-            // whole payload before anything it runs can say a word.
-            //
-            // **One quiet read ends it, but only after something has arrived.** Waiting for
-            // several would be a stricter rule that costs a fixed delay before the payload
-            // can speak, and a caller listening on a short window would miss the answer for
-            // reasons that have nothing to do with what it is testing. Before any bytes
-            // arrive there is nothing to be quiet after, so silence there is just a client
-            // that has not started.
+            // Drain the payload, then switch, as a real loader reads it all before it runs.
+            // One quiet read after some bytes ends the drain, so a caller on a short window
+            // still hears the answer; silence before any bytes is a client not started yet.
             let mut buffer = [0_u8; 4096];
             let mut arrived = false;
             let mut waited = 0_u32;
@@ -339,8 +263,7 @@ fn handle(mut stream: TcpStream, behaviour: &Behaviour, stop: &Arc<AtomicBool>) 
                 match stream.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(_) => arrived = true,
-                    // The bound is on a client that connects and then says nothing at all,
-                    // which would otherwise hold this thread until the fake is dropped.
+                    // Bounds a client that connects and never sends.
                     Err(_) if arrived || waited >= 40 => break,
                     Err(_) => waited = waited.saturating_add(1),
                 }
@@ -370,8 +293,7 @@ fn serve_files(
     swallows_stores: bool,
     stop: &Arc<AtomicBool>,
 ) {
-    // Long enough that a client thinking between commands is not mistaken for one that
-    // has gone away.
+    // Long enough that a pause between commands is not taken for a departed client.
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let Ok(writing) = stream.try_clone() else {
         return;
@@ -385,7 +307,7 @@ fn serve_files(
     };
 
     say(&mut writing, "220 a target that is not one");
-    // Where a transfer will happen, once the client has been told about it.
+    // The data listener announced by the last `PASV`.
     let mut pending: Option<TcpListener> = None;
 
     loop {
@@ -441,16 +363,13 @@ fn serve_files(
                     &mut say,
                 );
             }
-            // A control-channel reply, no data connection: the size of what was stored, so a
-            // client can confirm a `STOR` actually landed. `213 <n>`, or 550 when it is not here.
+            // Lets a client confirm a `STOR` landed: `213 <n>`, or 550 when absent.
             "SIZE" => match contents.get(&argument) {
                 Some(bytes) => say(&mut writing, &format!("213 {}", bytes.len())),
                 None => say(&mut writing, "550 no such file"),
             },
-            // The measured target's ftpsrv answers `MKD` with `226 Directory created`, not the
-            // standard `257` - which a client must read as success, not a refusal (oops-apps
-            // REQ-20260911T1030Z-c14f). There is no directory tree here to change, so it only
-            // acks, in this target's own words.
+            // The target's ftpsrv answers `MKD` with `226 Directory created`, not the standard
+            // `257`; a client reads it as success. There is no tree here, so it only acks.
             "MKD" => say(&mut writing, "226 Directory created"),
             "QUIT" => {
                 say(&mut writing, "221 goodbye");
@@ -471,8 +390,8 @@ fn transfer(
     swallows_stores: bool,
     say: &mut impl FnMut(&mut TcpStream, &str),
 ) {
-    // A missing file is answered before the transfer starts, because that is when a real
-    // server knows - and a client that has already opened a data connection has to cope.
+    // A missing file is refused before the transfer starts, as a real server does, after the
+    // client has already opened a data connection.
     if verb == "RETR" && contents.get(argument).is_none() {
         say(writing, "550 no such file");
         return;
@@ -484,13 +403,10 @@ fn transfer(
     };
     match verb {
         "LIST" => {
-            // A header, which is part of the format, and a line that is genuinely not an
-            // entry - so a client can be tested on telling those two apart.
+            // A header line and a non-entry line, which a client must skip.
             let mut listing = String::from("total 2\nthis line is not a listing entry\n");
-            // Directory-aware, like a real server: only the files directly in the requested folder,
-            // named by their basename. The store is keyed by full path, so a folder's children are
-            // the keys under `<argument>/` with no further slash - which is what lets a client tell
-            // a file that is there from one that is not.
+            // Only the files directly in the requested folder, by basename: the keys under
+            // `<argument>/` with no further slash.
             let prefix = format!("{}/", argument.trim_end_matches('/'));
             for name in contents.names() {
                 let Some(base) = name
@@ -516,8 +432,7 @@ fn transfer(
         _ => {
             let mut bytes = Vec::new();
             let _ = data.read_to_end(&mut bytes);
-            // A server that swallows the write drains the connection and keeps nothing, so the
-            // old file - or no file - is what a size check finds afterwards.
+            // A swallowed write leaves the old file, or none, for a size check to find.
             if !swallows_stores {
                 contents.put(argument, bytes);
             }
@@ -530,8 +445,7 @@ fn transfer(
 /// Answers one web request and closes.
 fn serve_web(mut stream: TcpStream, status: u16, body: &str, chunked: bool) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    // Read the request to its blank line, so the client is not writing into a socket
-    // nobody drained.
+    // Drain the request to its blank line before answering.
     let Ok(reading) = stream.try_clone() else {
         return;
     };
@@ -550,8 +464,7 @@ fn serve_web(mut stream: TcpStream, status: u16, body: &str, chunked: bool) {
     let mut response = format!("HTTP/1.1 {status} {}\r\n", reason(status));
     if chunked {
         response.push_str("Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
-        // Two pieces rather than one, so a reader that handles the first and stops is
-        // caught rather than passed.
+        // Two pieces, so a reader that stops after the first fails.
         let (first, second) = body.split_at(body.len() / 2);
         for piece in [first, second] {
             let _ = write!(response, "{:x}\r\n{piece}\r\n", piece.len());

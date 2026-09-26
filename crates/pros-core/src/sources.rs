@@ -1,38 +1,14 @@
 //! Asking a payload's own project what it has released.
 //!
-//! # The version this project could never see
+//! The payload list is a hand-maintained static file; this compares it against each project's
+//! latest release. Never asked must not look like up to date, so
+//! [`crate::sources::Against::NotChecked`] carries a reason and every stored answer carries the
+//! second it was given.
 //!
-//! Three versions were already knowable for any payload: what the list describes, what is
-//! staged on this machine, and what the target holds. There is a fourth, and until now nothing
-//! here could see it - **what the project has actually released**.
-//!
-//! Without it the list is trusted absolutely. It is a static file: the one shipped here plus
-//! whatever a console's payload manager has cached, both hand-maintained, both wrong the moment
-//! somebody cuts a release. Measured on 2026-08-30: the mirror this project's own list named
-//! for `elfldr` answered 404, and the list had been wrong for an unknown length of time with
-//! nothing able to say so.
-//!
-//! # Why the answer is kept with the time it was asked
-//!
-//! **Never asked must not look like up to date.** That is the whole of it. An `Against` that
-//! collapsed *the list matches the latest release* into *nobody has checked* would be this
-//! project's recurring defect committed against the one column that exists to catch it - so
-//! [`crate::sources::Against::NotChecked`] carries the reason, and every stored answer carries
-//! the second it was given.
-//!
-//! # Why this is polite about it
-//!
-//! Sixty requests an hour, unauthenticated, per address. A payload list of thirty-four spends
-//! half of that in one sweep, so a sweep on every launch would be rate-limited by lunchtime.
-//! Three things keep it reasonable, and none of them is a guess:
-//!
-//! - answers are cached on disk and only re-asked when they are older than
-//!   [`crate::sources::STALE`];
-//! - asks are spaced by a fixed gap rather than fired at once - see
-//!   [`crate::sources::between`];
-//! - a refusal is retried with a widening gap, and when the reply says *when* the limit lifts,
-//!   that is waited for rather than guessed at - up to a limit, after which it gives up and
-//!   says when to come back.
+//! The releases API allows sixty unauthenticated requests an hour per address. Answers are
+//! cached on disk until older than [`crate::sources::STALE`], asks are spaced by
+//! [`crate::sources::between`], and a refusal waits for the reset time the reply gives, up to a
+//! limit, before giving up and saying when to come back.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -44,9 +20,7 @@ use crate::manifest::Payload;
 
 /// How old a stored answer may be before a sweep asks again.
 ///
-/// **Six hours, because a release is not an event this needs to catch quickly.** The cost of
-/// being a few hours behind is nil; the cost of asking too often is a rate limit that makes
-/// the whole feature unavailable to somebody who restarts the program twice.
+/// A release does not need catching quickly, and asking too often hits the rate limit.
 pub const STALE: Duration = Duration::from_hours(6);
 
 /// How long to wait between one ask and the next.
@@ -57,8 +31,7 @@ const RETRIES: usize = 3;
 
 /// The longest this will wait for a rate limit to lift before giving up on the sweep.
 ///
-/// A limit that lifts in forty seconds is worth waiting out. One that lifts in forty minutes is
-/// not something to hold a thread for, so it is reported with the time instead.
+/// A longer limit is reported with its reset time rather than held on a thread.
 const PATIENCE: Duration = Duration::from_secs(90);
 
 /// How long any one request may take.
@@ -81,8 +54,7 @@ pub struct Upstream {
     pub latest: Option<String>,
     /// The files attached to it.
     ///
-    /// **Kept with the tag rather than fetched again.** Both come out of one reply, and asking
-    /// twice would spend two of sixty requests an hour to learn what one already said.
+    /// Kept with the tag because both come out of one reply.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assets: Vec<Asset>,
     /// When this was asked, in seconds since the epoch.
@@ -94,12 +66,9 @@ pub struct Upstream {
 impl Upstream {
     /// Which attached file is the payload, for a description that names one.
     ///
-    /// # Why this can decline to answer
-    ///
-    /// A release can carry a debug build, a source archive, a checksum file and the payload,
-    /// and picking wrong would rewrite a list entry to point at the wrong thing. So: an exact
-    /// filename match, then the only loadable file if there is exactly one, and otherwise
-    /// **nothing** - which is a question for a person rather than a guess.
+    /// An exact filename match, else the only loadable file if there is exactly one, else
+    /// `None`: a release can carry debug builds and archives beside the payload, and a wrong
+    /// pick would repoint a list entry.
     #[must_use]
     pub fn payload_asset(&self, wanted: Option<&str>) -> Option<&Asset> {
         if let Some(wanted) = wanted
@@ -114,8 +83,8 @@ impl Upstream {
             .assets
             .iter()
             .filter(|one| {
-                // Extension, not suffix: a release called `notes-for-the.elf-format.txt` is
-                // not a payload, and a `.ELF` from a build on Windows is.
+                // Extension, not suffix, and case-insensitive: `notes.elf-format.txt` is not a
+                // payload and `.ELF` is.
                 std::path::Path::new(&one.name)
                     .extension()
                     .is_some_and(|it| {
@@ -150,9 +119,8 @@ pub enum Against {
     },
     /// They differ and cannot be ordered.
     ///
-    /// **Said rather than called behind.** A tag is somebody's text; `1.6beta16` and `v1.6` are
-    /// not two numbers, and deciding which is newer would be a guess in the one place this
-    /// column exists to stop guessing.
+    /// Not called behind: a tag is free text, and `1.6beta16` against `v1.6` has no order
+    /// this can decide without guessing.
     Different {
         /// What the list says.
         listed: String,
@@ -173,8 +141,8 @@ impl Against {
 
 /// How a payload's list entry stands against what was found upstream.
 ///
-/// `None` for `found` is *nobody asked*, which is deliberately not the same as an ask that came
-/// back empty - the second one carries what the project said.
+/// `None` for `found` is "nobody asked", distinct from an ask that came back empty, which
+/// carries what the project said.
 #[must_use]
 pub fn against(payload: &Payload, found: Option<&Upstream>) -> Against {
     let Some(found) = found else {
@@ -199,8 +167,7 @@ pub fn against(payload: &Payload, found: Option<&Upstream>) -> Against {
     if listed.eq_ignore_ascii_case(upstream) {
         return Against::Current;
     }
-    // The same rule the target column uses, in the same place, so two columns comparing version
-    // strings cannot come to different conclusions about the same pair.
+    // The same rule the target column uses, so the two columns cannot disagree about a pair.
     if crate::payloads::is_older(listed, upstream) {
         return Against::Behind {
             listed: listed.to_owned(),
@@ -215,9 +182,8 @@ pub fn against(payload: &Payload, found: Option<&Upstream>) -> Against {
 
 /// The owner and repository a releases page belongs to.
 ///
-/// **Only the shapes that are certain.** A source that is not plainly a repository address
-/// returns `None` and is reported as unasked rather than guessed at - a wrong repository would
-/// answer confidently about somebody else's software.
+/// Only plain repository addresses are recognised; anything else returns `None` and is
+/// reported as unasked, because a wrong repository would answer about other software.
 #[must_use]
 pub fn owner_repo(source: &str) -> Option<(String, String)> {
     let rest = source
@@ -297,9 +263,7 @@ pub fn now() -> u64 {
 ///
 /// # Errors
 ///
-/// [`NotAsked`], which distinguishes *there is nothing to ask* from *it refused* from *it
-/// failed* - three states that call for three different things and would otherwise all be
-/// drawn as a payload nobody could check.
+/// [`NotAsked`], which separates nothing to ask, a refusal, and a failure.
 pub fn ask(owner: &str, repo: &str) -> Result<(String, Vec<Asset>), NotAsked> {
     let mut waited = Duration::from_secs(1);
     let mut last = NotAsked::Failed("nothing was tried".to_owned());
@@ -309,9 +273,7 @@ pub fn ask(owner: &str, repo: &str) -> Result<(String, Vec<Asset>), NotAsked> {
             // Neither of these changes by being asked twice.
             Err(why @ (NotAsked::NoRepository | NotAsked::NoReleases)) => return Err(why),
             Err(NotAsked::Limited { until }) => {
-                // **The reply says when, so that is what is waited for.** A guessed backoff
-                // either wakes too early and spends another request on the same refusal, or
-                // sleeps long past the moment the limit lifted.
+                // Wait for the reset time the reply gives rather than a guessed backoff.
                 let gap = until.map_or(waited, |when| {
                     Duration::from_secs(when.saturating_sub(now()).saturating_add(1))
                 });
@@ -351,8 +313,7 @@ fn ask_once(owner: &str, repo: &str) -> Result<(String, Vec<Asset>), NotAsked> {
             &TIMEOUT.as_secs().to_string(),
             "-H",
             "Accept: application/vnd.github+json",
-            // Sent because the address requires one, and named plainly: a request that
-            // disguises itself is a request somebody cannot account for in their own logs.
+            // The API requires a user agent; this one names the program plainly.
             "-H",
             "User-Agent: prosperous",
             &url,
@@ -382,8 +343,7 @@ fn ask_once(owner: &str, repo: &str) -> Result<(String, Vec<Asset>), NotAsked> {
 
 /// Splits a raw reply into its last header block and its body.
 ///
-/// The last block, because a reply that redirected carries more than one and only the final one
-/// describes what actually answered.
+/// A redirected reply carries several blocks; only the last describes what answered.
 fn split(said: &str) -> (String, &str) {
     let mut rest = said;
     let mut headers = String::new();
@@ -445,33 +405,13 @@ fn tag_in(body: &str) -> Option<(String, Vec<Asset>)> {
 
 /// Rewrites a description to point at what the project has released now.
 ///
-/// # Why this downloads before it writes anything
+/// A list entry needs a checksum and the project publishes none, so this downloads the file
+/// and computes it. That is a trust step: the digest proves later downloads match this one,
+/// not what the project published. It sits behind an explicit action for that reason.
 ///
-/// A list entry is `url` **and** `checksum`, and the second is what makes the first safe to
-/// use: this program refuses to fetch a payload it cannot check when it arrives. A new version
-/// has no digest anywhere - the project publishes a file, not a hash this can verify against -
-/// so the only way to get one is to fetch the file and compute it.
-///
-/// **That is a trust step and it is the only one in this program.** The digest recorded proves
-/// that what you download later is what was downloaded now; it proves nothing about what the
-/// project published. Every manifest entry has one of these behind it somewhere, including the
-/// ones shipped here - somebody trusted a download once. This makes that moment explicit and
-/// puts it behind a button rather than hiding it in a file somebody edits by hand.
-///
-/// # Why it asks the project again rather than using what a sweep recorded
-///
-/// **A stored answer is for reading, not for acting on.** Two reasons, and the first has
-/// already bitten:
-///
-/// - a cached answer from before this program recorded release files has *no files* in it, and
-///   that is indistinguishable from a release which genuinely has none. The message somebody
-///   got was `the v5.14.0 release has 0 files` about a release with twenty-one. Any field added
-///   here in future would do the same thing again;
-/// - a sweep is hours old by design. What is about to be written into a list should be what the
-///   project says now, not what it said this morning.
-///
-/// One request, at the moment somebody presses a button, is the cheapest possible answer to
-/// both - and the fresh reply is handed back so what is on screen catches up too.
+/// It asks the project again rather than using a stored answer: a stored answer can be hours
+/// old, and one recorded before assets were stored has none, which looks like a release with
+/// no files. The fresh reply is returned so the display catches up.
 ///
 /// # Errors
 ///
@@ -530,7 +470,7 @@ pub fn relist(payload: &Payload) -> Result<(Payload, Upstream), String> {
         filename: Some(asset.name.clone()),
         url: Some(asset.url.clone()),
         checksum: Some(digest.to_string()),
-        // **The address the file actually came from**, so the next update asks the same place.
+        // The address the file came from, so the next update asks the same place.
         source_direct: Some(asset.url),
         ..payload.clone()
     };
@@ -539,8 +479,7 @@ pub fn relist(payload: &Payload) -> Result<(Payload, Upstream), String> {
 
 /// Everything that has been asked, kept between runs.
 ///
-/// **On disk beside the registry**, because the point of keeping it is to not ask again on the
-/// next launch, and something held only in memory would ask every time.
+/// On disk beside the registry, so a new launch does not ask again.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Sources {
     /// Keyed by the payload's name as the list spells it.
@@ -574,8 +513,7 @@ impl Sources {
 
     /// The payloads a sweep would ask about, given how old an answer may be.
     ///
-    /// **A payload with no repository is not returned at all**, so a sweep does not spend a
-    /// gap between requests on something it was never going to ask.
+    /// A payload with no repository is left out, so a sweep spends no gap on it.
     #[must_use]
     pub fn due<'a>(&self, described: &'a [Payload], older_than: Duration) -> Vec<&'a Payload> {
         let now = now();
@@ -606,8 +544,7 @@ pub fn path() -> Option<PathBuf> {
 
 /// Reads what has been asked before.
 ///
-/// **A file that cannot be read is an empty one**, not a failure: this is a cache of somebody
-/// else's release numbers, and refusing to start over it would be absurd.
+/// A file that cannot be read is an empty cache, not a failure.
 #[must_use]
 pub fn load() -> Sources {
     path()
@@ -656,7 +593,7 @@ mod tests {
         }
     }
 
-    /// **Nobody asked is not up to date.** The whole reason this module keeps a timestamp.
+    /// Nobody asked is not reported as up to date.
     #[test]
     fn a_payload_nobody_asked_about_is_not_reported_as_current() {
         let payload = listed("elfldr", Some("v0.25"), None);
@@ -688,7 +625,7 @@ mod tests {
         );
     }
 
-    /// **The case this exists for:** the project moved on and the list did not.
+    /// A project with a newer release shows the list as behind.
     #[test]
     fn a_project_that_has_released_something_newer_shows_the_list_as_behind() {
         let payload = listed("elfldr", Some("v0.25"), None);
@@ -727,7 +664,7 @@ mod tests {
         assert_eq!(owner_repo(""), None);
     }
 
-    /// **A payload with no repository is never asked about**, so a sweep spends no time on it.
+    /// A payload with no repository is not in a sweep.
     #[test]
     fn a_payload_with_nowhere_to_ask_is_not_in_a_sweep() {
         let described = vec![
@@ -784,7 +721,7 @@ mod tests {
         assert!(assets.is_empty(), "this reply carried no files");
     }
 
-    /// **A redirected reply carries two header blocks**, and only the last one answered.
+    /// Only the final header block of a redirected reply is read.
     #[test]
     fn only_the_final_header_block_is_read() {
         let said = "HTTP/2 301\r\nlocation: elsewhere\r\n\r\nHTTP/2 403\r\nx-ratelimit-reset: 900\r\n\r\n{}";
@@ -796,11 +733,7 @@ mod tests {
         );
     }
 
-    /// **The payload is picked by name, or not at all.**
-    ///
-    /// A release carrying a debug build beside the real one is the case this exists for:
-    /// guessing would repoint a list entry at the wrong file, and the list entry is what a
-    /// digest is later checked against.
+    /// An exact filename wins, and two loadable files with no name match pick nothing.
     #[test]
     fn an_exact_filename_wins_and_ambiguity_declines_to_answer() {
         let two = Upstream {
@@ -856,13 +789,8 @@ mod tests {
         );
     }
 
-    /// **The real release that produced the bad message**, as its own case.
-    ///
-    /// `ps5upload` v5.14.0 attaches twenty-one files - installers for four operating systems,
-    /// an Android package, a `latest.json`, six engine binaries with no extension at all - and
-    /// exactly one payload. The name in the list does not match it, because the project renamed
-    /// the file between releases, so the only thing that identifies it is being the one
-    /// loadable file among twenty.
+    /// The one loadable file is found among many installers when the listed name is stale
+    /// (the asset list of the `ps5upload` v5.14.0 release).
     #[test]
     fn one_payload_among_twenty_installers_is_still_found() {
         let names = [
@@ -901,18 +829,15 @@ mod tests {
             said: String::new(),
         };
         assert_eq!(release.assets.len(), 21);
-        // The list still names last year's file, which no longer exists in this release.
+        // The listed filename is from an older release and is not attached to this one.
         let picked = release
             .payload_asset(Some("ps5upload_v5.4.19.elf"))
             .expect("the one loadable file is the payload");
         assert_eq!(picked.name, "ps5upload-5.14.0.elf");
     }
 
-    /// **An answer recorded before this program knew about files is not a release with none.**
-    ///
-    /// It is the same shape and the opposite fact, which is why [`relist`] asks the project
-    /// again instead of reading this - a cached entry from an older run said *0 files* about
-    /// a release carrying twenty-one.
+    /// A stored answer without an assets field reads as having none, which is why
+    /// [`relist`](super::relist) asks the project again.
     #[test]
     fn an_answer_from_before_files_were_recorded_looks_empty() {
         let older: Upstream = serde_json::from_str(

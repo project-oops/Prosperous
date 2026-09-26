@@ -1,80 +1,33 @@
-//! Installing a package on the target, through the shell.
+//! Installing a package on the target, through the shell's `pkg_install URL` builtin.
 //!
-//! # How this turned out to work, and how long that took to find
-//!
-//! A note in this project's own decisions once said package installation was unmeasured:
-//! nothing answered on 8080, 9090 or 12800, so it was recorded as an open question rather
-//! than guessed at. That was right, and it was also looking in the wrong place.
-//!
-//! **The shell has a builtin.** `pkg_install URL`, alongside `launch`, `hbldr` and `notify`.
-//! No service, no port - a command, on the shell that was already there.
-//!
-//! # It takes a URL, and it means it
-//!
-//! `pkg_install` prints `Usage: pkg_install URL`, and **that is not a loose way of saying
-//! path**. Measured against a target, with a real package present on its own disk:
-//!
-//! ```text
-//! pkg_install /data/pkg/thing.pkg          content_id = [] content_platform = [0]
-//! pkg_install file:///data/pkg/thing.pkg   content_id = [] content_platform = [0]
-//! pkg_install http://192.168.1.100/thing.pkg
-//!     content_id = [IV0002-ITEM00001_00-STOREUPD00000000] content_platform = [1]
-//! ```
-//!
-//! # The wrong conclusion this replaces, and how it was reached
-//!
-//! An earlier version of this note said a bare path and a `file://` one *reach the same code
-//! inside it* - concluded from giving it a missing file and getting an identical complaint
-//! from each.
-//!
-//! They were identical because **both fail**, not because both work. Two inputs producing
-//! indistinguishable output, read as agreement rather than as a pair of failures: this
-//! project's own defect, in the reasoning about it rather than in the code.
-//!
-//! What settled it was giving it a package that was definitely there - valid `CNT` magic,
-//! sitting in `/data/pkg` - and watching it produce the same empty answer as a file that did
-//! not exist.
-//!
-//! So the package has to be **served over HTTP from this machine**. That is the listening
-//! socket this module previously said it would not open; it is not optional, and a note
-//! saying otherwise was worth less than the measurement that disproved it.
-//!
-//! # What success looks like, now that one has been watched
-//!
-//! `content_id` is the whole of it. Empty means the package was never read; populated means it
-//! was read and handed to the installer, and the identifier is the one the target will list it
-//! under.
-//!
-//! This still does not claim the install **finished**. Handing a package to the installer and
-//! the installer completing are different events, and only the first is visible from here - so
-//! what comes back says the target accepted it, with the identifier, and leaves the rest to
-//! the target's own screen.
+//! The argument must be an http(s) URL served from this machine. Measured on a target with a
+//! real package (valid `CNT` magic) in `/data/pkg`: a bare path and a `file://` URL both
+//! answer `content_id = [] content_platform = [0]`, the same as a missing file, while an
+//! `http://` URL answers with the package's content identifier. An empty `content_id` means
+//! the package was never read; a populated one means it was handed to the installer, under
+//! the identifier the target will list it by. Whether the install then finishes is visible
+//! only on the target's own screen.
 
 /// What the target said about an install.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Said {
     /// It read the package and handed it to the installer.
     ///
-    /// Carries the content identifier the target reported. **Not the same as installed**: what
-    /// is visible from here is the handover, and the installer finishing is an event on the
-    /// target's own screen.
+    /// Carries the content identifier the target reported. Not the same as installed: the
+    /// installer finishing is visible only on the target's own screen.
     Accepted(String),
     /// It could not read the package.
     ///
-    /// Measured: an empty `content_id`. Produced by a file that is not there, and equally by
-    /// one that is - the local path forms fail this way, which is how they were found out.
+    /// Measured as an empty `content_id`, for a missing file and for any local path form.
     CouldNotRead,
     /// It said nothing before the shell went quiet.
     ///
-    /// **Not success.** A fetch over the network can outlast the window the shell is given,
-    /// so silence here means *still going or never started*, and the two are not
-    /// distinguishable from this side.
+    /// Not success: a network fetch can outlast the shell's window, so silence means still
+    /// going or never started, which this side cannot tell apart.
     Silent,
     /// It said something this does not recognise.
     ///
-    /// **The honest default.** No successful install has been observed by this project, so
-    /// there is no shape to match against, and claiming one would be inventing a measurement.
-    /// The words are carried so somebody can read them.
+    /// The words are carried for somebody to read rather than guessed at.
     Unclear(String),
 }
 
@@ -119,9 +72,8 @@ impl Said {
 
 /// The command that installs a package from a url the target can fetch.
 ///
-/// **Not quoted or escaped**, because the shell splits its line on spaces and offers no
-/// quoting - so a url with a space in it cannot be passed at all, and [`is_a_url`] refuses one
-/// rather than sending half of it.
+/// Not quoted: the shell splits on spaces and has no quoting, so [`is_a_url`] refuses a url
+/// with a space rather than sending half of it.
 #[must_use]
 pub fn command(url: &str) -> String {
     format!("pkg_install {url}")
@@ -129,9 +81,8 @@ pub fn command(url: &str) -> String {
 
 /// Whether this is something the target could fetch.
 ///
-/// **A path is not**, however much it looks like one this program could open. That was
-/// measured: a real package sitting in the target's own `/data/pkg` produced the same empty
-/// answer as a file that was not there.
+/// A path on the target's disk is not: `pkg_install` reads only http(s) URLs (measured, see
+/// the module note).
 #[must_use]
 pub fn is_a_url(url: &str) -> bool {
     let url = url.trim();
@@ -184,10 +135,7 @@ mod tests {
         );
     }
 
-    /// **A path is not a url, however much it looks like one.**
-    ///
-    /// The measurement that settled this: a real package in the target's own `/data/pkg`
-    /// produced the same empty answer as a file that was not there.
+    /// Paths and `file://` URLs are not fetchable, and neither is a URL with a space.
     #[test]
     fn a_path_on_the_targets_own_disk_is_not_something_it_can_fetch() {
         assert!(is_a_url("http://192.0.2.1:8099/thing.pkg"));
@@ -200,8 +148,7 @@ mod tests {
         );
     }
 
-    /// **A populated content identifier is the target taking it**, and it is reported as
-    /// exactly that rather than as an install that finished.
+    /// A populated content identifier is accepted, not reported as a finished install.
     #[test]
     fn a_package_the_target_took_is_reported_with_its_identifier() {
         let said = read(concat!(
@@ -222,11 +169,7 @@ mod tests {
         );
     }
 
-    /// **A path with a space is refused rather than sent.**
-    ///
-    /// The shell splits on spaces and cannot be told otherwise, so sending one would install
-    /// whatever the first word named. Refusing is the only honest option.
-    /// Only packages, because that is what the command takes.
+    /// Only `.pkg` files, in any case, are offered for installing.
     #[test]
     fn only_a_package_is_offered_for_installing() {
         assert!(is_a_package("thing.PKG"), "case does not matter");
@@ -234,8 +177,7 @@ mod tests {
         assert!(!is_a_package("thing"));
     }
 
-    /// **The measured failure is recognised**, having been produced deliberately with a file
-    /// that was not there.
+    /// An empty content identifier is a known failure.
     #[test]
     fn a_package_the_target_cannot_read_is_a_known_failure() {
         let said = read(
@@ -246,8 +188,7 @@ mod tests {
         assert!(said.is_a_known_failure());
     }
 
-    /// **Silence is not success.** A fetch can outlast the shell's window, so nothing said
-    /// means *still going or never started* - two states this side cannot tell apart.
+    /// Silence is not taken for success.
     #[test]
     fn saying_nothing_is_not_taken_for_success() {
         assert_eq!(read(""), Said::Silent);
@@ -255,11 +196,7 @@ mod tests {
         assert!(read("").is_a_known_failure());
     }
 
-    /// **Anything else is unclear, and is not reported as success.**
-    ///
-    /// No successful install has been watched by this project - doing so means installing
-    /// something on somebody's target - so there is no shape to match, and a version that
-    /// called any other output *installed* would say the same thing when it was wrong.
+    /// An unrecognised answer is unclear, neither success nor a known failure.
     #[test]
     fn an_unrecognised_answer_is_not_promoted_to_success() {
         let said = read("something the shell printed that mentions no content at all");
