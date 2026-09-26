@@ -304,15 +304,7 @@ fn copying(job: &Job, watch: &mut dyn FnMut(&Progress), stop: &dyn Fn() -> bool)
     match job {
         Job::Backup(target, from, into) => backing_up(target, from, into, watch, stop),
         Job::Restore(target, from, to, anyway) => restoring(target, from, to, *anyway, watch, stop),
-        Job::Names(target, ids) => {
-            // A title that does not answer is left out rather than given an empty name; its
-            // identifier already stands for it.
-            let found = ids
-                .iter()
-                .filter_map(|id| pros_core::titles::read(&target.link(), id).ok())
-                .collect();
-            Done::Named(found)
-        }
+        Job::Names(target, ids) => naming(target, ids),
         Job::ReadAutoload(_)
         | Job::WriteAutoload(..)
         | Job::EnableAutoload(_)
@@ -322,34 +314,9 @@ fn copying(job: &Job, watch: &mut dyn FnMut(&Progress), stop: &dyn Fn() -> bool)
         Job::RestartUi(target) => restart_ui(&target.link()),
         Job::CloseTitle(target, id) => close_title(&target.link(), id),
         Job::EndProcess(target, pid) => end_process(&target.link(), pid),
-        Job::Launch(target, id) => {
-            match pros_link::shell::run(&target.link(), &pros_core::launch::command(id), SETTLE) {
-                Ok(said) => Done::Launched(pros_core::launch::read(&said)),
-                Err(why) => Done::Failed(why.to_string()),
-            }
-        }
-        Job::RunThere(target, path) => {
-            // The target's shell cannot quote, so it would run only the first word.
-            if !pros_core::hbldr::is_one_argument(path) {
-                return Done::Failed(format!(
-                    "{path} has a space in it, and the target's shell has no way to quote one"
-                ));
-            }
-            match pros_link::shell::run(&target.link(), &pros_core::hbldr::command(path), SETTLE) {
-                Ok(said) => Done::RanThere(pros_core::hbldr::read(&said)),
-                Err(why) => Done::Failed(why.to_string()),
-            }
-        }
-        Job::ReadList(target, held) => {
-            match files::retrieve(&target.link(), &held.path) {
-                Ok(bytes) => Done::List(Box::new(pros_core::boot::Boot::parse(
-                    &String::from_utf8_lossy(&bytes),
-                ))),
-                // Unreadable is not empty. An absent autoloader list is normal where the
-                // manager is auto-launched.
-                Err(why) => Done::Failed(format!("{}: {why}", held.path)),
-            }
-        }
+        Job::Launch(target, id) => launching(target, id),
+        Job::RunThere(target, path) => running_there(target, path),
+        Job::ReadList(target, held) => reading_list(target, held),
         Job::FindPayloads(target, root) => {
             // Every place the manager lists, not just `root`: a payload on a USB stick outside
             // its folder there is listed but never autoloaded, and the tag says which.
@@ -362,14 +329,7 @@ fn copying(job: &Job, watch: &mut dyn FnMut(&Progress), stop: &dyn Fn() -> bool)
         Job::DeleteThere(target, what) => removing(&target.link(), what),
         Job::DeleteHere(what) => erasing(what),
         Job::InstallPackage(target, file) => installing(&target.link(), file),
-        Job::Locate(target, candidates) => {
-            // Only the paths; the labels are the window's.
-            let paths: Vec<&str> = candidates.iter().map(|place| place.path).collect();
-            match pros_core::locate::first_of(&target.link(), &paths) {
-                Ok(found) => Done::Located(found),
-                Err(why) => Done::Failed(why.to_string()),
-            }
-        }
+        Job::Locate(target, candidates) => locating(target, candidates),
         Job::Titles(target) => match pros_core::probe::installed(&target.link()) {
             Ok(found) => Done::Titles(found),
             Err(why) => Done::Failed(why.to_string()),
@@ -378,34 +338,100 @@ fn copying(job: &Job, watch: &mut dyn FnMut(&Progress), stop: &dyn Fn() -> bool)
             Ok(found) => Done::FoundSaves(found),
             Err(why) => Done::Failed(why.to_string()),
         },
-        Job::Fetch(payload, dir) => match dir.as_ref().map_or_else(
-            || pros_core::fetch::fetch(payload),
-            |dir| pros_core::fetch::fetch_into(payload, dir),
-        ) {
-            Ok(into) => Done::Fetched(payload.name.clone(), into),
-            Err(why) => Done::Failed(why.to_string()),
-        },
+        Job::Fetch(payload, dir) => fetching(payload, dir.as_deref()),
         Job::Relist(payload) => match pros_core::sources::relist(payload) {
             Ok((now, found)) => Done::Relisted(Box::new(now), Box::new(found)),
             Err(why) => Done::Failed(why.to_string()),
         },
-        Job::Send(target, name, from) => match std::fs::read(from) {
-            // The library checks the payload's shape before sending.
-            Ok(payload) => match pros_link::loader::send(
-                &target.link(),
-                &payload,
-                std::time::Duration::from_secs(4),
-            ) {
-                Ok(said) if said.trim().is_empty() => Done::Said(format!(
-                    "{name} sent - nothing came back on the socket, which is not failure: \
-                     only a payload launched this way reports here at all"
-                )),
-                Ok(said) => Done::Said(said),
-                Err(why) => Done::Failed(why.to_string()),
-            },
-            Err(why) => Done::Failed(format!("could not read the staged payload: {why}")),
-        },
+        Job::Send(target, name, from) => sending(target, name, from),
         _ => Done::Failed("unreachable: every job is handled above".to_owned()),
+    }
+}
+
+/// The names of the titles asked about.
+///
+/// A title that does not answer is left out rather than given an empty name; its identifier
+/// already stands for it.
+fn naming(target: &pros_core::target::Target, ids: &[String]) -> Done {
+    let found = ids
+        .iter()
+        .filter_map(|id| pros_core::titles::read(&target.link(), id).ok())
+        .collect();
+    Done::Named(found)
+}
+
+/// Launching an installed title by its identifier.
+fn launching(target: &pros_core::target::Target, id: &str) -> Done {
+    match pros_link::shell::run(&target.link(), &pros_core::launch::command(id), SETTLE) {
+        Ok(said) => Done::Launched(pros_core::launch::read(&said)),
+        Err(why) => Done::Failed(why.to_string()),
+    }
+}
+
+/// Starting a payload already on the target, in place, through its shell.
+fn running_there(target: &pros_core::target::Target, path: &str) -> Done {
+    // The target's shell cannot quote, so it would run only the first word.
+    if !pros_core::hbldr::is_one_argument(path) {
+        return Done::Failed(format!(
+            "{path} has a space in it, and the target's shell has no way to quote one"
+        ));
+    }
+    match pros_link::shell::run(&target.link(), &pros_core::hbldr::command(path), SETTLE) {
+        Ok(said) => Done::RanThere(pros_core::hbldr::read(&said)),
+        Err(why) => Done::Failed(why.to_string()),
+    }
+}
+
+/// Reading one startup list off the target.
+fn reading_list(target: &pros_core::target::Target, held: &pros_core::chain::Held) -> Done {
+    match files::retrieve(&target.link(), &held.path) {
+        Ok(bytes) => Done::List(Box::new(pros_core::boot::Boot::parse(
+            &String::from_utf8_lossy(&bytes),
+        ))),
+        // Unreadable is not empty. An absent autoloader list is normal where the
+        // manager is auto-launched.
+        Err(why) => Done::Failed(format!("{}: {why}", held.path)),
+    }
+}
+
+/// Which of a section's places exists on the target.
+fn locating(target: &pros_core::target::Target, candidates: &[crate::state::Place]) -> Done {
+    // Only the paths; the labels are the window's.
+    let paths: Vec<&str> = candidates.iter().map(|place| place.path).collect();
+    match pros_core::locate::first_of(&target.link(), &paths) {
+        Ok(found) => Done::Located(found),
+        Err(why) => Done::Failed(why.to_string()),
+    }
+}
+
+/// Fetching a described payload, into the usual place or a folder of this machine.
+fn fetching(payload: &pros_core::manifest::Payload, dir: Option<&std::path::Path>) -> Done {
+    match dir.map_or_else(
+        || pros_core::fetch::fetch(payload),
+        |dir| pros_core::fetch::fetch_into(payload, dir),
+    ) {
+        Ok(into) => Done::Fetched(payload.name.clone(), into),
+        Err(why) => Done::Failed(why.to_string()),
+    }
+}
+
+/// Sending a payload on this machine to the loader, which runs it in memory.
+fn sending(target: &pros_core::target::Target, name: &str, from: &std::path::Path) -> Done {
+    match std::fs::read(from) {
+        // The library checks the payload's shape before sending.
+        Ok(payload) => match pros_link::loader::send(
+            &target.link(),
+            &payload,
+            std::time::Duration::from_secs(4),
+        ) {
+            Ok(said) if said.trim().is_empty() => Done::Said(format!(
+                "{name} sent - nothing came back on the socket, which is not failure: \
+                 only a payload launched this way reports here at all"
+            )),
+            Ok(said) => Done::Said(said),
+            Err(why) => Done::Failed(why.to_string()),
+        },
+        Err(why) => Done::Failed(format!("could not read the staged payload: {why}")),
     }
 }
 
