@@ -200,7 +200,7 @@ impl App {
             ));
         });
         ui.add_space(4.0);
-        ui.small("the design of both halves is docs/vIDEO.md part three");
+        ui.small("the design of both halves is docs/VIDEO.md, under Porthole");
     }
 
     /// Connects and starts the player, or says why it did not.

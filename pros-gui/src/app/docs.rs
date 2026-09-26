@@ -2,56 +2,56 @@
 
 /// The pages this build ships, and their order in the reader.
 ///
-/// `include_str!` puts them in the binary, so they match the build. Only the user manual is
+/// `include_str!` puts them in the binary, so they match the build. Only the user guide is
 /// listed; development records stay in the repository.
 pub(super) const DOCS: &[oops_docs::Doc] = &[
     oops_docs::Doc::new(
-        "user-guide",
-        "User Guide",
-        "Paths, portable mode, network daemons, and local-first storage",
-        include_str!("../../../docs/features/user-guide.md"),
+        "getting-started",
+        "Getting started",
+        "Where things are kept, the services, and reading a check",
+        include_str!("../../../docs/guide/getting-started.md"),
     ),
     oops_docs::Doc::new(
         "targets",
         "Targets",
-        "Registering a console, and asking what it can currently do",
-        include_str!("../../../docs/features/targets.md"),
+        "Registering a target, and asking what it can do",
+        include_str!("../../../docs/guide/targets.md"),
     ),
     oops_docs::Doc::new(
         "logs",
-        "Kernel Logs",
-        "Streaming live system and title telemetry unbuffered",
-        include_str!("../../../docs/features/logs.md"),
+        "Logs",
+        "Following the target's system log",
+        include_str!("../../../docs/guide/logs.md"),
     ),
     oops_docs::Doc::new(
         "files",
-        "Remote Storage",
-        "Browsing files, transferring saves, and staging titles",
-        include_str!("../../../docs/features/files.md"),
+        "Files",
+        "Moving files and folders, and restoring a build",
+        include_str!("../../../docs/guide/files.md"),
     ),
     oops_docs::Doc::new(
         "titles",
-        "Titles & Execution",
-        "Supervising running processes and launching BIG_APPs",
-        include_str!("../../../docs/features/titles.md"),
+        "Titles",
+        "Launching and closing titles, processes, and the probe loop",
+        include_str!("../../../docs/guide/titles.md"),
     ),
     oops_docs::Doc::new(
         "shell",
-        "Command Shell",
-        "Executing remote commands directly on the target",
-        include_str!("../../../docs/features/shell.md"),
+        "Shell",
+        "Running one command on the target",
+        include_str!("../../../docs/guide/shell.md"),
     ),
     oops_docs::Doc::new(
         "payloads",
         "Payloads",
-        "Why none are bundled, and what is checked before one runs",
-        include_str!("../../../docs/features/payloads.md"),
+        "Fetching, verifying and sending payloads, and the startup list",
+        include_str!("../../../docs/guide/payloads.md"),
     ),
     oops_docs::Doc::new(
         "library",
-        "The target's storage",
-        "Titles, saves and packages; the log; moving files",
-        include_str!("../../../docs/features/library.md"),
+        "Library",
+        "Titles, saves, packages and cheats on the target's storage",
+        include_str!("../../../docs/guide/library.md"),
     ),
 ];
 

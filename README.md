@@ -4,113 +4,98 @@
 
 # Prosperous
 
-**Remote Hardware Management CLI, GUI, and Transport Library for Prospero.**
+Remote management for a Prospero-generation target, and the transport library underneath it.
+Prosperous registers a target, asks what it can currently do, moves files, sends and supervises
+payloads, launches and closes titles, runs shell commands and reads the system log. The target
+is a machine running the homebrew services, or orbistoun.
 
-Prosperous (`pros`) is the remote target management tool and communications bridge for 8th and 9th generation console software (Orbis and Prospero), written in Rust. It provides discovery, deployment, execution control, and real-time kernel telemetry streaming over standard local network sockets.
+It speaks to services already running on the target (`elfldr`, `ftpsrv`, `klogsrv`, `shsrv`,
+`pldmgr`) and defines no protocol of its own. Payload binaries are never shipped, only
+described in a manifest and verified by digest before they are kept or sent.
 
-Site: **[project-oops.github.io/Prosperous](https://project-oops.github.io/Prosperous/)**
+Site: [project-oops.github.io/Prosperous](https://project-oops.github.io/Prosperous/)
 
-| 📖 **[User Manual & GUI Walkthrough](docs/USER_GUIDE.md)** | ⚙️ **[Technical Reference & Protocol Specs](docs/README.md)** |
-| :--- | :--- |
-| *CLI cheatsheet, `pros-gui` manual with wireframes, and file staging.* | *Socket protocols (shsrv, klogsrv), state machines, and transport crates.* |
+## Crates
 
----
+Prosperous is a library first; the two programs hold no logic of their own.
 
-## Role in THE LOOP
+| Crate | Purpose |
+|---|---|
+| `pros-link` | the transport: each target service over `std::net`, with `tracing` as its only dependency. Used by obSCEne |
+| `pros-core` | target registry, payload manifest and checksums, check, transfers, process control, package install |
+| `pros-moonlight` | a Moonlight host bridge in front of Porthole ([VIDEO.md](docs/VIDEO.md)) |
+| `pros-cli` | `pros`, the command line |
+| `pros-gui` | `pros-gui`, the window |
 
-Within the [OOPS ecosystem](../docs/THE_LOOP.md), Prosperous is the **Physical Transport Bridge**:
+The architecture is in [DESIGN.md](docs/DESIGN.md) and the vocabulary in
+[GLOSSARY.md](docs/GLOSSARY.md).
 
-```
-Developer / Build System (oops-apps, obSCEne)
-                     │
-                     ▼
-┌─────────────────────────────────────────────────┐
-│ Prosperous (pros) CLI / Library                 │
-│ - Stages title directories: pros restore        │
-│ - Launches retail BIG_APPs: pros launch         │
-│ - Sends bare memory payloads: pros send         │
-└────────────────────┬────────────────────────────┘
-                     │ LAN Sockets (2121, 9021, 3232)
-                     ▼
-┌─────────────────────────────────────────────────┐
-│ Physical PS5 Console (192.168.1.211)            │
-│ (FW 12.40 jailbroken running elfldr & ftpsrv)   │
-└────────────────────┬────────────────────────────┘
-                     │ Real-time Telemetry
-                     ▼
-┌─────────────────────────────────────────────────┐
-│ pros logs (Kernel Log Streamer)                 │
-│ - Streams klog to terminal and files            │
-│ - Feeds silicon ground truth to obSCEne & agent │
-└─────────────────────────────────────────────────┘
-```
+## Building
 
-1. **Deploying Known Testbed Titles**: Transports applications built in [oops-apps](../oops-apps/) (e.g. `gl-cube`) to the `/data/homebrew/` scan root so the console OS mounts them cleanly.
-2. **Executing Hardware Probes**: Pushes [obSCEne](../obscene/) conformance probes onto real silicon to settle unmeasured questions.
-3. **Real-Time Telemetry**: Captures kernel diagnostics and draw completion fences directly over the network, closing the loop without needing an HDMI capture card for logs.
+A Rust toolchain is the only requirement: no C compiler, vendor SDK, firmware or signing keys.
 
----
+The workspace takes `oops-build`, `oops-log`, `oops-paths` and `oops-docs` from oops-libs, and
+`selfish-title` and `selfish-abi` from SELFish, by relative path. Both must be checked out as
+siblings of this repository, which the [OOPS](https://github.com/project-oops/OOPS) collection
+does:
 
-## Developer Quickstart
-
-### 1. Build and Verify
 ```bash
-./bin/prosperous check    # compiles crates and runs unit tests
+./bin/oops bootstrap prosperous    # from the collection root: fetches the siblings
 ```
-The compiled CLI binary lives at `target/release/pros.exe` (Windows) or `target/release/pros` (Linux/macOS).
 
-### 2. Common Hardware Operations
+`bin/prosperous` is the one dev command, and CI runs the same one:
 
-#### Target Discovery & Registration
+| Verb | Does |
+|---|---|
+| `check` | the full gate (the default) |
+| `build` | release build of the workspace; extra arguments pass to cargo |
+| `test` | `cargo test --workspace` |
+| `lint` | clippy at `-D warnings` |
+| `fmt` | format in place |
+| `doc` | build the API docs |
+| `clean` | remove build output |
+| `provenance` | fail if any payload binary or executable is tracked |
+| `target` | the read-only tests against a real target |
+
+`check` runs, in order:
+
+1. `provenance`, which also fails outside a git repository, where it cannot look
+2. `cargo fmt --all -- --check`
+3. `cargo clippy --all-targets -- -D warnings`
+4. `cargo test`
+5. `cargo doc --no-deps --workspace` with `RUSTDOCFLAGS="-D warnings"`
+
+It needs no target and no network: `pros-link` ships a fake target that the tests stand on the
+real service ports. The tests that need hardware are `#[ignore]` by default and run through
+`target`:
+
 ```bash
-# Check reachability of all configured targets
-pros.exe check
-
-# Register a console IP with a friendly name
-pros.exe register 192.168.1.211 --name ps5
+PROS_TARGET=192.168.1.211 ./bin/prosperous target
 ```
 
-#### Deploy and Launch an Application
+CI (`.github/workflows/check.yml`) checks out the collection, bootstraps the siblings and runs
+`oops check prosperous`, a wrapper over `./bin/prosperous check`.
+
+## Using it
+
+The releases page has builds for Windows, Linux and macOS, each holding `pros` and `pros-gui`.
+From a build, they are in `target/release/`.
+
 ```bash
-# Stage a title directory to /data/homebrew scan root
-pros.exe restore oops-apps\src\gl-cube\build\title\GLCB00001 /data/homebrew/GLCB00001
-
-# Launch the title as a retail BIG_APP
-pros.exe launch GLCB00001
-
-# Stream real-time console kernel logs
-pros.exe logs --seconds 15
-
-# Terminate running title
-pros.exe close GLCB00001
+pros register 192.168.1.211 --name living-room
+pros check                                   # what the target can do right now
+pros logs --seconds 30                       # listen to the system log
+pros restore ./build/title/GLCB00001 /data/homebrew/GLCB00001
+pros launch GLCB00001
+pros probe GLCB00001 ./build/title/GLCB00001 # deploy, launch and follow the log in one step
+pros-gui                                     # the window
 ```
 
-#### Send a Bare Memory Payload
-```bash
-pros.exe send payload.elf
-```
+[Getting started](docs/guide/getting-started.md) begins the user guide, which the window also
+shows under **help > documentation...**.
 
----
+## Licence
 
-## Architecture & Crates
-
-Prosperous is designed as a library first, with CLI and GUI frontends layered on top:
-
-| Crate | Purpose | Dependencies |
-|---|---|---|
-| **`pros-link`** | Low-level target socket protocols (`elfldr` :9021, `ftpsrv` :2121, `klogsrv` :3232, `shsrv` :2323, `pldmgr` :8084). Shared by `obscene-tool` and `orbistoun`. | `std::net`, `tracing` only |
-| **`pros-core`** | Target registry, payload manifest hashing, title staging, and check workflows. | `pros-link`, `serde` |
-| **`pros-moonlight`** | Moonlight/GameStream host bridge in front of Porthole's ports, so any Moonlight client can pair with and stream a target (`pros moonlight`, `pros fake-target`). See [VIDEO.md](docs/VIDEO.md) part four. | `pros-link`, `rustls` |
-| **`pros-cli`** | The `pros` command-line executable. | `pros-core`, `pros-moonlight`, `clap` |
-| **`pros-gui`** | Native desktop window interface for visual control. | `pros-core`, `eframe` (egui) |
-
----
-
-## Cross-Project Links
-
-- **[Master OOPS Front Door](../README.md)** — Collection overview and building instructions.
-- **[The OOPS Loop](../docs/THE_LOOP.md)** — Master ecosystem loop specification.
-- **[oops-apps](../oops-apps/)** — Test applications deployed and supervised by Prosperous.
-- **[obSCEne](../obscene/)** — Hardware conformance probe delivered by Prosperous.
-- **[SELFish](../selfish/)** — Title packaging tool used prior to staging with `pros restore`.
-- **[Orbistoun](../orbistoun/)** — Clean-room emulator consuming hardware telemetry.
+MIT or Apache-2.0, at your option. Third-party notices are in
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) and sources consulted in
+[ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md).

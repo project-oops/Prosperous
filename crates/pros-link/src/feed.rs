@@ -1,7 +1,7 @@
 //! Sending controller records to a target's input payload over TCP.
 //!
 //! Input goes down its own socket so that playing a target needs no vendor protocol, pairing
-//! or account: both ends are ours (`docs/VIDEO.md` part three). Reading a keyboard is a
+//! or account: both ends are ours (`docs/VIDEO.md`, Porthole). Reading a keyboard is a
 //! separate module because an unbound key and a dropped connection need different fixes.
 //!
 //! [`crate::feed::Feed::status`] tells idle, sending, lost and refused apart, and keeps the
@@ -15,7 +15,7 @@ use crate::pad::RECORD;
 
 /// The port a target's input payload listens on.
 ///
-/// Chosen by us in `docs/VIDEO.md` part three, since both ends are ours; every other port in
+/// Chosen by us in `docs/VIDEO.md` (Porthole), since both ends are ours; every other port in
 /// this crate is measured.
 pub const PORT: u16 = 9806;
 

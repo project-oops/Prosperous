@@ -1,57 +1,44 @@
 # Decisions
 
-Numbered, append-only, cited from source by number. A decision here is a choice that
-constrained something afterwards - not a summary of what the code does, which the code
-already says.
-
-The same discipline as the sibling projects: if a citation in a comment points at a number,
-this file explains it, and a number that duplicates another makes every citation of it
-ambiguous.
-
-**D016-D024 carry no date.** Dating stopped after D015 (2026-08-26); those entries were made
-on or after that day and nothing narrower is recoverable. Entries after them carry one.
+The decisions in force, one file each under `decisions/`. Format and rules are in
+[STYLE](https://github.com/project-oops/OOPS/blob/main/docs/STYLE.md#decisions).
 
 **This table is generated.** Edit an entry under `decisions/`, then run
 `tools/split-decisions.sh --index prosperous`. A number resolves to exactly one file.
 
 | | # | decision | status | date |
 |---|---|---|---|---|
-| 🟢 | D001 | [Prosperous exists, and it is a library with two consumers](decisions/D001-prosperous-exists-and-it-is-a-library.md) | decided | 2026-08-25 |
-| 🟢 | D002 | [A target's answer is read on its own terms, and a refusal is not a failure](decisions/D002-a-target-s-answer-is-read-on-its-own.md) | decided | 2026-08-25 |
-| 🟢 | D003 | [The fake blocks on accept and knocks to stop, because polling was measured and was terrible](decisions/D003-the-fake-blocks-on-accept-and-knocks-to.md) | decided | 2026-08-26 |
-| 🟢 | D004 | [What cannot be checked is refused by name, in both places it comes up](decisions/D004-what-cannot-be-checked-is-refused-by.md) | decided | 2026-08-26 |
-| 🟢 | D005 | [The command line holds nothing, and its exit codes are part of what it holds](decisions/D005-the-command-line-holds-nothing-and-its.md) | decided | 2026-08-26 |
-| 🟢 | D006 | [Continuous integration runs the one dev command, and nothing else](decisions/D006-continuous-integration-runs-the-one-dev.md) | decided | 2026-08-26 |
-| 🟢 | D007 | [The target is a manifest source, and the path is asked for rather than assumed](decisions/D007-the-target-is-a-manifest-source-and-the.md) | decided | 2026-08-26 |
-| 🟢 | D008 | [The frame grabber is a resident payload with its own port, and its protocol is written down before it is built](decisions/D008-the-frame-grabber-is-a-resident-payload.md) | decided | 2026-08-26 |
-| 🟢 | D009 | [The window matches orbistoun's, deliberately, down to the version](decisions/D009-the-window-matches-orbistoun-s.md) | decided | 2026-08-26 |
-| 🟢 | D010 | [Two more columns, and neither of them may lie about what was not looked at](decisions/D010-two-more-columns-and-neither-of-them.md) | decided | 2026-08-26 |
-| 🟢 | D011 | [The library, backups, and what a copy has to promise](decisions/D011-the-library-backups-and-what-a-copy-has.md) | decided | 2026-08-26 |
-| 🟢 | D012 | [The window is a sidebar of sections, and streaming is somebody else's program](decisions/D012-the-window-is-a-sidebar-of-sections-and.md) | decided | 2026-08-26 |
-| 🟢 | D013 | [A target answered, and three guesses became measurements while two rules turned out wrong](decisions/D013-a-target-answered-and-three-guesses.md) | decided | 2026-08-26 |
-| 🟢 | D014 | [Downloading is built, because a target handed over digests to check it against](decisions/D014-downloading-is-built-because-a-target.md) | decided | 2026-08-26 |
-| 🟢 | D015 | [Names come from the target, and are never invented](decisions/D015-names-come-from-the-target-and-are.md) | decided | 2026-08-26 |
-| ⚪ | D016 | [The manifest format is one tool's file, and `port` is ours](decisions/D016-the-manifest-format-is-one-tool-s-file.md) | unrecorded | ~2026-08-26..08-30 |
-| ⚪ | D017 | [Five lists, one mechanism, and what an honest list can contain](decisions/D017-five-lists-one-mechanism-and-what-an.md) | unrecorded | ~2026-08-26..08-30 |
-| ⚪ | D018 | [A save transfer decides before it moves anything](decisions/D018-a-save-transfer-decides-before-it-moves.md) | unrecorded | ~2026-08-26..08-30 |
-| ⚪ | D019 | [The first write to a target, and what it had to earn](decisions/D019-the-first-write-to-a-target-and-what-it.md) | unrecorded | ~2026-08-26..08-30 |
-| ⚪ | D020 | [What the target is, measured rather than looked up](decisions/D020-what-the-target-is-measured-rather-than.md) | unrecorded | ~2026-08-26..08-30 |
-| ⚪ | D021 | [Package installation was a shell builtin, not a service](decisions/D021-package-installation-was-a-shell.md) | unrecorded | ~2026-08-26..08-30 |
-| ⚪ | D022 | [This project sends and supervises; it does not drive](decisions/D022-this-project-sends-and-supervises-it.md) | unrecorded | ~2026-08-26..08-30 |
-| ⚪ | D023 | [Two pad models, on purpose](decisions/D023-two-pad-models-on-purpose.md) | unrecorded | ~2026-08-26..08-30 |
-| ⚪ | D024 | [Three ways to make something run on a target, and three buttons](decisions/D024-three-ways-to-make-something-run-on-a.md) | unrecorded | ~2026-08-26..08-30 |
-| 🟢 | D025 | [`pros-link` takes the logging facade, and the empty dependency table goes](decisions/D025-pros-link-takes-the-logging-facade-and.md) | decided | 2026-08-30 |
-| 🟢 | D026 | [The window ships its own manual](decisions/D026-the-window-ships-its-own-manual.md) | decided | 2026-08-30 |
-| 🟢 | D027 | [Process control is prosperous work, not obSCEne's](decisions/D027-process-control-is-prosperous-work.md) | decided | 2026-09-04 |
-| 🟢 | D028 | [The `param.sfo` reader comes from SELFish; the in-place writer stays](decisions/D028-the-param-sfo-reader-comes-from-selfish.md) | decided | 2026-09-10 |
-| 🟢 | D029 | [A chain carries its files, and which files is data](decisions/D029-a-chain-carries-its-files-and-which.md) | decided | 2026-09-15 |
-| 🟢 | D030 | [The guard routes a location; it never rewrites an identity](decisions/D030-the-guard-routes-a-location-it-never.md) | decided | 2026-09-17 |
-| 🟢 | D031 | [A store the target accepted is not a file copied until its size reads back](decisions/D031-a-store-the-target-accepted-is-not-a.md) | decided | 2026-09-17 |
-| 🟢 | D032 | [A SELF container is verified present, not by size, because the target unwraps it](decisions/D032-a-self-container-is-verified-present.md) | decided | 2026-09-19 |
-| 🟢 | D033 | [The probe loop is one verb, in the CLI, that ends on exit or a cap](decisions/D033-the-probe-loop-is-one-verb-that-ends.md) | decided | 2026-09-21 |
-| 🟢 | D034 | [A restore skips a file it already put there unchanged, on a record it keeps itself](decisions/D034-a-restore-does-not-resend-an-unchanged-file.md) | decided | 2026-09-22 |
-| 🟢 | D035 | [The task manager is the panel that already exists, plus a live `pros top`](decisions/D035-the-task-manager-is-the-panel-and-a-live-top.md) | decided | 2026-09-22 |
-| 🟢 | D036 | [The log view is virtualized, its buffer is large, and its filter can be a regex](decisions/D036-the-log-view-is-virtualized-and-filters-by-regex.md) | decided | 2026-09-22 |
+| 🟢 | D001 | [One target library for the collection](decisions/D001-one-target-library.md) | decided | 2026-09-26 |
+| 🟢 | D002 | [A refusal is not a failure](decisions/D002-refusal-is-not-a-failure.md) | decided | 2026-09-26 |
+| 🟢 | D004 | [Input that cannot be verified is refused by name](decisions/D004-unverifiable-input-is-refused.md) | decided | 2026-09-26 |
+| 🟢 | D005 | [Three exit codes](decisions/D005-three-exit-codes.md) | decided | 2026-09-26 |
+| 🟢 | D006 | [Continuous integration runs the local gate](decisions/D006-ci-runs-the-local-gate.md) | decided | 2026-09-26 |
+| 🟢 | D008 | [Frame grab protocol](decisions/D008-frame-grab-protocol.md) | decided | 2026-09-26 |
+| 🟢 | D009 | [The window matches Orbistoun's toolkit](decisions/D009-window-matches-orbistoun.md) | decided | 2026-09-26 |
+| 🟢 | D010 | [Presence and boot membership can be unknown](decisions/D010-presence-can-be-unknown.md) | decided | 2026-09-26 |
+| 🟢 | D011 | [A copy lists everything it did not copy](decisions/D011-a-copy-lists-what-it-missed.md) | decided | 2026-09-26 |
+| 🟢 | D012 | [Solved problems run as configured commands](decisions/D012-solved-problems-run-as-commands.md) | decided | 2026-09-26 |
+| 🟢 | D013 | [Target tests are opt-in and read-only](decisions/D013-target-tests-are-opt-in.md) | decided | 2026-09-26 |
+| 🟢 | D014 | [Downloads are verified before they are staged](decisions/D014-downloads-verify-before-staging.md) | decided | 2026-09-26 |
+| 🟢 | D015 | [Names come from the target](decisions/D015-names-come-from-the-target.md) | decided | 2026-09-26 |
+| 🟢 | D016 | [The manifest format is one tool's file, plus `port`](decisions/D016-manifest-format-and-port.md) | decided | 2026-09-26 |
+| 🟢 | D017 | [Shipped lists carry only verifiable entries](decisions/D017-shipped-lists-are-verifiable.md) | decided | 2026-09-26 |
+| 🟢 | D018 | [A save transfer decides before it moves anything](decisions/D018-save-transfer-decides-first.md) | decided | 2026-09-26 |
+| 🟢 | D019 | [A write to a target edits the text it read](decisions/D019-target-writes-edit-what-was-read.md) | decided | 2026-09-26 |
+| 🟡 | D021 | [Packages are handed over, and an unclear result stays unclear](decisions/D021-packages-are-handed-over.md) | assumed | 2026-09-26 |
+| 🟢 | D022 | [Prosperous sends and supervises a probe, and does not drive it](decisions/D022-send-and-supervise-not-drive.md) | decided | 2026-09-26 |
+| 🟢 | D023 | [Two pad models](decisions/D023-two-pad-models.md) | decided | 2026-09-26 |
+| 🟢 | D025 | [`pros-link` takes `tracing` and nothing else](decisions/D025-pros-link-takes-tracing.md) | decided | 2026-09-26 |
+| 🟢 | D026 | [The window ships its own manual](decisions/D026-the-window-ships-its-manual.md) | decided | 2026-09-26 |
+| 🟢 | D027 | [Process control is Prosperous work](decisions/D027-process-control-is-prosperous-work.md) | decided | 2026-09-26 |
+| 🟢 | D028 | [The `param.sfo` reader comes from SELFish, the in-place writer stays](decisions/D028-sfo-reader-comes-from-selfish.md) | decided | 2026-09-26 |
+| 🟢 | D029 | [A chain carries its files, and which files is data](decisions/D029-a-chain-carries-its-files.md) | decided | 2026-09-26 |
+| 🟢 | D030 | [The guard routes a location and never rewrites an identity](decisions/D030-guard-never-rewrites-an-identity.md) | decided | 2026-09-26 |
+| 🟢 | D031 | [A store is verified after it lands](decisions/D031-a-store-is-verified-after-landing.md) | decided | 2026-09-26 |
+| 🟢 | D033 | [The probe loop ends on park, exit or a cap](decisions/D033-probe-loop-ends-on-park-exit-or-cap.md) | decided | 2026-09-26 |
+| 🟢 | D034 | [A restore skips unchanged files on its own record](decisions/D034-restore-skips-unchanged-files.md) | decided | 2026-09-26 |
+| 🟢 | D035 | [The process monitor reads and does not act](decisions/D035-process-monitor-is-read-only.md) | decided | 2026-09-26 |
+| 🟢 | D036 | [The log filter uses `regex-lite`](decisions/D036-log-filter-uses-regex-lite.md) | decided | 2026-09-26 |
 
 | | meaning |
 |---|---|

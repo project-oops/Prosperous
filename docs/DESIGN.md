@@ -1,378 +1,168 @@
-# Prosperous
+# Design
 
-**A target-management tool, and the library underneath it.**
+Prosperous is a target-management tool and the library underneath it. It registers a target,
+finds out what the target can do, puts payloads on it, reads its log, moves files, controls
+its processes and watches its output. The binary is `pros`; the window is `pros-gui`.
 
-One instrument for talking to a prepared target: register it, find out what it
-can currently do, put a payload on it, read its log, move files, watch its output. Two
-things consume that library - an emulator that needs the hardware to check itself against,
-and a standalone product for people who want to drive the target directly.
+The library is the whole implementation and both programs are shims over it. Two kinds of
+consumer need that: the sibling projects, which call it from a diagnostic loop, and a person
+driving a target directly.
 
-**Status lives in [ROADMAP.md](ROADMAP.md), not here**, and `Cargo.toml` is the list of what
-exists. A design document that also claims what is built goes stale in one direction only,
-and this one did: it described `pros-gui` and payload fetching as unbuilt after both had
-shipped, and named a `pros-video` crate that was never created.
+## The target and its services
 
-What this document is for is the *shape* - what each part is responsible for and why the
-boundaries fall where they do. That does not change when a crate lands.
+Prosperous speaks to services the entry point starts on the target. It adds no protocol of
+its own for them. The compiled-in list is `pros_link::service::SERVICES`:
 
-## The name
-
-`orbistoun` embeds *orbis*, the previous generation's OS. `obSCEne` embeds *sce*, the
-vendor's own prefix. `PROSPERous` embeds *prospero*, the current generation's codename -
-and it is the only common English word that contains the whole of it.
-
-That is the point rather than a coincidence. [OOPS conventions §2](https://github.com/project-oops/OOPS/blob/main/docs/CONVENTIONS.md#2-naming-no-vendor-brands-in-prose-or-in-our-own-api) asks for
-a **low profile**: not concealment, since what any of this targets is obvious from the
-first paragraph, but no reason to repeat brand names either. A real English word is the
-cheapest way to hold that line, and it reads as a product rather than as a leak.
-
-The binary is `pros`. The repository carries the long name.
-
-## Two consumers, one library
-
-| consumer | uses it for |
-|---|---|
-| **orbistoun** | probing and testing against real hardware while diagnosing: remote launch, pull files, read the kernel log |
-| **Prosperous** | the standalone product: remote streaming, control, file transfer, file browsing |
-
-This is new functionality. It is unrelated to orbistoun's existing remote-control
-component and does not replace it.
-
-The two consumers pull in opposite directions - one wants a library it can call from a
-diagnostic loop, the other wants an application. Both get what they want only if the
-library is the whole implementation and the applications are shims. That is
-[Orbistoun's shim rule](https://github.com/project-oops/Orbistoun), taken here as a starting
-condition rather than arrived at later.
-
-## Where this sits in the hardware loop
-
-The projects form one cycle, and each has exactly one job in it.
-
-| | asks | answers | carries |
+| Service | Port | Protocol | Required |
 |---|---|---|---|
-| **orbistoun** | ranks its unsettled assumptions and submits them | | |
-| **obSCEne** | | runs on the metal and reports what actually happened | |
-| **Prosperous** | | | gets the probe onto the target and keeps it there |
+| `elfldr` | 9021 | send an ELF, it runs | yes |
+| `ftpsrv` | 2121 | anonymous FTP | yes |
+| `klogsrv` | 3232 | `/dev/klog` as an endless stream | no |
+| `shsrv` | 2323 | a shell over raw TCP, not telnet | no |
+| `pldmgr` | 8084 | the payload manager and its dashboard | no |
 
-orbistoun writes every behaviour down with how it is known - published, measured,
-guest-observed, assumed - and `orbistoun-cli questions --json` ranks the unsettled ones by
-how often real guests call them. obSCEne carries those questions to hardware over its command
-protocol, and an answer turns `assumed` into `measured`. See `orbistoun/docs/THE_LOOP.md` and
-`docs/HARDWARE-PROBE.md` in obSCEne.
+The payload manager starts the rest from an autoload list on the target, and it launches
+everything through `elfldr`. When `elfldr` is gone nothing can be reloaded, including
+`elfldr`, and the dashboard still answers because it is a separate listener. A check that
+finds the loader missing therefore says to rerun the entry point, not to load a payload
+(`Remedy::RerunTheEntryPoint`).
 
-**Prosperous is the third side, and it is deliberately the dullest.** A probe that answers
-arbitrary questions faults constantly - that is the normal case, not a fault - and the
-protocol says restarting is out of scope, naming the restarter as *"a person on the hardware"*.
-`pros supervise` is that person: it watches the serving port and re-sends the same bytes when
-it stops answering. `pros logs` reads the report as it comes out over the kernel log, and
-`pros send` put it there to begin with.
+Three facts about the transport shape the code:
 
-### What Prosperous does not do, and why it is written down
+- A vendor-format module and a plain ELF share their first four bytes. `pros-link` reads
+  `e_type` at offset `0x10` before sending: `0x0003` is a payload, `0xFE10` and `0xFE18` are
+  vendor module types and are refused by name, with the loader that wants them.
+- The loader duplicates the connection socket onto the payload's stdout and stderr. The send
+  call offers that as an optional read-back. Nothing above it depends on it, because a payload
+  started any other way has no such socket.
+- Every service is unauthenticated on the local network. Prosperous adds no login of its own.
 
-**It does not drive the protocol.** obSCEne has a driver, orbistoun has the questions, and a
-second client here would be a third place that could disagree about what `died` means.
-
-One was written and removed. The argument for it was that a published specification invites
-more than one implementation - which explains why it is *permitted* and not why it is
-*wanted*, and nothing here wanted it. Recorded because the same argument will read as
-convincing the next time.
-
-## Repository and crate layout
-
-Three sibling repositories under one root, joined by **relative path dependencies**. No
-feature flags, no duplicated code.
+## Crates
 
 ```
-prosperous/
-  crates/pros-link      the five target services - transport only
-  crates/pros-core      device registry, dependency probing, workflows, the manifest
-  crates/pros-moonlight the Moonlight/GameStream bridge in front of Porthole (see below)
-  pros-cli              shim
-  pros-gui              shim - the standalone product
-
-orbistoun/   ->  pros-link, pros-core
-obscene/     ->  pros-link            (replaces tool/src/target.rs)
+crates/pros-link       the target services: transport only, over std::net
+crates/pros-core       registry, checks, the manifest, workflows
+crates/pros-moonlight  the Moonlight bridge in front of Porthole
+pros-cli               the `pros` shim
+pros-gui               the window shim
 ```
 
-### Why the split falls where it does
-
-`pros-link` stays **small and argued**, which is a hard requirement rather than a preference.
-obSCEne's tool adds each of its dependencies with a paragraph justifying it, with
-`forbid(unsafe_code)` on top. A transport crate that dragged in a runtime, a TLS stack or a
-serialisation framework could not be taken by that project without breaking a policy it holds
-deliberately.
-
-It was **std-only** until D025, on the same reasoning taken one step further: zero is easier to
-defend than one. What that cost was a transport with no way to say what it was doing, which is
-the layer where that is worth most - so it now carries `tracing` and nothing else. Four packages
-in obSCEne's tree, no proc-macro, and a consumer that wants none of it can compile every call
-out with `tracing/max_level_off`.
-
-So the line is drawn at **what needs a dependency**:
-
-- **`pros-link`** speaks the five protocols over `std::net`. No hashing, no JSON, no
-  async. This is the part obSCEne takes.
-- **`pros-core`** verifies checksums, reads and writes the manifest, holds the registry
-  and sequences workflows. It needs a hash and a JSON reader, and obSCEne never sees them.
-**There was never a `pros-video` crate.** This named one that would integrate a remote-play
-client and, later, the frame-grab client. The remote-play half is gone - see
-`DECISIONS.md` - and the frame-grab half turned out to belong in `pros-link`, because it is a
-socket protocol and that is what `pros-link` is for. The counting-and-piping half of Porthole
-is in `pros-core::watch`, for the same reason: it sequences a workflow.
-
-**There is a third library crate, but it is not that one.** `pros-moonlight` bridges the
-Moonlight/GameStream protocol to Porthole's two ports so any Moonlight client can stream a
-target - and it earns a crate because it is neither transport (it holds a TLS stack, RTSP, RTP
-and pairing that `pros-link` must never grow, principle 4) nor a general workflow layer. It
-takes `pros-link` and adds what that crate deliberately does without. See
-[VIDEO.md](VIDEO.md) part four.
-
-That leaves a dependency spine in orbistoun's sense: `link` -> `core`, each layer adding what
-the one below deliberately does without - with `pros-moonlight` a second consumer of `link`
-alongside `core` - and video distributed by what each piece actually is, rather than gathered
-into a crate named after a subject.
-
-### The cost, accepted rather than discovered
-
-A path dependency means **`obscene-tool` no longer builds from a standalone clone of
-`obscene`**. The projects are checked out as a set, under
-[OOPS](https://github.com/project-oops/OOPS).
-
-Written down because it will be noticed by somebody who did not choose it. The
-alternative - publishing `pros-link` so obSCEne can depend on a version - trades a
-checkout convention for a release process, and a release process is a worse thing to owe
-than a clone somebody forgot.
-
-## The target
-
-Measured on 2026-08-25 against a target. Payloads are loaded by `pldmgr` from
-`/data/pldmgr/autoload.txt`, in this order:
-
-```
-kstuff-lite -> nanodns -> elfldr -> klogsrv -> shsrv -> ShadowMountPlus -> ps5upload -> ftpsrv
-```
-
-| service | port | what it is |
-|---|---|---|
-| `elfldr` | 9021 | send it an ELF, it runs it |
-| `ftpsrv` | 2121 | anonymous FTP; 13-23 MB/s measured |
-| `klogsrv` | 3232 | streams `/dev/klog` |
-| `shsrv` | 2323 | a shell. **Raw TCP, not telnet** |
-| `pldmgr` | 8084 | web dashboard, and the thing that loaded the rest |
-
-### Three facts that cost real time to learn
-
-**1. `elfldr` is a single point of failure, and it is the one that fails invisibly.**
-`pldmgr` launches everything *through* `elfldr` - including, if asked, `elfldr` itself. So
-when `elfldr` dies, `pldmgr` cannot bring anything back, and the dashboard that would tell
-you keeps answering because it is a separate listener. Only re-running the jailbreak
-recovers it.
-
-Design consequence: **`elfldr` is checked first and reported first**, and a check that
-finds it down says *re-run the jailbreak* rather than *reload a payload*. Those are
-different amounts of work, and the tool knows which one applies.
-
-**2. A vendor-format module and a plain ELF share their first four bytes.** Both begin
-`7f 45 4c 46`. The loader's sanity check passes either, then maps a module whose entry
-point expects tens of thousands of resolved imports, and dies without saying anything.
-
-Design consequence: **guard on `e_type` at offset `0x10` before sending**, inside
-`pros-link`, once. `0x0003` is a payload; `0xFE10` and `0xFE18` are vendor module types
-and are refused by name. The refusal says which shape was found and which loader wants it,
-because *that file is for the emulator, not the target* is the message a person needs.
-
-**3. The loader duplicates the connection socket onto the payload's stdout and stderr.** A
-payload sent that way reports back over the socket it arrived on.
-
-Design consequence: **convenience, never mechanism.** A payload installed as a package or
-started from the home screen has no such socket, and anything built on the assumption
-breaks the moment a payload is launched another way. `pros-link` offers it as an optional
-read-back on the send call, and nothing above may require it.
-
-## What a registration is
-
-An address and a name. Nothing else.
-
-Capabilities do not survive a power cycle - a jailbreak does not, and the chain that comes
-back depends on a text file edited weeks ago. **Anything cached about what a target can do
-is a claim that expires without notice**, which is the same mistake as a stale exclusion
-list. So capability is probed on every use and never stored.
-
-The registry file is line-oriented and parsed by hand: it is a small table, and splitting
-is simpler to test than a format crate is to justify.
-
-It lives in the collection's shared data directory - `%APPDATA%\OOPS\` on Windows,
-`~/.local/share/OOPS/` on Linux - resolved through `oops_paths` and shared with the sibling
-projects, so a target registered here is one they can reach too. Where it goes and why is
-argued once in [features/targets.md](features/targets.md) rather than restated here.
-
-## What a check reports
-
-Not up or down. **What each service unlocks**, and whether its absence blocks anything:
-
-- `elfldr` and a report channel are **required** - without them there is no workflow.
-- `klogsrv`, `shsrv` and `pldmgr` are **optional** - they change how much is *visible*
-  when something goes wrong, which is a different kind of important.
-
-Required and optional fail differently and are reported differently.
-
-**Timing is part of the answer.** A port that refuses instantly and one that takes 1500 ms
-to refuse mean different things: the first is a machine saying no, the second is usually a
-network deciding. The probe carries its own duration and the reporting layer decides what
-is worth remarking on.
-
-## Payloads: fetched, never vendored
-
-Prosperous ships **no payload binaries**. It ships a manifest of where to get them,
-editable outside the source tree so a moved mirror needs no recompile - the same rule as
-Orbistoun's rules-in-data principle (its own principles file), rules in data rather than code.
-
-Three reasons, in order of weight:
-
-1. The `ps5-payload-dev` payloads are GPL-3.0. Redistributing binaries obliges you to
-   offer corresponding source; pointing at upstream obliges nothing.
-2. URLs rot, and a rotted URL should be a text edit rather than a release.
-3. obSCEne's CI already refuses any tracked `.elf` or `.bin`, and Prosperous inherits the
-   habit rather than arguing with it.
-
-### The schema is copied, not invented
-
-`pldmgr`'s own `repository_cache.json` already carries 25 entries with exactly the right
-fields:
-
-```
-name  filename  url  source  source_direct  version
-last_update  checksum  category  description  extract_file  asset_pattern
-```
-
-Copying it costs nothing and buys interoperability: **Prosperous can read `pldmgr`'s
-repository as a source**, so a target that is already configured is already described.
-
-`checksum` is the field that matters. You are downloading from a mirror and then executing
-the result with kernel-adjacent privileges. **Verification happens before sending, always,
-and the ordinary path offers no way to skip it.**
-
-### `check` repairs, it does not only report
-
-`pros check` should be able to fix what it finds missing - fetch an absent payload from the
-manifest, verify it, send it - rather than printing a list for somebody else to act on. A
-tool that can see a problem and not fix it has left the interesting half undone.
-
-## Video: two problems, not one
-
-### Watching
-
-**Porthole.** The target encodes its own output in hardware and serves it on a socket this
-project defined; this reads it, counts what goes past, and pipes it to a player. See
-`VIDEO.md` part three.
-
-Not the vendor's protocol, and not somebody else's client driving it. That route existed here
-and was removed: speaking remote play means pairing, a UDP transport, ECDH with per-session
-AES-GCM, Reed-Solomon FEC, two video codecs and Opus, and every one of those costs is paid to
-talk to **unmodified** firmware. This project only ever talks to jailbroken targets, which
-already run our code.
-
-### Diffing
-
-**A stream is useless for this, and the reason is the codec.** orbistoun's own oracle
-list calls framebuffer diffing *the only cheap, mechanical correctness signal in the whole
-codebase*, and obSCEne's GPU comparison already resolves differences of one ULP. A lossy
-codec does not degrade that signal, it destroys it.
-
-The answer is an **on-demand lossless frame grab**: one frame, exactly, when asked. Roughly
-8 MB, under a second, a small payload using the `sceVideoOut` calls obSCEne already
-declares.
-
-**Designed now, built later** - when orbistoun's GPU work reaches for it. When it is built
-the payload belongs in **obSCEne**, because homebrew that runs on the target and reports
-what it saw is obSCEne's exact description. `pros-link::frames` is the client half, and
-it is built.
-
-The protocol, the acceptance criteria and the open questions the hardware has to answer are in
-[VIDEO.md](VIDEO.md). (D008)
-
-### An open question obSCEne can answer
-
-**Is the hardware's encoder (`libSceVideoEnc`, the VCE block) reachable from an unsigned
-payload?**
-
-That single answer decides whether live watching exists at all - there is no second route
-to fall back on, by choice. And
-it is precisely obSCEne's kind of question: call it, record what came back, grade it by
-what it ran on.
-
-## Scope
-
-### v1
-
-- device registration and onboarding
-- dependency checking, with repair
-- shell over `shsrv`
-- kernel log streaming
-- payload deployment from the manifest
-- file browse and transfer
-
-**Multi-target throughout.** Every operation names its target and the registry resolves
-it. There is no ambient "current target" for an operation to inherit by accident.
-
-### Deferred
-
-- **The frame grabber**, as above.
-- **Scripted controller input.** Ghostpad does it with a payload and 16-byte packets over
-  TCP 6967, and covers two cases remote play cannot: injecting into a live local session,
-  and deterministic timing for automated testing. It also patches `libScePad.sprx` in
-  `SceShellCore`'s live memory, which is more invasive than anything else in the chain.
-  Revisit when automated target testing needs it. Credit it if used.
-
-### Out
-
-*This section said cheats, avatars, saves and the game library were out of scope. All four
-shipped - `pros saves`, `pros titles`, `pros library`, and a cheats table in
-`pros-core/data`. The argument below is kept because it was a real one and the reversal is
-worth seeing, not because it still describes the tool.*
-
-The reasoning was that these are metadata products while this is target plumbing, with
-almost nothing in common but a network address. What changed it: once a target is reachable
-and its filesystem readable, the metadata is *already there* - the plumbing had made them
-cheap rather than making them relevant.
-
-### Explicitly not a concern
-
-**Authentication and transport security.** Every target service here is unauthenticated
-on the LAN by design - that is what a jailbreak payload chain is. Adding a login to a tool
-that talks to an open FTP server and a raw shell would be theatre.
-
-Recorded so that it is not re-argued in six months by somebody who has just noticed.
+The line between them is drawn at what needs a dependency.
+
+- **`pros-link`** speaks the service protocols, the frame grabber and Porthole's wire
+  formats. Its only dependency is `tracing` (D025), which a consumer can compile out with
+  `tracing/max_level_off`. No hashing, no JSON, no async. obSCEne's tool takes it by path and
+  justifies each dependency it adds, so this crate stays small enough to pass that review.
+- **`pros-core`** verifies checksums, reads and writes the manifest, holds the registry and
+  sequences workflows: checks, deployment, transfers, saves, titles, supervision and
+  `watch`, which pipes Porthole's video to a player.
+- **`pros-moonlight`** holds the TLS stack, RTSP, RTP, forward error correction and pairing
+  the GameStream protocol needs. None of that belongs in a transport crate, and it is not a
+  general workflow, so it is a crate of its own that takes `pros-link` directly.
+
+The repositories are checked out together under the OOPS root and joined by relative path
+dependencies. A standalone clone of a consumer does not build; that is the cost of not
+running a release process for `pros-link`.
+
+## Registration
+
+A registration holds only what a power cycle cannot change: a name, an address, port
+overrides by service name, and the startup chain the target is meant to run. The registry is
+one line per target, `<name> <address> [service=port ...] [chain=<name>]`, in the
+collection's shared data directory resolved through `oops_paths`, so sibling projects reach
+the same targets. There is no ambient current target: every operation names one.
+
+What a target can do is never stored. Loaded services do not survive a power cycle, so a
+cached capability is a claim that expires without notice. It is probed on every use.
+
+## Checks
+
+A check reports what each service unlocks, not up or down. A missing required service
+blocks every workflow; a missing optional one dims the view, because less is visible when
+something fails. The verdict is `Ready`, `Dimmed` or `Blocked` with a remedy.
+
+The **doctor** turns findings into a repair plan: a payload the target lacks is fetched from
+the manifest, verified, sent and listed in the chain. A plan is confirmed by a person before
+it runs, and where more than one payload would answer, the choice is offered rather than
+made.
+
+Timing is part of the answer. A port that refuses at once is a machine saying no; one that
+takes the full timeout is usually the network. A probe carries its duration and the
+reporting layer decides what to remark on.
+
+The **chain** is a separate question from the check: what the target loads when it comes
+back, read from the payload manager's autoload list. A service that answers now and is
+absent from the chain is gone after the next power cycle.
+
+## Payloads
+
+Prosperous ships no payload binaries. It ships a manifest of where to get them, editable
+outside the source tree so a moved mirror is a text edit rather than a release.
+
+- The upstream payloads are GPL-3.0. Pointing at them carries no obligation; redistributing
+  them would.
+- The manifest schema is the payload manager's own `repository_cache.json` format, so a
+  target's repository reads as a source (D016).
+- A checksum is verified before anything is sent, always. The file is about to run on the
+  target, and the ordinary path has no way to skip the check.
+
+## Capabilities
+
+What Prosperous knows about a target falls into three layers, and only the middle one is
+configuration.
+
+1. **Protocols** are code. FTP is FTP whoever serves it; a socket that takes an ELF and runs
+   it is a loader. Configuration never names a protocol this program has no code for.
+2. **Providers** are data. Which payload provides a capability, on which port, at which
+   paths and in which file format. This is the layer that changes when a payload is replaced
+   by another.
+3. **Facts about the machine** are code: `/user/home`, `/user/app`, `/user/appmeta`, the SFO
+   layout, the save container shape. A configurable machine fact invites a confidently wrong
+   answer with no second opinion to catch it.
+
+The test for a layer: if a different entry point would change it, it is a provider; if only
+a different machine would, it is a machine fact.
+
+A **capability** names what Prosperous needs, such as moving files, and lists the providers
+known to supply it. A capability is satisfied when any provider answers, and the report names
+which one, because "files, via `zftpd`" and "files" are different facts. Its `speaks` field
+names a protocol and is validated against what is compiled in when the file is read. A
+provider's dependencies are stated against capabilities, not payload names, so a root failure
+such as a missing loader is reported once and what follows from it is reported as following.
+
+Two rules keep this honest:
+
+- Capabilities refer to payloads by the manifest's names. The manifest is the only list of
+  payloads.
+- The built-in list is compiled in and runs when no file exists.
+
+Port overrides on a registration are the provider layer in its simplest form. Every
+connection goes through the registration, so an override reaches transfers as well as the
+probe. Manifest entries may declare `unlocks` and `required`, so a declared payload takes part
+in the verdict the same way a compiled-in service does.
+
+## Video
+
+Watching and diffing are separate problems with no shared code. Watching goes through
+Porthole, a payload that encodes the target's output in hardware and serves it on a socket;
+`pros-core::watch` reads it, counts it and pipes it to a player, and `pros-moonlight` offers
+the same stream to any Moonlight client. Diffing goes through a resident frame grabber that
+returns one lossless frame on request, read by `pros-link::frames` (D008). Both are specified
+in [VIDEO.md](VIDEO.md).
 
 ## Testing without a target
 
-The hardest constraint on this project is that its subject is a physical object on a
-network that is usually switched off.
+The target is a physical machine on a network that is usually switched off. `pros-link::fake`
+is a loopback stand-in for the services, shipped rather than hidden in a test module so every
+consumer uses the same one. It fakes the awkward parts, because that is where the bugs are:
 
-`pros-link` being small and speaking five plain protocols makes the answer
-straightforward: **a loopback fake**. A test server that accepts on the five ports and
-replies the way each service does - including the awkward parts, which are the ones worth
-testing:
+- `klogsrv` streams and never ends, so a reader stops on its own window.
+- `shsrv` has no framing, so a reader stops on silence.
+- The loader may or may not answer, so a reader is correct when it does not.
+- A port that refuses at once and one that refuses slowly produce different reports.
 
-- `klogsrv` streams and never ends, so the client stops on a window rather than an EOF.
-- `shsrv` has no framing at all, so the client reads until quiet.
-- the loader may or may not echo, so the client has to work when it does not.
-- a port that refuses instantly and one that refuses slowly must produce different reports.
+`pros fake-target` does the same for Porthole: it serves an Annex B file on 9805 and prints
+the pad records it receives on 9806, so the Moonlight bridge runs end to end on one machine.
 
-None of that needs the hardware, and all of it is where the bugs are. What a fake cannot test
-is whether the target agrees - that is what a registered target and a manual run are for,
-and the difference between the two should stay visible in how results are reported.
-
-## Risks, honestly
-
-- **The payload chain is somebody else's.** Ports, names and behaviour can change under us.
-  The manifest absorbs a URL change; a protocol change is a real break, and a check that
-  reports *what each service unlocks* is what makes that legible rather than mystifying.
-- **A path dependency across repositories is a coordination cost**, paid every time
-  somebody clones one of them alone.
-- **The standalone product and the diagnostic library want different things.** Every time
-  the GUI wants something the library will not give it, the temptation is to put logic in
-  the shim. That is the failure mode the shim rule exists to name.
-- **Executing downloaded binaries with kernel-adjacent privileges** is the point of the
-  tool and also its sharpest edge. The checksum is the only thing standing between a
-  mirror and the target, which is why it is not optional.
+A fake cannot say whether the target agrees. That takes a registered target and a manual
+run, and results say which of the two produced them.

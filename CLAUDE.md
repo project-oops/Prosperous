@@ -9,8 +9,8 @@ Remote management for a Prospero-generation target, and the transport library un
 register a target, check what it can do, put a payload on it, read its log, run a command,
 move files. The binary is `pros`; the window is `pros-gui`.
 
-Prosperous is a library first. `pros-link` is used by obSCEne and orbistoun, `pros-core` by
-orbistoun, so a change to either is a change its consumers feel. The tools on top hold no
+Prosperous is a library first. obSCEne uses `pros-link` and `pros-core`, so a change to either
+is a change it feels; grep its `tool/` before changing a public signature. The tools on top hold no
 logic of their own.
 
 ## Principles
@@ -48,10 +48,10 @@ logic of their own.
 - Tests need no target. `pros-link` ships a fake target outside `#[cfg(test)]` so every
   consumer uses the same one.
 - The gate is `./bin/prosperous check`. Run it before reporting work as done.
-- `hw install` needs a LAN address the target can reach. The target connects in to
+- Installing a package needs a LAN address the target can reach. The target connects in to
   `pros_core::handover`, which binds the interface that routes to the target; under WSL2's
   default NAT that address is unreachable, the target never fetches, and the handover reports
-  `fetched 0 time(s)`. Outbound verbs (check, logs, sh, send, report) work from anywhere.
+  `fetched 0 time(s)`. Outbound verbs (check, logs, sh, send, pull) work from anywhere.
 
 ## Where things live
 
@@ -62,10 +62,9 @@ logic of their own.
 | `crates/pros-moonlight` | the Moonlight/GameStream bridge in front of Porthole, reached by `pros moonlight` and `pros fake-target`; a separate `pros-link` consumer because it carries TLS, RTSP, RTP and pairing |
 | `pros-cli` | the `pros` command |
 | `pros-gui` | the window |
-| `docs/DESIGN.md` | the transport and the services |
-| `docs/CAPABILITIES.md` | the three-layer model of durable versus configurable |
-| `docs/USAGE.md` | the verbs, for users |
-| `docs/BUILDING.md` | the `bin/prosperous` verbs |
+| `docs/DESIGN.md` | the transport, the services, and the three-layer capability model |
+| `docs/guide/` | the user guide, one page per area; the window embeds it |
+| `README.md` | building, and the `bin/prosperous` verbs |
 | `docs/VIDEO.md` | diffing, Porthole and the Moonlight bridge |
 | `docs/GLOSSARY.md` | the words Prosperous uses |
 | `docs/decisions/` | the decisions in force |

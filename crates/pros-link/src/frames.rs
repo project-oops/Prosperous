@@ -1,5 +1,5 @@
 //! Reading frames from a grabber on the target, for diffing an emulator's output against the
-//! hardware's (`docs/VIDEO.md` part two). Watching is part three and lives in `pros-core::watch`.
+//! hardware's (`docs/VIDEO.md`, Diffing). Watching lives in `pros-core::watch`.
 //!
 //! A payload holds the display open and answers `GRAB\n` with a header, the pixels and an
 //! FNV-1a checksum. The format and stride are reported and passed through, never assumed; a
@@ -28,7 +28,7 @@ pub const REQUEST: &str = "GRAB\n";
 
 /// The port a target's frame grabber listens on.
 ///
-/// Chosen in `docs/VIDEO.md` part two, not measured: next to the loader, and clear of the
+/// Chosen in `docs/VIDEO.md` (Diffing), not measured: next to the loader, and clear of the
 /// ports the chain uses (9021, 2121, 3232, 2323, 8084, and 6967 for scripted input). [`grab`]
 /// still takes the port as a parameter so a registration can override it.
 pub const PORT: u16 = 9022;
@@ -294,8 +294,7 @@ pub fn grab(address: &str, port: u16, patience: Duration) -> Result<Frame, NotAF
 /// Why two frames cannot be compared.
 ///
 /// A type so a diffing harness can branch on it: a shape change (a title changed mode) and a
-/// format change (the grabber was rebuilt) need different handling. `docs/VIDEO.md` part two
-/// names this type in the signature it specifies.
+/// format change (the grabber was rebuilt) need different handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mismatch {
     /// They are different sizes.

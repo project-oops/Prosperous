@@ -1,15 +1,15 @@
 # Third-party licences
 
-Prosperous is MIT or Apache-2.0 (see `LICENSE`). This file reproduces the licences of third-party
-work that Prosperous's own source is **derived from**, as those licences require. Crates merely
-depended on are not listed here - their licences travel with them in the dependency tree, and the
-ones consulted as references rather than derived from are credited in `ACKNOWLEDGEMENTS.md`.
+Prosperous is MIT or Apache-2.0 (see `LICENSE-MIT` and `LICENSE-APACHE`). This file reproduces
+the licences of third-party work that Prosperous's own source is derived from, as those licences
+require. Crates depended on are not listed here - their licences travel with them in the
+dependency tree - and sources consulted as references are credited in `ACKNOWLEDGEMENTS.md`.
 
 ---
 
 ## Moonshine
 
-`crates/pros-moonlight` - the Moonlight/GameStream host bridge - is **based on Moonshine** by Hans
+`crates/pros-moonlight` - the Moonlight/GameStream host bridge - is based on Moonshine by Hans
 Gaiser (<https://github.com/hgaiser/moonshine>). Moonshine is the pure-Rust GameStream host this
 bridge follows: its crate choices, its module layout, and above all the exact wire behaviour of the
 RTSP handshake, the RTP/NV video packetisation, the Reed-Solomon FEC scheme and the AES-GCM control

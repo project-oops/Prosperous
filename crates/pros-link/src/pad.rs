@@ -1,6 +1,6 @@
 //! Controller state, on the wire.
 //!
-//! Both ends of this format are ours, specified in `docs/VIDEO.md` part three; only the button
+//! Both ends of this format are ours, specified in `docs/VIDEO.md` under Porthole; only the button
 //! bits are measured. A record is fixed-size, not a text line, because it goes out at 60 Hz or
 //! faster. Each record carries the absolute state and a sequence number, so a receiver that
 //! falls behind applies the newest and discards the rest, and a dropped record is wrong for

@@ -1,6 +1,6 @@
 //! Reading what is in an encoded video stream, without decoding it.
 //!
-//! Decoding is left to a media player (`docs/VIDEO.md` part three), since it would need a
+//! Decoding is left to a media player (`docs/VIDEO.md`, Porthole), since it would need a
 //! large C dependency through FFI in a workspace that forbids unsafe code. This module answers
 //! why no picture appears: it finds the units, names their types and counts them.
 //!

@@ -132,7 +132,7 @@ impl App {
         if sending {
             ui.small(format!("{} records sent", self.state.controllers.feed.sent));
         } else {
-            ui.small("no payload accepts these yet - see docs/vIDEO.md part three");
+            ui.small("no payload accepts these yet - see docs/VIDEO.md, under Porthole");
             if self.state.controllers.feed.dropped > 0 {
                 ui.small(format!(
                     "{} records had nowhere to go",

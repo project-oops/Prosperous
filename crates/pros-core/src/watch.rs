@@ -1,6 +1,6 @@
 //! Watching the stand-in stream: read it, count it, and pipe it to a player.
 //!
-//! Decoding stays out of this crate (`docs/VIDEO.md` part three): it would need a large C or
+//! Decoding stays out of this crate (`docs/VIDEO.md`, Porthole): it would need a large C or
 //! C++ dependency through FFI in a workspace that forbids unsafe code. A player alone says
 //! "no picture" for several different faults, so the bytes pass through here on their way to
 //! the player's standard input, and the counts say which fault it is.
@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// The port the stand-in serves video on (`docs/VIDEO.md` part three).
+/// The port the stand-in serves video on (`docs/VIDEO.md`, Porthole).
 ///
 /// Both ends are ours, so the value is a choice rather than a measurement.
 pub const PORT: u16 = 9805;
@@ -176,7 +176,7 @@ impl Counts {
             && !rate.is_moving()
         {
             // Every check above passes and the counts still climb; this is what the raw-grab
-            // fallback in `docs/VIDEO.md` part two looks like, about two frames a second.
+            // fallback in `docs/VIDEO.md` (Diffing) looks like, about two frames a second.
             return Some(format!(
                 "arriving at {} - that is not a stream, it is a slideshow",
                 rate.describe()
