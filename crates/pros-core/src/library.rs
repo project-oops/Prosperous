@@ -89,16 +89,16 @@ pub fn scan(entries: &[Entry]) -> Vec<Item> {
 ///
 /// When the directory cannot be read. A directory that is not there is an empty list: this
 /// program's folders do not exist until something is put in them.
-pub fn here(path: &Path) -> Result<Vec<Item>, String> {
+pub fn here(path: &Path) -> crate::Result<Vec<Item>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
     let mut items = Vec::new();
-    for entry in std::fs::read_dir(path).map_err(|why| why.to_string())? {
-        let entry = entry.map_err(|why| why.to_string())?;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
         // `file_type` does not follow links, so a link is described rather than its target.
-        let kind = entry.file_type().map_err(|why| why.to_string())?;
+        let kind = entry.file_type()?;
         let id = title_id(&name).map(str::to_owned);
         let is_title = id.as_deref() == Some(name.as_str());
         items.push(Item {

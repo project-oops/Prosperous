@@ -418,9 +418,10 @@ fn tag_in(body: &str) -> Option<(String, Vec<Asset>)> {
 /// When nothing says which project released it, when the project cannot be asked, when there is
 /// no attached file this can identify as the payload, when the download fails, or when what
 /// arrives is empty.
-pub fn relist(payload: &Payload) -> Result<(Payload, Upstream), String> {
-    let (owner, repo) = repository_of(payload).ok_or_else(|| NotAsked::NoRepository.to_string())?;
-    let (tag, assets) = ask(&owner, &repo).map_err(|why| why.to_string())?;
+pub fn relist(payload: &Payload) -> crate::Result<(Payload, Upstream)> {
+    use crate::Error;
+    let (owner, repo) = repository_of(payload).ok_or(NotAsked::NoRepository)?;
+    let (tag, assets) = ask(&owner, &repo)?;
     let found = Upstream {
         latest: Some(tag.clone()),
         assets,
@@ -431,7 +432,7 @@ pub fn relist(payload: &Payload) -> Result<(Payload, Upstream), String> {
         .payload_asset(payload.filename.as_deref())
         .ok_or_else(|| {
             let names: Vec<&str> = found.assets.iter().map(|one| one.name.as_str()).collect();
-            format!(
+            Error::failed(format!(
                 "the {tag} release has {} files and none of them is plainly the payload - set \
                  this entry's filename to one of them by hand: {}",
                 names.len(),
@@ -440,7 +441,7 @@ pub fn relist(payload: &Payload) -> Result<(Payload, Upstream), String> {
                 } else {
                     names.join(", ")
                 }
-            )
+            ))
         })?
         .clone();
 
@@ -449,19 +450,19 @@ pub fn relist(payload: &Payload) -> Result<(Payload, Upstream), String> {
     let finished = std::process::Command::new(&program)
         .args(&arguments)
         .output()
-        .map_err(|why| format!("could not run {program}: {why}"))?;
+        .map_err(|why| Error::failed(format!("could not run {program}: {why}")))?;
     if !finished.status.success() {
         let _ = std::fs::remove_file(&into);
-        return Err(format!(
+        return Err(Error::failed(format!(
             "{program} failed for {}: {}",
             asset.url,
             String::from_utf8_lossy(&finished.stderr).trim()
-        ));
+        )));
     }
-    let bytes = std::fs::read(&into).map_err(|why| format!("{}: {why}", into.display()))?;
+    let bytes = std::fs::read(&into).map_err(|why| Error::at(&into, why))?;
     let _ = std::fs::remove_file(&into);
     if bytes.is_empty() {
-        return Err(format!("{} arrived empty", asset.url));
+        return Err(Error::failed(format!("{} arrived empty", asset.url)));
     }
 
     let digest = crate::checksum::Checksum::of(&bytes);
@@ -558,13 +559,15 @@ pub fn load() -> Sources {
 /// # Errors
 ///
 /// When there is nowhere to write, or the write fails.
-pub fn save(sources: &Sources) -> Result<PathBuf, String> {
-    let path = path().ok_or_else(|| "no home directory, so there is nowhere for it".to_owned())?;
+pub fn save(sources: &Sources) -> crate::Result<PathBuf> {
+    let path = path()
+        .ok_or_else(|| crate::Error::failed("no home directory, so there is nowhere for it"))?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|why| why.to_string())?;
+        std::fs::create_dir_all(parent)?;
     }
-    let text = serde_json::to_string_pretty(sources).map_err(|why| why.to_string())?;
-    std::fs::write(&path, text).map_err(|why| why.to_string())?;
+    let text = serde_json::to_string_pretty(sources)
+        .map_err(|why| crate::Error::failed(why.to_string()))?;
+    std::fs::write(&path, text)?;
     Ok(path)
 }
 

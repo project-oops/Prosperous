@@ -14,6 +14,8 @@ use std::path::PathBuf;
 use pros_link::service::{SERVICES, Service};
 use serde::{Deserialize, Serialize};
 
+use crate::error::{Error, Result};
+
 /// What a file may say about one service.
 ///
 /// Every field is optional, so an entry states only what it corrects.
@@ -181,8 +183,9 @@ impl Catalogue {
     ///
     /// When the document will not parse. A broken override is reported rather than silently
     /// replaced by the defaults.
-    pub fn take_json(&mut self, text: &str) -> Result<(), String> {
-        let entries: Vec<Entry> = serde_json::from_str(text).map_err(|why| why.to_string())?;
+    pub fn take_json(&mut self, text: &str) -> Result<()> {
+        let entries: Vec<Entry> =
+            serde_json::from_str(text).map_err(|why| Error::failed(why.to_string()))?;
         for entry in entries {
             self.absorb(entry);
         }
@@ -204,20 +207,20 @@ pub fn path() -> Option<PathBuf> {
 ///
 /// When the file exists and will not parse. A missing file is not an error; it means the
 /// compiled-in services.
-pub fn load() -> Result<Catalogue, String> {
+pub fn load() -> Result<Catalogue> {
     let mut catalogue = Catalogue::builtin();
     let Some(path) = path() else {
         return Ok(catalogue);
     };
     match std::fs::read_to_string(&path) {
         Ok(text) => catalogue.take_json(&text).map_err(|why| {
-            format!(
+            Error::failed(format!(
                 "{} could not be read: {why}. Delete it to fall back to the built-in services",
                 path.display()
-            )
+            ))
         })?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("{}: {error}", path.display())),
+        Err(error) => return Err(Error::at(&path, error)),
     }
     Ok(catalogue)
 }
@@ -227,7 +230,7 @@ pub fn load() -> Result<Catalogue, String> {
 /// # Errors
 ///
 /// As [`load`].
-pub fn load_with(manifest: &crate::manifest::Manifest) -> Result<Catalogue, String> {
+pub fn load_with(manifest: &crate::manifest::Manifest) -> Result<Catalogue> {
     let mut catalogue = Catalogue::builtin();
     catalogue.take_declared(manifest);
     if let Some(path) = path()
@@ -381,15 +384,13 @@ mod notes {
 /// # Errors
 ///
 /// When there is nowhere to keep it, or the existing file cannot be read or replaced.
-pub fn write_note(name: &str, note: &str) -> Result<PathBuf, String> {
+pub fn write_note(name: &str, note: &str) -> Result<PathBuf> {
     let path =
-        path().ok_or_else(|| "no home directory, so there is nowhere to keep it".to_owned())?;
+        path().ok_or_else(|| Error::failed("no home directory, so there is nowhere to keep it"))?;
     let mut entries: Vec<Entry> = match std::fs::read_to_string(&path) {
-        Ok(text) => {
-            serde_json::from_str(&text).map_err(|why| format!("{}: {why}", path.display()))?
-        }
+        Ok(text) => serde_json::from_str(&text).map_err(|why| Error::at(&path, why))?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(format!("{}: {error}", path.display())),
+        Err(error) => return Err(Error::at(&path, error)),
     };
 
     let note = note.trim();
@@ -416,10 +417,11 @@ pub fn write_note(name: &str, note: &str) -> Result<PathBuf, String> {
     });
 
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|why| format!("{}: {why}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|why| Error::at(parent, why))?;
     }
-    let text = serde_json::to_string_pretty(&entries).map_err(|why| why.to_string())?;
-    std::fs::write(&path, text + "\n").map_err(|why| format!("{}: {why}", path.display()))?;
+    let text =
+        serde_json::to_string_pretty(&entries).map_err(|why| Error::failed(why.to_string()))?;
+    std::fs::write(&path, text + "\n").map_err(|why| Error::at(&path, why))?;
     Ok(path)
 }
 

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use pros_core::boot::Step as BootStep;
-use pros_core::check::{Remedy, Verdict};
+use pros_core::check::Verdict;
 use pros_core::library::Kind as LibraryKind;
 use pros_core::manifest::Manifest;
 use pros_core::payloads::{Boot, Presence, Standing, There, Trust};
@@ -1219,7 +1219,7 @@ impl App {
             Ok(items) => self.state.local = items,
             Err(why) => {
                 self.state.local.clear();
-                self.state.trouble = Some(why);
+                self.state.trouble = Some(why.to_string());
             }
         }
     }
@@ -3944,7 +3944,7 @@ impl App {
     fn reveal(&mut self, path: &Path) {
         match pros_core::reveal::folder(path) {
             Ok(()) => self.state.said = path.display().to_string(),
-            Err(why) => self.state.trouble = Some(why),
+            Err(why) => self.state.trouble = Some(why.to_string()),
         }
     }
 
@@ -4590,7 +4590,7 @@ impl App {
             Verdict::Dimmed { .. } => egui::Color32::from_rgb(210, 190, 120),
             Verdict::Blocked { .. } => egui::Color32::from_rgb(220, 120, 120),
         };
-        ui.colored_label(colour, say_verdict(&verdict));
+        ui.colored_label(colour, verdict.to_string());
     }
 
     /// Everything the doctor is allowed to look at, borrowed from what is already known.
@@ -5520,7 +5520,7 @@ impl App {
             if ui.button("write the file to edit").clicked() {
                 match pros_core::watch::write_example() {
                     Ok(path) => self.state.said = path.display().to_string(),
-                    Err(why) => self.state.trouble = Some(why),
+                    Err(why) => self.state.trouble = Some(why.to_string()),
                 }
             }
             if let Some(path) = pros_core::watch::command_path() {
@@ -6296,35 +6296,6 @@ impl eframe::App for App {
     }
 }
 
-/// The verdict as a sentence.
-///
-/// The same words the command line uses.
-fn say_verdict(verdict: &Verdict) -> String {
-    match verdict {
-        Verdict::Ready => "ready".to_owned(),
-        Verdict::Dimmed { names } => format!(
-            "usable, but {} {} not loaded, so something will be invisible if a run goes wrong",
-            names.join(" and "),
-            were(names.len())
-        ),
-        Verdict::Blocked {
-            remedy: Remedy::RerunTheEntryPoint,
-        } => "the loader is not answering, so nothing can be sent or started from here. \
-              This says nothing about the target: a console can run its whole chain with \
-              9021 unreachable. Getting it back means starting elfldr the way it was first \
-              started, which means re-running the entry point"
-            .to_owned(),
-        Verdict::Blocked {
-            remedy: Remedy::LoadThese { names },
-        } => format!(
-            "blocked: {} {} not loaded. The loader is up, so {} can be sent again",
-            names.join(" and "),
-            were(names.len()),
-            if names.len() == 1 { "it" } else { "they" }
-        ),
-    }
-}
-
 /// A byte count somebody can read at a glance.
 ///
 /// Powers of two with one decimal place. Integer arithmetic throughout, because a size can
@@ -6349,43 +6320,9 @@ fn size(bytes: u64) -> String {
     }
 }
 
-/// Verb agreement for a count.
-const fn were(count: usize) -> &'static str {
-    if count == 1 { "is" } else { "are" }
-}
-
 #[cfg(test)]
 mod tests {
-    use pros_core::check::{Remedy, Verdict};
-
     use crate::state::Section;
-
-    use super::say_verdict;
-
-    /// The window words the loader's remedy as the command line does.
-    #[test]
-    fn the_loader_remedy_is_worded_as_the_command_line_words_it() {
-        let said = say_verdict(&Verdict::Blocked {
-            remedy: Remedy::RerunTheEntryPoint,
-        });
-        assert!(said.contains("re-running the entry point"), "{said}");
-        // A target was measured running its whole chain with 9021 unreachable, so the
-        // sentence must not diagnose the target.
-        assert!(said.contains("says nothing about the target"), "{said}");
-        assert!(
-            !said.contains("can be sent again"),
-            "it offers the remedy for a different failure: {said}"
-        );
-    }
-
-    /// Two absent services read as two, not as one.
-    #[test]
-    fn a_pair_of_missing_services_agrees_with_itself() {
-        let said = say_verdict(&Verdict::Dimmed {
-            names: vec!["klogsrv".to_owned(), "pldmgr".to_owned()],
-        });
-        assert!(said.contains("klogsrv and pldmgr are not loaded"), "{said}");
-    }
 
     /// Every place has a label and a note, and no two in a section share a label.
     #[test]

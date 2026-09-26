@@ -172,9 +172,9 @@ pub fn on_target_at(
     link: &pros_link::Link,
     root: &str,
     storage: Where,
-) -> Result<Vec<There>, String> {
-    let mut session = pros_link::files::Session::open(link).map_err(|why| why.to_string())?;
-    let top = session.list(root).map_err(|why| why.to_string())?;
+) -> crate::Result<Vec<There>> {
+    let mut session = pros_link::files::Session::open(link)?;
+    let top = session.list(root)?;
     let root = root.trim_end_matches('/');
 
     let mut found = Vec::new();
@@ -328,8 +328,8 @@ pub type Beside = Payload;
 /// # Errors
 ///
 /// When the description cannot be serialised, which is a bug in this crate.
-pub fn sidecar_for(payload: &Payload) -> Result<Vec<u8>, String> {
-    serde_json::to_vec_pretty(payload).map_err(|why| why.to_string())
+pub fn sidecar_for(payload: &Payload) -> crate::Result<Vec<u8>> {
+    serde_json::to_vec_pretty(payload).map_err(|why| crate::Error::failed(why.to_string()))
 }
 
 /// Whether a filename is one the loader would take.
@@ -355,7 +355,7 @@ pub const ELSEWHERE: &str = "/data/payloads";
 /// # Errors
 ///
 /// Only when the internal directory cannot be listed. A missing stick is not a failure.
-pub fn on_target_everywhere(link: &pros_link::Link) -> Result<Vec<There>, String> {
+pub fn on_target_everywhere(link: &pros_link::Link) -> crate::Result<Vec<There>> {
     let mut found = on_target_at(link, INTERNAL, Where::Internal)?;
     // On the target's drive, but outside `SCAN_DIRS`, so unreachable.
     if let Ok(more) = on_target_at(link, ELSEWHERE, Where::Unreachable) {

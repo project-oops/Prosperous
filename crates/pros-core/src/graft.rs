@@ -11,6 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::error::{Error, Result};
 use crate::sfo;
 
 /// Where a save keeps everything that describes the container rather than the game's data.
@@ -42,7 +43,7 @@ impl Open {
     ///
     /// When the folder cannot be walked. A missing parameter file is not an error; the
     /// parameters are then empty.
-    pub fn read(root: &Path) -> Result<Self, String> {
+    pub fn read(root: &Path) -> Result<Self> {
         let mut contents = Vec::new();
         walk(root, root, &mut contents)?;
         contents.sort();
@@ -74,9 +75,9 @@ impl Open {
 }
 
 /// Everything a folder holds that is not container description.
-fn walk(root: &Path, at: &Path, into: &mut Vec<PathBuf>) -> Result<(), String> {
-    for entry in std::fs::read_dir(at).map_err(|why| format!("{}: {why}", at.display()))? {
-        let entry = entry.map_err(|why| why.to_string())?;
+fn walk(root: &Path, at: &Path, into: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(at).map_err(|why| Error::at(at, why))? {
+        let entry = entry?;
         let path = entry.path();
         let relative = path.strip_prefix(root).unwrap_or(&path).to_owned();
         if relative.starts_with(SYSTEM) {
@@ -150,7 +151,7 @@ pub struct Done {
 /// # Errors
 ///
 /// When either save cannot be read, or the result cannot be written.
-pub fn graft(container: &Open, donor: &Open, into: &Path) -> Result<Done, String> {
+pub fn graft(container: &Open, donor: &Open, into: &Path) -> Result<Done> {
     let mut notes = Vec::new();
     match (container.title(), donor.title()) {
         (Some(keeping), Some(from)) if keeping == from => {
@@ -173,13 +174,13 @@ pub fn graft(container: &Open, donor: &Open, into: &Path) -> Result<Done, String
         let from = donor.root.join(relative);
         let to = into.join(relative);
         if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent).map_err(|why| why.to_string())?;
+            std::fs::create_dir_all(parent)?;
         }
         let name = relative.to_string_lossy().into_owned();
         if !container.contents.contains(relative) {
             notes.push(Note::Extra(name.clone()));
         }
-        std::fs::copy(&from, &to).map_err(|why| format!("{name}: {why}"))?;
+        std::fs::copy(&from, &to).map_err(|why| Error::failed(format!("{name}: {why}")))?;
         taken.push(name);
     }
 
@@ -193,16 +194,16 @@ pub fn graft(container: &Open, donor: &Open, into: &Path) -> Result<Done, String
 }
 
 /// Copies a folder and everything under it.
-fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(to).map_err(|why| why.to_string())?;
-    for entry in std::fs::read_dir(from).map_err(|why| format!("{}: {why}", from.display()))? {
-        let entry = entry.map_err(|why| why.to_string())?;
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from).map_err(|why| Error::at(from, why))? {
+        let entry = entry?;
         let path = entry.path();
         let into = to.join(entry.file_name());
         if path.is_dir() {
             copy_tree(&path, &into)?;
         } else {
-            std::fs::copy(&path, &into).map_err(|why| format!("{}: {why}", path.display()))?;
+            std::fs::copy(&path, &into).map_err(|why| Error::at(&path, why))?;
         }
     }
     Ok(())
@@ -217,11 +218,11 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 /// # Errors
 ///
 /// When the parameter file cannot be read or written, or does not carry an account field.
-pub fn set_account(save: &Path, account: &[u8; 8]) -> Result<(), String> {
+pub fn set_account(save: &Path, account: &[u8; 8]) -> Result<()> {
     let path = save.join(PARAMS);
-    let mut bytes = std::fs::read(&path).map_err(|why| format!("{}: {why}", path.display()))?;
-    sfo::set(&mut bytes, "ACCOUNT_ID", account, false).map_err(|why| why.to_string())?;
-    std::fs::write(&path, &bytes).map_err(|why| format!("{}: {why}", path.display()))
+    let mut bytes = std::fs::read(&path).map_err(|why| Error::at(&path, why))?;
+    sfo::set(&mut bytes, "ACCOUNT_ID", account, false)?;
+    std::fs::write(&path, &bytes).map_err(|why| Error::at(&path, why))
 }
 
 #[cfg(test)]

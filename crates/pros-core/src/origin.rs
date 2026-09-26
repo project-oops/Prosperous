@@ -79,11 +79,12 @@ pub fn user_in(path: &str) -> Option<String> {
 ///
 /// When the folder cannot be written to. Reported, because a copy with no record reads as
 /// unknown at restore.
-pub fn stamp(into: &Path, origin: &Origin) -> Result<PathBuf, String> {
+pub fn stamp(into: &Path, origin: &Origin) -> crate::Result<PathBuf> {
     let path = into.join(RECORD);
-    let text = serde_json::to_string_pretty(origin).map_err(|why| why.to_string())?;
-    std::fs::create_dir_all(into).map_err(|why| why.to_string())?;
-    std::fs::write(&path, text).map_err(|why| why.to_string())?;
+    let text = serde_json::to_string_pretty(origin)
+        .map_err(|why| crate::Error::failed(why.to_string()))?;
+    std::fs::create_dir_all(into)?;
+    std::fs::write(&path, text)?;
     Ok(path)
 }
 

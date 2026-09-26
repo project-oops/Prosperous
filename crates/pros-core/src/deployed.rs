@@ -14,6 +14,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::{Error, Result};
+
 /// What this program verified landing on one target, by content digest, keyed by remote path.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Ledger {
@@ -104,13 +106,15 @@ pub fn load() -> Deployed {
 /// # Errors
 ///
 /// When there is nowhere to write, or the write fails.
-pub fn save(deployed: &Deployed) -> Result<PathBuf, String> {
-    let path = path().ok_or_else(|| "no home directory, so there is nowhere for it".to_owned())?;
+pub fn save(deployed: &Deployed) -> Result<PathBuf> {
+    let path =
+        path().ok_or_else(|| Error::failed("no home directory, so there is nowhere for it"))?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|why| why.to_string())?;
+        std::fs::create_dir_all(parent)?;
     }
-    let text = serde_json::to_string_pretty(deployed).map_err(|why| why.to_string())?;
-    std::fs::write(&path, text).map_err(|why| why.to_string())?;
+    let text =
+        serde_json::to_string_pretty(deployed).map_err(|why| Error::failed(why.to_string()))?;
+    std::fs::write(&path, text)?;
     Ok(path)
 }
 

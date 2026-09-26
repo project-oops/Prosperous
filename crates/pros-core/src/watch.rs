@@ -277,17 +277,17 @@ impl Watching {
 ///
 /// When the line is empty once comments and spaces are gone, since launching nothing quietly
 /// would look like launching something that failed.
-pub fn parts(template: &str, address: &str) -> Result<(String, Vec<String>), String> {
+pub fn parts(template: &str, address: &str) -> crate::Result<(String, Vec<String>)> {
     let filled = template.replace("{address}", address);
     let mut words = filled.split_whitespace().map(str::to_owned);
     let program = words.next().ok_or_else(|| {
-        format!(
+        crate::Error::failed(format!(
             "nothing to run - put a command in {}",
             command_path().map_or_else(
                 || "the configuration".to_owned(),
                 |path| path.display().to_string()
             )
-        )
+        ))
     })?;
     Ok((program, words.collect()))
 }
@@ -333,15 +333,16 @@ pub fn example() -> String {
 /// # Errors
 ///
 /// When the file cannot be written.
-pub fn write_example() -> Result<PathBuf, String> {
-    let path = command_path().ok_or("no home directory, so there is nowhere to keep it")?;
+pub fn write_example() -> crate::Result<PathBuf> {
+    let path = command_path()
+        .ok_or_else(|| crate::Error::failed("no home directory, so there is nowhere to keep it"))?;
     if path.exists() {
         return Ok(path);
     }
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|why| why.to_string())?;
+        std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, example()).map_err(|why| why.to_string())?;
+    std::fs::write(&path, example())?;
     Ok(path)
 }
 
@@ -373,7 +374,7 @@ fn pump(
 
     let (program, arguments) = match parts(template, address) {
         Ok(split) => split,
-        Err(why) => return give_up(counts, why),
+        Err(why) => return give_up(counts, why.to_string()),
     };
     let mut player = match Command::new(&program)
         .args(&arguments)

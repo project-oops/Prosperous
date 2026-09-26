@@ -111,7 +111,7 @@ fn a_folder_that_cannot_be_read_is_an_error_and_not_an_empty_list() {
     let missing = scratch("missing").join("not-here");
     let error = contents(&missing).expect_err("there is nothing to walk");
     assert!(
-        !error.is_empty(),
+        !error.to_string().is_empty(),
         "the failure has to say something a person can act on"
     );
 }

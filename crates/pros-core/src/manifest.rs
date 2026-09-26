@@ -469,13 +469,17 @@ impl Manifest {
     /// # Errors
     ///
     /// Propagates the write, and reports a machine with no home directory.
-    pub fn save(&self) -> Result<std::path::PathBuf, String> {
-        let path = default_path().ok_or("no home directory, so there is nowhere to keep it")?;
+    pub fn save(&self) -> crate::Result<std::path::PathBuf> {
+        let path = default_path().ok_or_else(|| {
+            crate::Error::failed("no home directory, so there is nowhere to keep it")
+        })?;
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|why| why.to_string())?;
+            std::fs::create_dir_all(parent)?;
         }
-        let text = self.to_json().map_err(|why| why.to_string())?;
-        std::fs::write(&path, text).map_err(|why| why.to_string())?;
+        let text = self
+            .to_json()
+            .map_err(|why| crate::Error::failed(why.to_string()))?;
+        std::fs::write(&path, text)?;
         Ok(path)
     }
 

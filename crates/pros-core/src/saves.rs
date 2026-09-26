@@ -100,9 +100,9 @@ fn account_using(session: &mut Session) -> Option<String> {
 ///
 /// Propagates the listing. A home directory that cannot be read is a different finding from
 /// one with several users, or none.
-pub fn find(link: &pros_link::Link) -> Result<Found, String> {
-    let mut session = Session::open(link).map_err(|why| why.to_string())?;
-    let entries = session.list(HOME).map_err(|why| why.to_string());
+pub fn find(link: &pros_link::Link) -> crate::Result<Found> {
+    let mut session = Session::open(link)?;
+    let entries = session.list(HOME);
     session.close();
     Ok(decide(&users(&entries?)))
 }

@@ -44,8 +44,9 @@ pub fn path_for(id: &str) -> String {
 /// # Errors
 ///
 /// When the document is not JSON. A missing name is not an error.
-pub fn parse(id: &str, text: &str) -> Result<Metadata, String> {
-    let document: Value = serde_json::from_str(text).map_err(|why| why.to_string())?;
+pub fn parse(id: &str, text: &str) -> crate::Result<Metadata> {
+    let document: Value =
+        serde_json::from_str(text).map_err(|why| crate::Error::failed(why.to_string()))?;
 
     Ok(Metadata {
         // The file's own identifier is trusted over the folder name, since a folder can be
@@ -97,8 +98,8 @@ fn localised_name(document: &Value) -> Option<String> {
 /// Propagates the transfer and the parse. A description that cannot be fetched is not turned
 /// into an empty name: the caller decides between showing the identifier and reporting that
 /// nothing could be read.
-pub fn read(link: &pros_link::Link, id: &str) -> Result<Metadata, String> {
-    let bytes = pros_link::files::retrieve(link, &path_for(id)).map_err(|why| why.to_string())?;
+pub fn read(link: &pros_link::Link, id: &str) -> crate::Result<Metadata> {
+    let bytes = pros_link::files::retrieve(link, &path_for(id))?;
     parse(id, &String::from_utf8_lossy(&bytes))
 }
 

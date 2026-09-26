@@ -71,6 +71,39 @@ pub enum Verdict {
     },
 }
 
+/// One sentence saying what the check concluded and what to do, shared by both programs.
+impl std::fmt::Display for Verdict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let were = |count: usize| if count == 1 { "is" } else { "are" };
+        match self {
+            Self::Ready => f.write_str("ready"),
+            Self::Dimmed { names } => write!(
+                f,
+                "usable, but {} {} not loaded, so something will be invisible if a run goes wrong",
+                names.join(" and "),
+                were(names.len())
+            ),
+            Self::Blocked {
+                remedy: Remedy::RerunTheEntryPoint,
+            } => f.write_str(
+                "the loader is not answering, so nothing can be sent or started from here. \
+                 This says nothing about the target: a console can run its whole chain with \
+                 9021 unreachable. Getting it back means starting elfldr the way it was first \
+                 started, which means re-running the entry point",
+            ),
+            Self::Blocked {
+                remedy: Remedy::LoadThese { names },
+            } => write!(
+                f,
+                "blocked: {} {} not loaded. The loader is up, so {} can be sent again",
+                names.join(" and "),
+                were(names.len()),
+                if names.len() == 1 { "it" } else { "they" }
+            ),
+        }
+    }
+}
+
 /// Everything a check found about one target.
 #[derive(Debug, Clone)]
 pub struct Report {
@@ -306,6 +339,28 @@ mod tests {
                 remedy: Remedy::RerunTheEntryPoint
             }
         );
+    }
+
+    /// The loader's remedy names the entry point and does not diagnose the target.
+    #[test]
+    fn the_loader_remedy_says_what_to_do_and_no_more() {
+        let said = Verdict::Blocked {
+            remedy: Remedy::RerunTheEntryPoint,
+        }
+        .to_string();
+        assert!(said.contains("re-running the entry point"), "{said}");
+        assert!(said.contains("says nothing about the target"), "{said}");
+        assert!(!said.contains("can be sent again"), "{said}");
+    }
+
+    /// Two absent services read as two, not as one.
+    #[test]
+    fn a_pair_of_missing_services_agrees_with_itself() {
+        let said = Verdict::Dimmed {
+            names: vec!["klogsrv".to_owned(), "pldmgr".to_owned()],
+        }
+        .to_string();
+        assert!(said.contains("klogsrv and pldmgr are not loaded"), "{said}");
     }
 
     /// A required service that is not the loader can be put back by the loader.

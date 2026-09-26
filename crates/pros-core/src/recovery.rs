@@ -1386,22 +1386,25 @@ pub mod baseline {
     /// When the name is a shipped preset's; when there is nowhere to keep it; when the existing
     /// file is not a JSON object with a `presets` array, which is refused rather than replaced;
     /// or when the write fails.
-    pub fn keep(preset: &Preset) -> Result<std::path::PathBuf, String> {
+    pub fn keep(preset: &Preset) -> crate::Result<std::path::PathBuf> {
+        use crate::Error;
         if is_shipped_name(&preset.name) {
-            return Err(format!(
+            return Err(Error::failed(format!(
                 "'{}' is a built-in chain provided by Prosperous and cannot be overwritten. Choose a custom name for your chain.",
                 preset.name
-            ));
+            )));
         }
         let Some(path) = path() else {
-            return Err("there is nowhere to keep presets on this machine".to_owned());
+            return Err(Error::failed(
+                "there is nowhere to keep presets on this machine",
+            ));
         };
         let mut document = match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str::<serde_json::Value>(&text).map_err(|why| {
-                format!(
+                Error::failed(format!(
                     "{} is not valid JSON, so it was left alone: {why}",
                     path.display()
-                )
+                ))
             })?,
             // No file yet: a fresh one, carrying the note that says what it is for.
             Err(_) => serde_json::json!({
@@ -1410,17 +1413,23 @@ pub mod baseline {
             }),
         };
 
-        let object = document
-            .as_object_mut()
-            .ok_or_else(|| format!("{} is JSON, but not an object", path.display()))?;
+        let object = document.as_object_mut().ok_or_else(|| {
+            Error::failed(format!("{} is JSON, but not an object", path.display()))
+        })?;
         let presets = object
             .entry("presets")
             .or_insert_with(|| serde_json::Value::Array(Vec::new()))
             .as_array_mut()
-            .ok_or_else(|| format!("{} has `presets`, but it is not an array", path.display()))?;
+            .ok_or_else(|| {
+                Error::failed(format!(
+                    "{} has `presets`, but it is not an array",
+                    path.display()
+                ))
+            })?;
 
-        let serialised = serde_json::to_value(preset)
-            .map_err(|why| format!("could not write {} as JSON: {why}", preset.name))?;
+        let serialised = serde_json::to_value(preset).map_err(|why| {
+            Error::failed(format!("could not write {} as JSON: {why}", preset.name))
+        })?;
         if let Some(existing) = presets.iter_mut().find(|one| {
             one.get("name")
                 .and_then(serde_json::Value::as_str)
@@ -1432,13 +1441,14 @@ pub mod baseline {
         }
 
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|why| format!("{} could not be made: {why}", parent.display()))?;
+            std::fs::create_dir_all(parent).map_err(|why| {
+                Error::failed(format!("{} could not be made: {why}", parent.display()))
+            })?;
         }
         let text = serde_json::to_string_pretty(&document)
-            .map_err(|why| format!("could not format JSON: {why}"))?;
+            .map_err(|why| Error::failed(format!("could not format JSON: {why}")))?;
         std::fs::write(&path, text + "\n")
-            .map_err(|why| format!("{} was not written: {why}", path.display()))?;
+            .map_err(|why| Error::failed(format!("{} was not written: {why}", path.display())))?;
         Ok(path)
     }
 
@@ -1654,7 +1664,7 @@ mod baseline_tests {
         let preset = baseline::shipped()[0].clone();
         assert!(baseline::is_shipped_name(&preset.name));
         let err = baseline::keep(&preset).expect_err("shipped presets cannot be overwritten");
-        assert!(err.contains("cannot be overwritten"), "{err}");
+        assert!(err.to_string().contains("cannot be overwritten"), "{err}");
     }
 
     /// `data/chain.json` carries a format version and the required payloads.

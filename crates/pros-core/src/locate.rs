@@ -44,8 +44,8 @@ impl Where {
 /// # Errors
 ///
 /// Only when the target cannot be reached. A missing candidate is an answer, not an error.
-pub fn first_of(link: &pros_link::Link, candidates: &[&str]) -> Result<Where, String> {
-    let mut session = Session::open(link).map_err(|why| why.to_string())?;
+pub fn first_of(link: &pros_link::Link, candidates: &[&str]) -> crate::Result<Where> {
+    let mut session = Session::open(link)?;
     let mut tried = Vec::new();
     for candidate in candidates {
         // Any listing means the directory exists; an empty one is still where things go.

@@ -1,11 +1,11 @@
 //! Copying a whole folder off the target, and putting one back.
 //!
-//! A copy is complete, or its [`Summary`](crate::transfer::Summary) names every entry it did
+//! A copy is complete, or its [`Summary`] names every entry it did
 //! not copy and why.
 //!
 //! Symbolic links are not followed: one can point at its own parent, and the file protocol
 //! offers no identity to detect the loop, so a link is reported as skipped. The walk is
-//! written against [`Source`](crate::transfer::Source) so it can be tested without a target.
+//! written against [`Source`] so it can be tested without a target.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -28,24 +28,24 @@ pub trait Source {
     ///
     /// # Errors
     ///
-    /// Whatever the underlying transport reports, as text.
-    fn list(&mut self, path: &str) -> Result<Vec<Entry>, String>;
+    /// Whatever the underlying transport reports.
+    fn list(&mut self, path: &str) -> crate::Result<Vec<Entry>>;
 
     /// Fetches a file whole.
     ///
     /// # Errors
     ///
     /// As [`Source::list`].
-    fn retrieve(&mut self, path: &str) -> Result<Vec<u8>, String>;
+    fn retrieve(&mut self, path: &str) -> crate::Result<Vec<u8>>;
 }
 
 impl Source for Session {
-    fn list(&mut self, path: &str) -> Result<Vec<Entry>, String> {
-        Self::list(self, path).map_err(|why| why.to_string())
+    fn list(&mut self, path: &str) -> crate::Result<Vec<Entry>> {
+        Ok(Self::list(self, path)?)
     }
 
-    fn retrieve(&mut self, path: &str) -> Result<Vec<u8>, String> {
-        Self::retrieve(self, path).map_err(|why| why.to_string())
+    fn retrieve(&mut self, path: &str) -> crate::Result<Vec<u8>> {
+        Ok(Self::retrieve(self, path)?)
     }
 }
 
@@ -110,7 +110,7 @@ pub fn download(
     into: &Path,
     watch: &mut dyn FnMut(&Progress),
     stop: &dyn Fn() -> bool,
-) -> Result<Summary, String> {
+) -> crate::Result<Summary> {
     let mut summary = Summary::default();
     walk(source, from, into, 0, &mut summary, watch, stop)?;
     Ok(summary)
@@ -133,7 +133,7 @@ fn walk(
     summary: &mut Summary,
     watch: &mut dyn FnMut(&Progress),
     stop: &dyn Fn() -> bool,
-) -> Result<(), String> {
+) -> crate::Result<()> {
     if stop() {
         summary.skipped.push(Skipped {
             path: from.to_owned(),
@@ -150,7 +150,7 @@ fn walk(
     }
 
     let entries = source.list(from)?;
-    std::fs::create_dir_all(into).map_err(|why| why.to_string())?;
+    std::fs::create_dir_all(into)?;
 
     for entry in entries {
         if stop() {
@@ -191,7 +191,7 @@ fn walk(
             Kind::File => match source.retrieve(&there) {
                 Ok(bytes) => {
                     let here = into.join(&entry.name);
-                    std::fs::write(&here, &bytes).map_err(|why| why.to_string())?;
+                    std::fs::write(&here, &bytes)?;
                     summary.files += 1;
                     summary.bytes += bytes.len() as u64;
                     watch(&Progress {
@@ -200,7 +200,10 @@ fn walk(
                         current: there.clone(),
                     });
                 }
-                Err(why) => summary.skipped.push(Skipped { path: there, why }),
+                Err(why) => summary.skipped.push(Skipped {
+                    path: there,
+                    why: why.to_string(),
+                }),
             },
             Kind::Unrecognised => {}
         }
@@ -245,8 +248,8 @@ pub fn restore(
     resend: Resend,
     watch: &mut dyn FnMut(&Progress),
     stop: &dyn Fn() -> bool,
-) -> Result<Restored, String> {
-    let mut session = Session::open(&target.link()).map_err(|why| why.to_string())?;
+) -> crate::Result<Restored> {
+    let mut session = Session::open(&target.link())?;
     let mut deployed = crate::deployed::load();
     let done = upload(
         &mut session,
@@ -259,7 +262,9 @@ pub fn restore(
     );
     session.close();
     // Saved whatever the outcome: a restore that failed part way still landed verified files.
-    let unrecorded = crate::deployed::save(&deployed).err();
+    let unrecorded = crate::deployed::save(&deployed)
+        .err()
+        .map(|why| why.to_string());
     Ok(Restored {
         summary: done?,
         unrecorded,
@@ -289,7 +294,7 @@ pub fn upload(
     resend: Resend,
     watch: &mut dyn FnMut(&Progress),
     stop: &dyn Fn() -> bool,
-) -> Result<Summary, String> {
+) -> crate::Result<Summary> {
     let mut summary = Summary::default();
     let root = to.trim_end_matches('/');
     let _ = session.make_directory(root);
@@ -454,7 +459,7 @@ fn land(
 /// # Errors
 ///
 /// When the folder cannot be read.
-pub fn contents(of: &Path) -> Result<Vec<PathBuf>, String> {
+pub fn contents(of: &Path) -> crate::Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     gather(of, of, 0, &mut found)?;
     found.sort();
@@ -462,19 +467,21 @@ pub fn contents(of: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 /// Walks a local folder.
-fn gather(root: &Path, here: &Path, depth: usize, found: &mut Vec<PathBuf>) -> Result<(), String> {
+fn gather(root: &Path, here: &Path, depth: usize, found: &mut Vec<PathBuf>) -> crate::Result<()> {
     if depth > DEEPEST {
         return Ok(());
     }
-    for entry in std::fs::read_dir(here).map_err(|why| why.to_string())? {
-        let entry = entry.map_err(|why| why.to_string())?;
+    for entry in std::fs::read_dir(here)? {
+        let entry = entry?;
         let path = entry.path();
         // `file_type` does not follow links, so a link loop is not walked.
-        let kind = entry.file_type().map_err(|why| why.to_string())?;
+        let kind = entry.file_type()?;
         if kind.is_dir() {
             gather(root, &path, depth + 1, found)?;
         } else if kind.is_file() {
-            let relative = path.strip_prefix(root).map_err(|why| why.to_string())?;
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|why| crate::Error::failed(why.to_string()))?;
             found.push(relative.to_path_buf());
         }
     }
@@ -498,18 +505,18 @@ mod tests {
     }
 
     impl Source for Pretend {
-        fn list(&mut self, path: &str) -> Result<Vec<Entry>, String> {
+        fn list(&mut self, path: &str) -> crate::Result<Vec<Entry>> {
             self.directories
                 .get(path)
                 .cloned()
-                .ok_or_else(|| format!("no such directory {path}"))
+                .ok_or_else(|| crate::Error::failed(format!("no such directory {path}")))
         }
 
-        fn retrieve(&mut self, path: &str) -> Result<Vec<u8>, String> {
+        fn retrieve(&mut self, path: &str) -> crate::Result<Vec<u8>> {
             self.files
                 .get(path)
                 .cloned()
-                .ok_or_else(|| format!("no such file {path}"))
+                .ok_or_else(|| crate::Error::failed(format!("no such file {path}")))
         }
     }
 

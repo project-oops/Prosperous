@@ -243,7 +243,7 @@ fn backing_up(
 
     let summary = match done {
         Ok(summary) => summary,
-        Err(why) => return Done::Failed(why),
+        Err(why) => return Done::Failed(why.to_string()),
     };
     // Most saves carry no parameter file naming their account, so the path is the only record.
     if let Some(user) = pros_core::origin::user_in(from) {
@@ -295,7 +295,7 @@ fn restoring(
         stop,
     ) {
         Ok(restored) => Done::Copied(Box::new(restored.summary), to.to_owned()),
-        Err(why) => Done::Failed(why),
+        Err(why) => Done::Failed(why.to_string()),
     }
 }
 
@@ -356,7 +356,7 @@ fn copying(job: &Job, watch: &mut dyn FnMut(&Progress), stop: &dyn Fn() -> bool)
             let _ = root;
             match pros_core::payloads::on_target_everywhere(&target.link()) {
                 Ok(found) => Done::Payloads(found),
-                Err(why) => Done::Failed(why),
+                Err(why) => Done::Failed(why.to_string()),
             }
         }
         Job::DeleteThere(target, what) => removing(&target.link(), what),
@@ -367,16 +367,16 @@ fn copying(job: &Job, watch: &mut dyn FnMut(&Progress), stop: &dyn Fn() -> bool)
             let paths: Vec<&str> = candidates.iter().map(|place| place.path).collect();
             match pros_core::locate::first_of(&target.link(), &paths) {
                 Ok(found) => Done::Located(found),
-                Err(why) => Done::Failed(why),
+                Err(why) => Done::Failed(why.to_string()),
             }
         }
         Job::Titles(target) => match pros_core::probe::installed(&target.link()) {
             Ok(found) => Done::Titles(found),
-            Err(why) => Done::Failed(why),
+            Err(why) => Done::Failed(why.to_string()),
         },
         Job::FindSaves(target) => match pros_core::saves::find(&target.link()) {
             Ok(found) => Done::FoundSaves(found),
-            Err(why) => Done::Failed(why),
+            Err(why) => Done::Failed(why.to_string()),
         },
         Job::Fetch(payload, dir) => match dir.as_ref().map_or_else(
             || pros_core::fetch::fetch(payload),
@@ -387,7 +387,7 @@ fn copying(job: &Job, watch: &mut dyn FnMut(&Progress), stop: &dyn Fn() -> bool)
         },
         Job::Relist(payload) => match pros_core::sources::relist(payload) {
             Ok((now, found)) => Done::Relisted(Box::new(now), Box::new(found)),
-            Err(why) => Done::Failed(why),
+            Err(why) => Done::Failed(why.to_string()),
         },
         Job::Send(target, name, from) => match std::fs::read(from) {
             // The library checks the payload's shape before sending.
@@ -597,7 +597,7 @@ fn installing(link: &pros_link::Link, file: &std::path::Path) -> Done {
     // local path on the target is not readable by the installer).
     let offered = match pros_core::handover::offer_to(file, &link.address) {
         Ok(offered) => offered,
-        Err(why) => return Done::Failed(why),
+        Err(why) => return Done::Failed(why.to_string()),
     };
     let said = pros_link::shell::run(link, &pros_core::install::command(&offered.url), UNPACKING);
     match said {

@@ -25,6 +25,9 @@ mod say;
 /// What a blocked check exits with.
 const BLOCKED: u8 = 2;
 
+/// What every command returns: an exit code, or the error that stopped it.
+type CliResult<T = ExitCode> = Result<T, Box<dyn std::error::Error>>;
+
 #[derive(Parser)]
 #[command(
     name = "pros",
@@ -486,7 +489,7 @@ fn forewarn(command: &Command, name: Option<&str>) {
 }
 
 /// Everything the program does, so `main` can hold one error path.
-fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn run(command: Command) -> CliResult {
     match command {
         Command::Register { address, name } => registry(&Registry::Add(name, address)),
         Command::List => registry(&Registry::Show),
@@ -590,7 +593,7 @@ fn run(command: Command) -> Result<ExitCode, Box<dyn std::error::Error>> {
 ///
 /// An empty reply is reported, because a shell that is not loaded and a command that printed
 /// nothing otherwise look identical.
-fn sh(command: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn sh(command: &str, name: Option<&str>) -> CliResult {
     let target = pick(name)?;
     let out = pros_link::shell::run(&target.link(), command, SETTLE)?;
     if out.trim().is_empty() {
@@ -604,7 +607,7 @@ fn sh(command: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error:
 /// Listens to the target's system log for a while and prints it.
 ///
 /// A quiet log is a result, not an error.
-fn logs(seconds: u64, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn logs(seconds: u64, name: Option<&str>) -> CliResult {
     use std::io::Write as _;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -659,10 +662,7 @@ fn logs(seconds: u64, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error
 ///
 /// The behaviour is `pros_moonlight`'s; this finds the LAN address and the apps to offer,
 /// starts a PIN prompt on standard input, and hands over. It blocks until stopped.
-fn moonlight(
-    hostname: String,
-    ip: Option<std::net::Ipv4Addr>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn moonlight(hostname: String, ip: Option<std::net::Ipv4Addr>) -> CliResult {
     let local_ip = ip
         .or_else(detect_lan_ip)
         .ok_or("could not work out this machine's LAN address; pass it with --ip")?;
@@ -743,11 +743,7 @@ fn detect_lan_ip() -> Option<std::net::Ipv4Addr> {
 ///
 /// The behaviour is `pros_moonlight::fake`'s; this reads the clip, says what it is doing, and
 /// hands over. It blocks until the process is stopped.
-fn fake_target(
-    clip: &Path,
-    video_port: u16,
-    input_port: u16,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn fake_target(clip: &Path, video_port: u16, input_port: u16) -> CliResult {
     let bytes = std::fs::read(clip)?;
     let ports = pros_moonlight::fake::Ports {
         video: video_port,
@@ -770,11 +766,7 @@ fn fake_target(
 ///
 /// The shape guard is the library's: a vendor module and a payload share their first four
 /// bytes, and the loader accepts either and dies silently on the one it cannot run.
-fn send(
-    path: &Path,
-    seconds: u64,
-    name: Option<&str>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn send(path: &Path, seconds: u64, name: Option<&str>) -> CliResult {
     let target = pick(name)?;
     let payload = std::fs::read(path)?;
 
@@ -808,11 +800,7 @@ fn send(
 ///
 /// Written by this program rather than a shell redirect, which can choose the encoding and
 /// prepend a byte-order mark.
-fn pull(
-    path: &str,
-    into: Option<PathBuf>,
-    name: Option<&str>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn pull(path: &str, into: Option<PathBuf>, name: Option<&str>) -> CliResult {
     let target = pick(name)?;
     let into = into.unwrap_or_else(|| {
         PathBuf::from(
@@ -832,7 +820,7 @@ fn pull(
 ///
 /// Warns before an inert destination: a file under a system mount point is not indexed or
 /// mounted, so it lands and does nothing.
-fn push(from: &Path, to: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn push(from: &Path, to: &str, name: Option<&str>) -> CliResult {
     if pros_core::guard::is_inert_target_path(to) {
         eprintln!(
             "warning: destination '{to}' is an internal system mount point (/user/app). Uploaded files here will not be indexed or mounted as apps."
@@ -846,11 +834,7 @@ fn push(from: &Path, to: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn s
 }
 
 /// Checks a local file against what a manifest says it should be.
-fn verify(
-    file: &Path,
-    against: &str,
-    manifest: &Path,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn verify(file: &Path, against: &str, manifest: &Path) -> CliResult {
     let manifest = Manifest::from_file(manifest)?;
     let payload = manifest
         .find(against)
@@ -873,7 +857,7 @@ fn payloads(
     write: bool,
     save: bool,
     name: Option<&str>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+) -> CliResult {
     if write {
         return write_recommended();
     }
@@ -929,11 +913,7 @@ fn payloads(
 }
 
 /// Copies a folder off the target.
-fn backup(
-    from: &str,
-    into: Option<PathBuf>,
-    name: Option<&str>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn backup(from: &str, into: Option<PathBuf>, name: Option<&str>) -> CliResult {
     let target = pick(name)?;
     let into = into.unwrap_or_else(|| {
         PathBuf::from(
@@ -979,7 +959,7 @@ fn restore(
     force: bool,
     all: bool,
     name: Option<&str>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+) -> CliResult {
     let mut target_dest = to.to_string();
     if !force && let Some(refusal) = pros_core::guard::check(from, to) {
         if yes {
@@ -1031,7 +1011,7 @@ fn deploy(
     from: &Path,
     to: &str,
     all: bool,
-) -> Result<pros_core::transfer::Summary, Box<dyn std::error::Error>> {
+) -> CliResult<pros_core::transfer::Summary> {
     let restored = pros_core::transfer::restore(
         target,
         from,
@@ -1060,7 +1040,7 @@ enum Registry {
 }
 
 /// The commands that touch the registry and no target.
-fn registry(what: &Registry) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn registry(what: &Registry) -> CliResult {
     match what {
         Registry::Add(name, address) => {
             let path = target::register(name, address)?;
@@ -1088,7 +1068,7 @@ fn registry(what: &Registry) -> Result<ExitCode, Box<dyn std::error::Error>> {
 }
 
 /// The manifest beside the registry, or the built-in list when there is none.
-fn read_or_recommend() -> Result<Manifest, Box<dyn std::error::Error>> {
+fn read_or_recommend() -> CliResult<Manifest> {
     let path = pros_core::manifest::Tracked::Payloads.path();
     if let Some(path) = path.filter(|path| path.exists()) {
         return Ok(Manifest::from_file(&path)?);
@@ -1115,7 +1095,7 @@ fn supervise(
     patience: usize,
     restarts: usize,
     name: Option<&str>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+) -> CliResult {
     /// How long to wait for a connection before calling the port shut.
     const REACH: Duration = Duration::from_millis(400);
     /// How long between looks.
@@ -1174,7 +1154,7 @@ fn supervise(
 }
 
 /// Writes the built-in list where a person can edit it.
-fn write_recommended() -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn write_recommended() -> CliResult {
     let path = pros_core::manifest::default_path()
         .ok_or("no home directory, so there is nowhere for a manifest to live")?;
     // Refused rather than overwritten: the existing file may hold hand-checked digests.
@@ -1195,11 +1175,7 @@ fn write_recommended() -> Result<ExitCode, Box<dyn std::error::Error>> {
 }
 
 /// Lists a directory on the target and says what the entries look like.
-fn library(
-    path: &str,
-    titles_only: bool,
-    name: Option<&str>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn library(path: &str, titles_only: bool, name: Option<&str>) -> CliResult {
     let target = pick(name)?;
     let entries = pros_link::files::list(&target.link(), path)?;
     let items = pros_core::library::scan(&entries);
@@ -1216,7 +1192,7 @@ fn library(
 ///
 /// `--fix` sends only what is missing, described, and already staged here verified. It does
 /// not fetch and does not touch the boot list.
-fn check(fix: bool, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn check(fix: bool, name: Option<&str>) -> CliResult {
     let target = pick(name)?;
     let report = pros_core::check(&target);
     say::report(&report);
@@ -1278,7 +1254,7 @@ fn check(fix: bool, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::
 }
 
 /// Lists the saves on a target, named by the game they belong to.
-fn saves(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn saves(name: Option<&str>) -> CliResult {
     let target = pick(name)?;
     let where_to = match pros_core::saves::find(&target.link())? {
         pros_core::saves::Found::Here(path) => path,
@@ -1327,7 +1303,7 @@ fn saves(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
 /// Lists what is installed, by name.
 ///
 /// One round trip per title, because each name lives in the title's own description.
-fn titles(appmeta: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn titles(appmeta: &str, name: Option<&str>) -> CliResult {
     let target = pick(name)?;
     let entries = pros_link::files::list(&target.link(), appmeta)?;
     let found = pros_core::library::scan(&entries);
@@ -1368,7 +1344,7 @@ fn titles(appmeta: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::er
 /// argument, so the identifier is validated and refused, not trimmed. A refusal arrives as a
 /// `perror` line on the same socket as any other reply, so the reply is read and sets the
 /// exit code.
-fn launch(id: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn launch(id: &str, name: Option<&str>) -> CliResult {
     // A usage error goes to stderr; what the target says is a result and goes to stdout.
     if !pros_core::launch::is_an_app_id(id) {
         eprintln!("not an application identifier: {id}");
@@ -1394,7 +1370,7 @@ fn launch(id: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::
 }
 
 /// Restarts the user interface to clear a softlock.
-fn restart_ui(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn restart_ui(name: Option<&str>) -> CliResult {
     let target = pick(name)?;
     let listing = pros_link::shell::run(&target.link(), "ps", SETTLE)?;
     let processes = pros_core::system::processes(&listing);
@@ -1417,7 +1393,7 @@ fn restart_ui(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>
 }
 
 /// Closes a title, freeing what it holds open.
-fn close(id: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn close(id: &str, name: Option<&str>) -> CliResult {
     let target = pick(name)?;
     let listing = pros_link::shell::run(&target.link(), "ps", SETTLE)?;
     let processes = pros_core::system::processes(&listing);
@@ -1451,7 +1427,7 @@ fn close(id: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::E
 /// The primitive `close` uses, aimed by pid: the commands `pros_core::system::end` produces,
 /// which wake a stopped process before killing it. A pid not in the listing is reported, not
 /// signalled.
-fn kill_pid(pid: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn kill_pid(pid: &str, name: Option<&str>) -> CliResult {
     let target = pick(name)?;
     let listing = pros_link::shell::run(&target.link(), "ps", SETTLE)?;
     let processes = pros_core::system::processes(&listing);
@@ -1492,7 +1468,7 @@ fn kill_pid(pid: &str, name: Option<&str>) -> Result<ExitCode, Box<dyn std::erro
 ///
 /// The same `ps` the window's system panel reads, parsed the same way; its pids are what
 /// `pros kill` takes.
-fn ps(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn ps(name: Option<&str>) -> CliResult {
     let target = pick(name)?;
     let listing = pros_link::shell::run(&target.link(), "ps", SETTLE)?;
     let processes = pros_core::system::processes(&listing);
@@ -1509,11 +1485,7 @@ fn ps(name: Option<&str>) -> Result<ExitCode, Box<dyn std::error::Error>> {
 /// The [`ps`] table re-read every `every` seconds until Ctrl-C or the `--seconds` cap.
 /// Read-only, so it needs no key handling or raw mode. On a terminal it clears between draws;
 /// piped, it prints successive tables. A failed read is reported and the watch goes on.
-fn top(
-    seconds: Option<u64>,
-    every: u64,
-    name: Option<&str>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn top(seconds: Option<u64>, every: u64, name: Option<&str>) -> CliResult {
     let target = pick(name)?;
     let every = every.max(1);
     let clears = std::io::IsTerminal::is_terminal(&std::io::stdout());
@@ -1586,13 +1558,7 @@ fn wait_for_registration(link: &pros_link::Link, id: &str, timeout: Duration) ->
 ///
 /// Close, restore, launch and follow, each from `pros-core`, in sequence. A parked big-app
 /// ignores the close, and a title that parks rather than exits ends the watch at the cap.
-fn probe(
-    id: &str,
-    from: &Path,
-    seconds: u64,
-    all: bool,
-    name: Option<&str>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn probe(id: &str, from: &Path, seconds: u64, all: bool, name: Option<&str>) -> CliResult {
     if !pros_core::launch::is_an_app_id(id) {
         eprintln!("not an application identifier: {id}");
         eprintln!("nine characters, four letters then five digits, no spaces");
@@ -1673,12 +1639,7 @@ fn probe(
 }
 
 /// Fetches payloads and keeps the ones that are what they claim to be.
-fn fetch(
-    wanted: Option<&str>,
-    all: bool,
-    from_target: bool,
-    name: Option<&str>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn fetch(wanted: Option<&str>, all: bool, from_target: bool, name: Option<&str>) -> CliResult {
     let manifest = if from_target {
         // The target's own repository carries urls and digests. (D013)
         let target = pick(name)?;
@@ -1737,11 +1698,7 @@ fn fetch(
 ///
 /// The check happens on the way in, so everything in the staging directory is known to be
 /// what it claims; a file dropped there by hand is not.
-fn stage(
-    file: &Path,
-    name: &str,
-    manifest: Option<&Path>,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
+fn stage(file: &Path, name: &str, manifest: Option<&Path>) -> CliResult {
     let manifest = read_manifest(manifest)?;
     let payload = manifest
         .find(name)
@@ -1753,7 +1710,7 @@ fn stage(
 }
 
 /// Reads a manifest from a path, or from the usual place beside the registry.
-fn read_manifest(named: Option<&Path>) -> Result<Manifest, Box<dyn std::error::Error>> {
+fn read_manifest(named: Option<&Path>) -> CliResult<Manifest> {
     if let Some(path) = named {
         return Ok(Manifest::from_file(path)?);
     }
@@ -1767,6 +1724,6 @@ fn read_manifest(named: Option<&Path>) -> Result<Manifest, Box<dyn std::error::E
 }
 
 /// The target to act on.
-fn pick(name: Option<&str>) -> Result<Target, Box<dyn std::error::Error>> {
+fn pick(name: Option<&str>) -> CliResult<Target> {
     Ok(target::resolve(target::load()?, name)?)
 }

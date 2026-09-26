@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::error::{Error, Result};
+
 /// How long a handover waits to be taken before giving up.
 ///
 /// Generous: the target fetches the whole package before it answers, and a large one over a
@@ -60,13 +62,13 @@ impl Handover {
     ///
     /// When the file cannot be read, the target cannot be reached to work out which interface
     /// faces it, or nothing will bind.
-    pub fn offer_to(file: &Path, target: &str) -> Result<Self, String> {
-        let bytes = std::fs::read(file).map_err(|why| format!("{}: {why}", file.display()))?;
+    pub fn offer_to(file: &Path, target: &str) -> Result<Self> {
+        let bytes = std::fs::read(file).map_err(|why| Error::at(file, why))?;
         let mine = facing(target)?;
 
         // Port zero: the system picks a free one, so nothing on this machine collides.
-        let listener = TcpListener::bind((mine, 0)).map_err(|why| why.to_string())?;
-        let address = listener.local_addr().map_err(|why| why.to_string())?;
+        let listener = TcpListener::bind((mine, 0))?;
+        let address = listener.local_addr()?;
         let url = format!("http://{address}/{}", url_name(file));
 
         let taken = Arc::new(Mutex::new(0));
@@ -224,7 +226,7 @@ fn hand_over(mut stream: TcpStream, bytes: &[u8]) -> std::io::Result<String> {
 /// Found by connecting to it and asking the socket which local address it went out from. A
 /// machine with virtual adapters and bridges has several addresses, most unroutable from the
 /// target; this one is demonstrably reachable.
-fn facing(target: &str) -> Result<std::net::IpAddr, String> {
+fn facing(target: &str) -> Result<std::net::IpAddr> {
     // The file service, which every target this program talks to runs.
     let to = if target.contains(':') {
         target.to_owned()
@@ -234,21 +236,24 @@ fn facing(target: &str) -> Result<std::net::IpAddr, String> {
     let probe = TcpStream::connect_timeout(
         &to.parse::<SocketAddr>()
             .or_else(|_| resolve(&to))
-            .map_err(|why| format!("{to}: {why}"))?,
+            .map_err(|why| Error::failed(format!("{to}: {why}")))?,
         Duration::from_secs(6),
     )
-    .map_err(|why| format!("could not reach {to} to see which way it is: {why}"))?;
-    let mine = probe.local_addr().map_err(|why| why.to_string())?;
+    .map_err(|why| {
+        Error::failed(format!(
+            "could not reach {to} to see which way it is: {why}"
+        ))
+    })?;
+    let mine = probe.local_addr()?;
     Ok(mine.ip())
 }
 
 /// Turns a name into an address, taking the first that answers.
-fn resolve(what: &str) -> Result<SocketAddr, String> {
+fn resolve(what: &str) -> Result<SocketAddr> {
     use std::net::ToSocketAddrs as _;
-    what.to_socket_addrs()
-        .map_err(|why| why.to_string())?
+    what.to_socket_addrs()?
         .next()
-        .ok_or_else(|| "no address".to_owned())
+        .ok_or_else(|| Error::failed("no address"))
 }
 
 /// Holds a file out for a target to fetch, as a free function.
@@ -256,7 +261,7 @@ fn resolve(what: &str) -> Result<SocketAddr, String> {
 /// # Errors
 ///
 /// As [`crate::handover::Handover::offer_to`].
-pub fn offer_to(file: &Path, target: &str) -> Result<Handover, String> {
+pub fn offer_to(file: &Path, target: &str) -> Result<Handover> {
     Handover::offer_to(file, target)
 }
 

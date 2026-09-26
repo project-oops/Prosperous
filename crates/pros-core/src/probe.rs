@@ -4,7 +4,7 @@
 //! build. The log is attached before the launch: a probe does its work in the first second or
 //! two and then parks, so a follower attached after the launch captures nothing (measured).
 //! The klogsrv connection is the subscription, and
-//! [`SUBSCRIBE_SETTLE`](crate::probe::SUBSCRIBE_SETTLE) is margin on top of that ordering.
+//! [`SUBSCRIBE_SETTLE`] is margin on top of that ordering.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -200,9 +200,8 @@ where
 /// # Errors
 ///
 /// When the title directory cannot be listed.
-pub fn installed(link: &pros_link::Link) -> Result<Vec<crate::titles::Metadata>, String> {
-    let entries =
-        pros_link::files::list(link, crate::titles::APPMETA).map_err(|why| why.to_string())?;
+pub fn installed(link: &pros_link::Link) -> crate::Result<Vec<crate::titles::Metadata>> {
+    let entries = pros_link::files::list(link, crate::titles::APPMETA)?;
     let found = crate::library::scan(&entries);
     Ok(crate::library::titles(&found)
         .into_iter()

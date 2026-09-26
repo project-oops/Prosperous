@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::error::{Error, Result};
 use crate::manifest::Payload;
 use crate::staging::{self, NotStaged};
 
@@ -64,14 +65,14 @@ pub fn example() -> String {
 /// # Errors
 ///
 /// When there is nothing to run.
-pub fn parts(template: &str, url: &str, into: &Path) -> Result<(String, Vec<String>), String> {
+pub fn parts(template: &str, url: &str, into: &Path) -> Result<(String, Vec<String>)> {
     let filled = template
         .replace("{url}", url)
         .replace("{into}", &into.display().to_string());
     let mut words = filled.split_whitespace().map(str::to_owned);
     let program = words
         .next()
-        .ok_or_else(|| "nothing to run - the fetch command is empty".to_owned())?;
+        .ok_or_else(|| Error::failed("nothing to run - the fetch command is empty"))?;
     Ok((program, words.collect()))
 }
 
@@ -265,9 +266,13 @@ fn keep(payload: &Payload, dir: Option<&Path>) -> Result<PathBuf, NotFetched> {
     for (which, target) in &sources {
         tracing::info!(payload = %payload.name, %target, %which, "fetching");
         let result = match which {
-            Where::Local(source_path) => std::fs::copy(source_path, &into)
-                .map(|_| ())
-                .map_err(|why| format!("could not copy {}: {why}", source_path.display())),
+            Where::Local(source_path) => {
+                std::fs::copy(source_path, &into)
+                    .map(|_| ())
+                    .map_err(|why| {
+                        Error::failed(format!("could not copy {}: {why}", source_path.display()))
+                    })
+            }
             Where::Listed | Where::Upstream => pull(target, &into),
         };
         match result {
@@ -359,21 +364,21 @@ pub fn wheres(payload: &Payload) -> Vec<(Where, String)> {
 /// # Errors
 ///
 /// What the downloader said, without the address; the caller, which tries several, adds it.
-fn pull(url: &str, into: &Path) -> Result<(), String> {
+fn pull(url: &str, into: &Path) -> Result<()> {
     let (program, arguments) = parts(&configured(), url, into)?;
     let finished = std::process::Command::new(&program)
         .args(&arguments)
         .output()
-        .map_err(|why| format!("could not run {program}: {why}"))?;
+        .map_err(|why| Error::failed(format!("could not run {program}: {why}")))?;
     if finished.status.success() {
         return Ok(());
     }
     // A partial file must not be left for the next address's download.
     let _ = std::fs::remove_file(into);
-    Err(format!(
+    Err(Error::failed(format!(
         "{program} failed: {}",
         String::from_utf8_lossy(&finished.stderr).trim()
-    ))
+    )))
 }
 
 /// Why a payload was not fetched.

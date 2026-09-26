@@ -5,7 +5,7 @@
 //! possible rather than which ports are open, and when something is wrong, what to do
 //! about it.
 
-use pros_core::check::{Remedy, Report, Verdict};
+use pros_core::check::Report;
 use pros_core::library::{Item, Kind as LibraryKind};
 use pros_core::payloads::{Boot, Presence, Row, Trust};
 use pros_link::files::Entry;
@@ -34,40 +34,7 @@ pub(crate) fn report(report: &Report) {
         );
     }
     println!();
-    println!("{}", verdict(&report.verdict()));
-}
-
-/// One sentence saying what the check concluded and what to do.
-#[must_use]
-pub(crate) fn verdict(verdict: &Verdict) -> String {
-    match verdict {
-        Verdict::Ready => "ready".to_owned(),
-        Verdict::Dimmed { names } => format!(
-            "usable, but {} {} not loaded, so something will be invisible if a run goes wrong",
-            names.join(" and "),
-            were(names.len())
-        ),
-        Verdict::Blocked {
-            remedy: Remedy::RerunTheEntryPoint,
-        } => "the loader is not answering, so nothing can be sent or started from here. \
-              This says nothing about the target: a console can run its whole chain with \
-              9021 unreachable. Getting it back means starting elfldr the way it was first \
-              started, which means re-running the entry point"
-            .to_owned(),
-        Verdict::Blocked {
-            remedy: Remedy::LoadThese { names },
-        } => format!(
-            "blocked: {} {} not loaded. The loader is up, so {} can be sent again",
-            names.join(" and "),
-            were(names.len()),
-            if names.len() == 1 { "it" } else { "they" }
-        ),
-    }
-}
-
-/// The verb agreeing with a count of names.
-const fn were(count: usize) -> &'static str {
-    if count == 1 { "is" } else { "are" }
+    println!("{}", report.verdict());
 }
 
 /// Prints a directory listing.

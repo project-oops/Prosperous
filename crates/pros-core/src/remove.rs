@@ -28,35 +28,35 @@ pub trait Removes {
     ///
     /// # Errors
     ///
-    /// Whatever the transport reports, as text.
-    fn list(&mut self, path: &str) -> Result<Vec<Entry>, String>;
+    /// Whatever the transport reports.
+    fn list(&mut self, path: &str) -> crate::Result<Vec<Entry>>;
 
     /// Deletes one file.
     ///
     /// # Errors
     ///
     /// As [`Removes::list`].
-    fn delete_file(&mut self, path: &str) -> Result<(), String>;
+    fn delete_file(&mut self, path: &str) -> crate::Result<()>;
 
     /// Removes one directory, which the server will refuse unless it is empty.
     ///
     /// # Errors
     ///
     /// As [`Removes::list`].
-    fn remove_directory(&mut self, path: &str) -> Result<(), String>;
+    fn remove_directory(&mut self, path: &str) -> crate::Result<()>;
 }
 
 impl Removes for Session {
-    fn list(&mut self, path: &str) -> Result<Vec<Entry>, String> {
-        Self::list(self, path).map_err(|why| why.to_string())
+    fn list(&mut self, path: &str) -> crate::Result<Vec<Entry>> {
+        Ok(Self::list(self, path)?)
     }
 
-    fn delete_file(&mut self, path: &str) -> Result<(), String> {
-        Self::delete_file(self, path).map_err(|why| why.to_string())
+    fn delete_file(&mut self, path: &str) -> crate::Result<()> {
+        Ok(Self::delete_file(self, path)?)
     }
 
-    fn remove_directory(&mut self, path: &str) -> Result<(), String> {
-        Self::remove_directory(self, path).map_err(|why| why.to_string())
+    fn remove_directory(&mut self, path: &str) -> crate::Result<()> {
+        Ok(Self::remove_directory(self, path)?)
     }
 }
 
@@ -146,7 +146,10 @@ pub fn one(remover: &mut dyn Removes, path: &str, folder: bool) -> Gone {
         if empty_it(remover, &root, &root, 0, &mut gone) {
             match remover.remove_directory(&root) {
                 Ok(()) => gone.folders += 1,
-                Err(why) => gone.kept.push(Kept { path: root, why }),
+                Err(why) => gone.kept.push(Kept {
+                    path: root,
+                    why: why.to_string(),
+                }),
             }
         } else if failed_to_list(&gone, &root) {
             // Called a folder but not listable as one: usually a symlink, which the library
@@ -165,8 +168,11 @@ pub fn one(remover: &mut dyn Removes, path: &str, folder: bool) -> Gone {
                 gone.files += 1;
             } else if let Some(kept) = gone.kept.iter_mut().find(|one| one.path == root) {
                 // Report both refusals, which are what the user acts on.
-                let dele = by_file.err().unwrap_or_default();
-                let rmd = by_dir.and_then(Result::err).unwrap_or_default();
+                let dele = by_file.err().map(|why| why.to_string()).unwrap_or_default();
+                let rmd = by_dir
+                    .and_then(Result::err)
+                    .map(|why| why.to_string())
+                    .unwrap_or_default();
                 kept.why = format!(
                     "not a listable directory, and could not be removed - DELE: {dele}; RMD: {rmd}"
                 );
@@ -181,7 +187,10 @@ pub fn one(remover: &mut dyn Removes, path: &str, folder: bool) -> Gone {
     } else {
         match remover.delete_file(&root) {
             Ok(()) => gone.files += 1,
-            Err(why) => gone.kept.push(Kept { path: root, why }),
+            Err(why) => gone.kept.push(Kept {
+                path: root,
+                why: why.to_string(),
+            }),
         }
     }
     gone
@@ -214,8 +223,8 @@ pub trait Forces {
     ///
     /// # Errors
     ///
-    /// Whatever the shell reports, as text - a non-empty directory, a missing command, a refusal.
-    fn force(&mut self, path: &str, folder: bool) -> Result<(), String>;
+    /// Whatever the shell reports - a non-empty directory, a missing command, a refusal.
+    fn force(&mut self, path: &str, folder: bool) -> crate::Result<()>;
 }
 
 /// How long the shell is given to answer a removal before its output is taken as complete.
@@ -237,15 +246,14 @@ impl<'a> ShellForce<'a> {
 }
 
 impl Forces for ShellForce<'_> {
-    fn force(&mut self, path: &str, folder: bool) -> Result<(), String> {
+    fn force(&mut self, path: &str, folder: bool) -> crate::Result<()> {
         let command = force_command(path, folder)?;
         // `rmdir` and `rm -f` are silent on success, so any output is the reason it failed.
-        let said = pros_link::shell::run(self.link, &command, SHELL_SETTLE)
-            .map_err(|why| why.to_string())?;
+        let said = pros_link::shell::run(self.link, &command, SHELL_SETTLE)?;
         if said.trim().is_empty() {
             Ok(())
         } else {
-            Err(said.trim().to_owned())
+            Err(crate::Error::failed(said.trim()))
         }
     }
 }
@@ -255,17 +263,17 @@ impl Forces for ShellForce<'_> {
 ///
 /// Never recursive: `rmdir` for a directory, `rm -f` for a file. A path that is empty, the
 /// root, or climbs with `..` is refused rather than quoted into a command.
-fn force_command(path: &str, folder: bool) -> Result<String, String> {
+fn force_command(path: &str, folder: bool) -> crate::Result<String> {
     let path = path.trim().trim_end_matches('/');
     if path.is_empty() || path == "/" || path == "~" {
-        return Err(format!(
+        return Err(crate::Error::failed(format!(
             "refusing to force-remove {path:?}: too broad a path"
-        ));
+        )));
     }
     if path.split('/').any(|segment| segment == "..") {
-        return Err(format!(
+        return Err(crate::Error::failed(format!(
             "refusing to force-remove {path:?}: it climbs with '..'"
-        ));
+        )));
     }
     // Single-quote for the shell, with the one escape single quotes need.
     let quoted = format!("'{}'", path.replace('\'', "'\\''"));
@@ -380,7 +388,10 @@ fn empty_it(
                     match remover.remove_directory(&below) {
                         Ok(()) => gone.folders += 1,
                         Err(why) => {
-                            gone.kept.push(Kept { path: below, why });
+                            gone.kept.push(Kept {
+                                path: below,
+                                why: why.to_string(),
+                            });
                             emptied = false;
                         }
                     }
@@ -404,7 +415,10 @@ fn empty_it(
             _ => match remover.delete_file(&below) {
                 Ok(()) => gone.files += 1,
                 Err(why) => {
-                    gone.kept.push(Kept { path: below, why });
+                    gone.kept.push(Kept {
+                        path: below,
+                        why: why.to_string(),
+                    });
                     emptied = false;
                 }
             },
@@ -429,11 +443,11 @@ mod tests {
     }
 
     impl Forces for PretendShell {
-        fn force(&mut self, path: &str, folder: bool) -> Result<(), String> {
+        fn force(&mut self, path: &str, folder: bool) -> crate::Result<()> {
             self.did
                 .push(format!("{} {path}", if folder { "rmdir" } else { "rm" }));
             if self.refuses.iter().any(|one| one == path) {
-                return Err("still there".to_owned());
+                return Err(crate::Error::failed("still there"));
             }
             Ok(())
         }
@@ -460,26 +474,26 @@ mod tests {
     }
 
     impl Removes for Pretend {
-        fn list(&mut self, path: &str) -> Result<Vec<Entry>, String> {
+        fn list(&mut self, path: &str) -> crate::Result<Vec<Entry>> {
             self.did.push(format!("list {path}"));
             self.tree
                 .get(path)
                 .cloned()
-                .ok_or_else(|| format!("no such directory: {path}"))
+                .ok_or_else(|| crate::Error::failed(format!("no such directory: {path}")))
         }
 
-        fn delete_file(&mut self, path: &str) -> Result<(), String> {
+        fn delete_file(&mut self, path: &str) -> crate::Result<()> {
             self.did.push(format!("dele {path}"));
             if self.refuses.iter().any(|one| one == path) {
-                return Err("permission denied".to_owned());
+                return Err(crate::Error::failed("permission denied"));
             }
             Ok(())
         }
 
-        fn remove_directory(&mut self, path: &str) -> Result<(), String> {
+        fn remove_directory(&mut self, path: &str) -> crate::Result<()> {
             self.did.push(format!("rmd {path}"));
             if self.refuses.iter().any(|one| one == path) {
-                return Err("directory not empty".to_owned());
+                return Err(crate::Error::failed("directory not empty"));
             }
             Ok(())
         }

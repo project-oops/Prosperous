@@ -26,8 +26,8 @@ const OPENER: &str = if cfg!(target_os = "windows") {
 /// # Errors
 ///
 /// When the folder cannot be made.
-pub fn ensure(path: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(path).map_err(|why| format!("{}: {why}", path.display()))
+pub fn ensure(path: &Path) -> crate::Result<()> {
+    std::fs::create_dir_all(path).map_err(|why| crate::Error::at(path, why))
 }
 
 /// Opens a folder in the system's file browser, making it first if it is not there.
@@ -39,14 +39,14 @@ pub fn ensure(path: &Path) -> Result<(), String> {
 ///
 /// When the folder cannot be made, or the file browser cannot be started - usually meaning
 /// there is none.
-pub fn folder(path: &Path) -> Result<(), String> {
+pub fn folder(path: &Path) -> crate::Result<()> {
     ensure(path)?;
     std::process::Command::new(OPENER)
         .arg(path)
         .spawn()
         .map(|_| ())
         // Not waited on: a file browser stays open, and waiting would freeze the window.
-        .map_err(|why| format!("could not start {OPENER}: {why}"))
+        .map_err(|why| crate::Error::failed(format!("could not start {OPENER}: {why}")))
 }
 
 #[cfg(test)]
