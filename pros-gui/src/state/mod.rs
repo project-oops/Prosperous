@@ -119,6 +119,9 @@ impl State {
     /// A window that has just opened, with whatever is registered.
     #[must_use]
     pub(crate) fn new(targets: Vec<Target>) -> Self {
+        let first_address = targets
+            .first()
+            .map_or_else(String::new, |t| t.address.clone());
         Self {
             chosen: (!targets.is_empty()).then_some(0),
             targets,
@@ -150,7 +153,10 @@ impl State {
             },
             stream: StreamState {
                 watching: pros_core::watch::Watching::idle(),
+                target_ip: first_address,
                 watch_port: pros_core::watch::PORT.to_string(),
+                installing_player: false,
+                watch_after_install: false,
             },
             split: 0.5,
             // The command line's own default for `pros probe --seconds`.
@@ -250,7 +256,6 @@ impl State {
             | Section::Titles
             | Section::Cheats
             | Section::Packages => self.files.library.is_empty(),
-            // Nothing to fetch before use; somebody starts them.
             Section::Log | Section::Shell | Section::Stream | Section::Controllers => false,
             Section::Probe => self.probing.titles.is_none(),
         }

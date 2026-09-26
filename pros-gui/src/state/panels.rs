@@ -253,8 +253,14 @@ pub(crate) struct StreamState {
     ///
     /// Owned here, not by the panel, so switching sections does not end it.
     pub(crate) watching: pros_core::watch::Watching,
+    /// The target IP address or hostname to connect to.
+    pub(crate) target_ip: String,
     /// The port the video payload is expected on. Editable, for the same reason as the feed's.
     pub(crate) watch_port: String,
+    /// Whether vendored mpv is currently downloading and unpacking.
+    pub(crate) installing_player: bool,
+    /// Whether to start watching once installation completes.
+    pub(crate) watch_after_install: bool,
 }
 
 /// The register dialog: what a person has typed into it.

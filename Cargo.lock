@@ -2870,9 +2870,14 @@ name = "selfish-abi"
 version = "0.1.0"
 
 [[package]]
+name = "selfish-bytes"
+version = "0.1.0"
+
+[[package]]
 name = "selfish-title"
 version = "0.1.0"
 dependencies = [
+ "selfish-bytes",
  "serde",
  "serde_json",
 ]

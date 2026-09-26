@@ -152,7 +152,15 @@ impl App {
             .show_ui(ui, |ui| {
                 for which in 0..self.state.targets.len() {
                     let label = self.state.targets[which].name.clone();
-                    ui.selectable_value(&mut self.state.chosen, Some(which), label);
+                    if ui
+                        .selectable_value(&mut self.state.chosen, Some(which), label)
+                        .clicked()
+                    {
+                        self.state
+                            .stream
+                            .target_ip
+                            .clone_from(&self.state.targets[which].address);
+                    }
                 }
                 // At the bottom of the list, where a missing target is noticed.
                 ui.separator();

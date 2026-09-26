@@ -53,6 +53,12 @@ pub(super) const DOCS: &[oops_docs::Doc] = &[
         "Titles, saves, packages and cheats on the target's storage",
         include_str!("../../../docs/guide/library.md"),
     ),
+    oops_docs::Doc::new(
+        "video",
+        "Video",
+        "Diffing, watching over Porthole, and the Moonlight bridge",
+        include_str!("../../../docs/VIDEO.md"),
+    ),
 ];
 
 #[cfg(test)]

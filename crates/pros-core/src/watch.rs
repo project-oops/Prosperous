@@ -279,8 +279,18 @@ impl Watching {
 /// would look like launching something that failed.
 pub fn parts(template: &str, address: &str) -> crate::Result<(String, Vec<String>)> {
     let filled = template.replace("{address}", address);
-    let mut words = filled.split_whitespace().map(str::to_owned);
-    let program = words.next().ok_or_else(|| {
+    // Demuxer h264 was absorbed into libavformat in modern mpv; translate legacy configurations.
+    let mut words: Vec<String> = filled
+        .split_whitespace()
+        .map(|word| {
+            if word == "--demuxer=h264" {
+                "--demuxer-lavf-format=h264".to_owned()
+            } else {
+                word.to_owned()
+            }
+        })
+        .collect();
+    let program = words.first().cloned().ok_or_else(|| {
         crate::Error::failed(format!(
             "nothing to run - put a command in {}",
             command_path().map_or_else(
@@ -289,7 +299,28 @@ pub fn parts(template: &str, address: &str) -> crate::Result<(String, Vec<String
             )
         ))
     })?;
-    Ok((program, words.collect()))
+    words.remove(0);
+    // mpv stays invisible until a frame decodes; force the window open immediately
+    // and keep it alive across stream gaps or decoding errors.
+    if program == "mpv" || program == "mpv.exe" {
+        if !words.iter().any(|w| w.starts_with("--force-window")) {
+            let pos = words.len().saturating_sub(1);
+            words.insert(pos, "--force-window=immediate".to_owned());
+        }
+        if !words.iter().any(|w| w.starts_with("--title")) {
+            let pos = words.len().saturating_sub(1);
+            words.insert(pos, "--title=Porthole-Stream".to_owned());
+        }
+        if !words.iter().any(|w| w.starts_with("--idle")) {
+            let pos = words.len().saturating_sub(1);
+            words.insert(pos, "--idle=yes".to_owned());
+        }
+        if !words.iter().any(|w| w.starts_with("--keep-open")) {
+            let pos = words.len().saturating_sub(1);
+            words.insert(pos, "--keep-open=yes".to_owned());
+        }
+    }
+    Ok((program, words))
 }
 
 /// Where the player command is kept.
@@ -324,7 +355,7 @@ pub fn example() -> String {
      #\n\
      # This project does not decode video. It pipes it to something that does, counts what\n\
      # went past, and can therefore say which of several reasons there is no picture.\n\
-     mpv --demuxer=h264 --profile=low-latency --untimed --no-cache -\n"
+     mpv --demuxer-lavf-format=h264 --profile=low-latency --untimed --no-cache --force-window=immediate --title=Porthole-Stream --idle=yes --keep-open=yes -\n"
         .to_owned()
 }
 
@@ -344,6 +375,170 @@ pub fn write_example() -> crate::Result<PathBuf> {
     }
     std::fs::write(&path, example())?;
     Ok(path)
+}
+
+/// Where a vendored copy of mpv is kept under the application data directory.
+///
+/// In a portable run this sits in `.portable/tools/mpv`; otherwise in `%APPDATA%/OOPS/tools/mpv`.
+#[must_use]
+pub fn vendored_mpv_dir() -> Option<PathBuf> {
+    let mut path = crate::target::directory()?;
+    path.push("tools");
+    path.push("mpv");
+    Some(path)
+}
+
+/// The executable path for a vendored copy of mpv, if present.
+#[must_use]
+pub fn vendored_mpv_path() -> Option<PathBuf> {
+    let dir = vendored_mpv_dir()?;
+    let exe = if cfg!(windows) {
+        dir.join("mpv.exe")
+    } else {
+        dir.join("mpv")
+    };
+    exe.is_file().then_some(exe)
+}
+
+/// Resolves a program name to its executable path.
+///
+/// If `program` is `mpv`, checks for a vendored copy in the application data directory,
+/// beside the binary, or in standard portable locations before falling back to `PATH`.
+#[must_use]
+pub fn resolve_program(program: &str) -> PathBuf {
+    let as_path = PathBuf::from(program);
+    if as_path.is_absolute() || as_path.exists() {
+        return as_path;
+    }
+    if program == "mpv" || program == "mpv.exe" {
+        if let Some(vendored) = vendored_mpv_path() {
+            return vendored;
+        }
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(dir) = exe.parent()
+        {
+            let sibling = dir.join("mpv.exe");
+            if sibling.is_file() {
+                return sibling;
+            }
+            let in_tools = dir.join("tools").join("mpv").join("mpv.exe");
+            if in_tools.is_file() {
+                return in_tools;
+            }
+        }
+    }
+    as_path
+}
+
+/// Whether a player program is available to run.
+#[must_use]
+pub fn is_program_available(program: &str) -> bool {
+    let resolved = resolve_program(program);
+    if resolved.is_file() {
+        return true;
+    }
+    if let Ok(paths) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join(program);
+            if candidate.is_file() {
+                return true;
+            }
+            #[cfg(windows)]
+            if candidate.with_extension("exe").is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether the currently configured player program is available.
+#[must_use]
+pub fn configured_player_available() -> bool {
+    configured().is_some_and(|cmd| {
+        cmd.split_whitespace()
+            .next()
+            .is_some_and(is_program_available)
+    })
+}
+
+/// The download address for the Windows portable mpv release.
+#[cfg(windows)]
+const MPV_WIN_URL: &str = "https://github.com/zhongfly/mpv-winbuild/releases/download/2026-09-25-35af06172b/mpv-x86_64-20260925-git-35af06172b.7z";
+
+/// The SHA-256 digest of that archive.
+#[cfg(windows)]
+const MPV_WIN_SHA256: &str = "c5008d622edae62416d87f99a282d390456112e04f94758ad4574faad013ad09";
+
+/// Downloads and installs a vendored copy of mpv into the application directory.
+///
+/// On Windows, fetches the portable archive, verifies its SHA-256 checksum, and extracts
+/// it with `tar` into `<data_root>/tools/mpv`.
+///
+/// # Errors
+///
+/// When the download, checksum verification, or extraction fails.
+pub fn install_vendored_mpv() -> crate::Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        let dest = vendored_mpv_dir()
+            .ok_or_else(|| crate::Error::failed("no application data directory found for tools"))?;
+        let cache_dir = crate::target::cache_directory()
+            .ok_or_else(|| crate::Error::failed("no cache directory found for downloads"))?;
+        std::fs::create_dir_all(&cache_dir)?;
+        let archive = cache_dir.join("mpv-download.7z");
+
+        let template = crate::fetch::configured();
+        let (fetch_prog, fetch_args) = crate::fetch::parts(&template, MPV_WIN_URL, &archive)?;
+        let status = Command::new(&fetch_prog)
+            .args(&fetch_args)
+            .status()
+            .map_err(|why| crate::Error::failed(format!("failed to run {fetch_prog}: {why}")))?;
+        if !status.success() {
+            return Err(crate::Error::failed(format!(
+                "download of mpv failed with exit code {status}"
+            )));
+        }
+
+        let bytes = std::fs::read(&archive)?;
+        let digest = crate::checksum::Checksum::of(&bytes);
+        if digest.digest() != MPV_WIN_SHA256 {
+            let _ = std::fs::remove_file(&archive);
+            return Err(crate::Error::failed(format!(
+                "mpv download failed digest verification (expected {MPV_WIN_SHA256}, got {})",
+                digest.digest()
+            )));
+        }
+
+        std::fs::create_dir_all(&dest)?;
+        let extract = Command::new("tar")
+            .arg("-xf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&dest)
+            .status()
+            .map_err(|why| crate::Error::failed(format!("failed to run tar: {why}")))?;
+        let _ = std::fs::remove_file(&archive);
+        if !extract.success() {
+            return Err(crate::Error::failed(format!(
+                "extraction of mpv failed with exit code {extract}"
+            )));
+        }
+
+        let exe = dest.join("mpv.exe");
+        if !exe.exists() {
+            return Err(crate::Error::failed(
+                "extracted archive did not contain mpv.exe",
+            ));
+        }
+        Ok(exe)
+    }
+    #[cfg(not(windows))]
+    {
+        Err(crate::Error::failed(
+            "automated mpv installation is currently supported on Windows",
+        ))
+    }
 }
 
 /// Sets the status and returns, for the several ways starting can fail.
@@ -376,7 +571,8 @@ fn pump(
         Ok(split) => split,
         Err(why) => return give_up(counts, why.to_string()),
     };
-    let mut player = match Command::new(&program)
+    let program_path = resolve_program(&program);
+    let mut player = match Command::new(&program_path)
         .args(&arguments)
         .stdin(Stdio::piped())
         .spawn()
@@ -468,7 +664,14 @@ fn carry(
                 // the counters' does not.
                 if let Err(why) = to.write_all(got) {
                     bytes = bytes.saturating_add(some as u64);
-                    settle!(format!("the player stopped reading: {why}"));
+                    let explanation = if why.kind() == std::io::ErrorKind::BrokenPipe
+                        || why.raw_os_error() == Some(232)
+                    {
+                        "the player exited (window closed or decoder error)".to_owned()
+                    } else {
+                        format!("the player stopped reading: {why}")
+                    };
+                    settle!(explanation);
                 }
                 bytes = bytes.saturating_add(some as u64);
             }
@@ -669,6 +872,19 @@ mod tests {
             example.contains("low-latency"),
             "a buffering player reads as a broken stream"
         );
+        assert!(
+            example.contains("--demuxer-lavf-format=h264"),
+            "must specify lavf demuxer format for mpv: {example}"
+        );
+    }
+
+    /// Legacy demuxer option is translated to ffmpeg format for modern mpv builds.
+    #[test]
+    fn legacy_h264_demuxer_flag_is_translated() {
+        let (prog, args) = super::parts("mpv --demuxer=h264 -", "127.0.0.1").unwrap();
+        assert_eq!(prog, "mpv");
+        assert!(args.contains(&"--demuxer-lavf-format=h264".to_owned()));
+        assert!(args.contains(&"--force-window=immediate".to_owned()));
     }
 
     /// A read timeout is a pause under either name (`WouldBlock`, `TimedOut`), not an end.

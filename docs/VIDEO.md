@@ -115,7 +115,7 @@ through `pros-link::stream` on its way to the player's standard input, and count
 units and keyframes. The player is one line in `player.txt` in the target directory:
 
 ```
-mpv --demuxer=h264 --profile=low-latency --untimed --no-cache -
+mpv --demuxer-lavf-format=h264 --profile=low-latency --untimed --no-cache -
 ```
 
 The counts separate the faults a player cannot: nothing arrived, bytes arrived that did not
