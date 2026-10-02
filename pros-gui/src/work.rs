@@ -665,21 +665,33 @@ fn erasing(what: &[PathBuf]) -> Done {
 /// One session for the whole selection. Every refusal is collected, so a partial removal is
 /// reported as such.
 fn removing(link: &pros_link::Link, what: &[(String, bool)]) -> Done {
-    let mut session = match files::Session::open(link) {
-        Ok(session) => session,
-        Err(why) => return Done::Failed(why.to_string()),
-    };
-    // The walk is in `pros_core::remove`, testable against the fake target. What the file
-    // service cannot remove (an empty directory its `RMD` refuses, a broken symlink) is
-    // finished over the shell with `rmdir` or `rm -f`, never a recursive force.
     let mut shell = pros_core::remove::ShellForce::new(link);
-    let gone = pros_core::remove::these_then_force(&mut session, &mut shell, what);
-    session.close();
-    // The wording covers both halves of a partial removal; any file kept makes it a failure.
-    if gone.kept.is_empty() {
-        Done::Said(gone.describe())
-    } else {
-        Done::Failed(gone.describe())
+    match files::Session::open(link) {
+        Ok(mut session) => {
+            // The walk is in `pros_core::remove`, testable against the fake target. What the file
+            // service cannot remove (an empty directory its `RMD` refuses, a broken symlink) is
+            // finished over the shell with `rmdir` or `rm -f`, never a recursive force.
+            let gone = pros_core::remove::these_then_force(&mut session, &mut shell, what);
+            session.close();
+            // The wording covers both halves of a partial removal; any file kept makes it a failure.
+            if gone.kept.is_empty() {
+                Done::Said(gone.describe())
+            } else {
+                Done::Failed(gone.describe())
+            }
+        }
+        Err(ftp_why) => {
+            // When the file service is not answering, remove directly over the shell.
+            let gone = pros_core::remove::these_force_only(&mut shell, what);
+            if gone.kept.is_empty() {
+                Done::Said(gone.describe())
+            } else {
+                Done::Failed(format!(
+                    "file service unavailable ({ftp_why}); {}",
+                    gone.describe()
+                ))
+            }
+        }
     }
 }
 

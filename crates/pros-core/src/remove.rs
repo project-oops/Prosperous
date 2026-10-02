@@ -263,7 +263,11 @@ impl Forces for ShellForce<'_> {
 ///
 /// Never recursive: `rmdir` for a directory, `rm -f` for a file. A path that is empty, the
 /// root, or climbs with `..` is refused rather than quoted into a command.
-fn force_command(path: &str, folder: bool) -> crate::Result<String> {
+///
+/// # Errors
+///
+/// When the path is empty, too broad (e.g. root or `~`), or climbs with `..`.
+pub fn force_command(path: &str, folder: bool) -> crate::Result<String> {
     let path = path.trim().trim_end_matches('/');
     if path.is_empty() || path == "/" || path == "~" {
         return Err(crate::Error::failed(format!(
@@ -309,6 +313,38 @@ pub fn these_then_force(
         {
             continue;
         }
+
+        if *folder {
+            let mut kept_under: Vec<String> = gone
+                .kept
+                .iter()
+                .filter(|one| one.path.starts_with(&under))
+                .map(|one| one.path.clone())
+                .collect();
+
+            // Try unlinking each kept child under root as a file first.
+            let mut removed_files = Vec::new();
+            for child in &kept_under {
+                if forcer.force(child, false).is_ok() {
+                    removed_files.push(child.clone());
+                    gone.files += 1;
+                }
+            }
+            gone.kept.retain(|one| !removed_files.contains(&one.path));
+            kept_under.retain(|p| !removed_files.contains(p));
+
+            // Next, remove remaining subdirectories under root, deepest first (by path length descending).
+            kept_under.sort_by_key(|p| std::cmp::Reverse(p.len()));
+            let mut removed_dirs = Vec::new();
+            for dir in &kept_under {
+                if forcer.force(dir, true).is_ok() {
+                    removed_dirs.push(dir.clone());
+                    gone.folders += 1;
+                }
+            }
+            gone.kept.retain(|one| !removed_dirs.contains(&one.path));
+        }
+
         match forcer.force(&root, *folder) {
             Ok(()) => {
                 // Gone now: drop what was kept under this selection, and count it.
@@ -325,6 +361,32 @@ pub fn these_then_force(
                 if let Some(kept) = gone.kept.iter_mut().find(|one| one.path == root) {
                     kept.why = format!("{}; the shell could not remove it either: {why}", kept.why);
                 }
+            }
+        }
+    }
+    gone
+}
+
+/// Removes several things directly over the shell without trying the file service first.
+///
+/// Used when the file service is not answering.
+pub fn these_force_only(forcer: &mut dyn Forces, what: &[(String, bool)]) -> Gone {
+    let mut gone = Gone::default();
+    for (path, folder) in what {
+        let root = path.trim_end_matches('/').to_owned();
+        match forcer.force(&root, *folder) {
+            Ok(()) => {
+                if *folder {
+                    gone.folders += 1;
+                } else {
+                    gone.files += 1;
+                }
+            }
+            Err(why) => {
+                gone.kept.push(Kept {
+                    path: root,
+                    why: format!("the shell could not remove it: {why}"),
+                });
             }
         }
     }
@@ -429,7 +491,9 @@ fn empty_it(
 
 #[cfg(test)]
 mod tests {
-    use super::{Forces, Gone, Removes, force_command, one, these, these_then_force};
+    use super::{
+        Forces, Gone, Removes, force_command, one, these, these_force_only, these_then_force,
+    };
     use pros_link::files::{Entry, Kind};
     use std::collections::BTreeMap;
 
@@ -733,6 +797,69 @@ mod tests {
             force_command("/data/it's", false).unwrap(),
             "rm -f '/data/it'\\''s'"
         );
+    }
+
+    /// If the file service refuses to delete files in a directory, the shell unlinks them and removes the directory.
+    #[test]
+    fn the_shell_unlinks_files_and_removes_directory_when_file_service_refuses() {
+        let mut tree = BTreeMap::new();
+        tree.insert(
+            "/data/homebrew/TSHP00001".to_owned(),
+            vec![entry("file.txt", Kind::File)],
+        );
+        let mut ftp = Pretend {
+            tree,
+            refuses: vec![
+                "/data/homebrew/TSHP00001/file.txt".to_owned(),
+                "/data/homebrew/TSHP00001".to_owned(),
+            ],
+            ..Pretend::default()
+        };
+        let mut shell = PretendShell::default();
+        let gone = these_then_force(
+            &mut ftp,
+            &mut shell,
+            &[("/data/homebrew/TSHP00001".to_owned(), true)],
+        );
+        assert_eq!(gone.files, 1, "the file went over the shell: {gone:?}");
+        assert_eq!(
+            gone.folders, 1,
+            "the directory went over the shell: {gone:?}"
+        );
+        assert!(gone.kept.is_empty(), "nothing was left: {gone:?}");
+        assert!(
+            shell
+                .did
+                .iter()
+                .any(|c| c == "rm /data/homebrew/TSHP00001/file.txt"),
+            "file was unlinked: {:?}",
+            shell.did
+        );
+        assert!(
+            shell
+                .did
+                .iter()
+                .any(|c| c == "rmdir /data/homebrew/TSHP00001"),
+            "directory was rmdir'd: {:?}",
+            shell.did
+        );
+    }
+
+    /// When the file service is unavailable, `these_force_only` removes directly over the shell.
+    #[test]
+    fn these_force_only_removes_via_shell() {
+        let mut shell = PretendShell::default();
+        let gone = these_force_only(
+            &mut shell,
+            &[
+                ("/data/dir".to_owned(), true),
+                ("/data/f.txt".to_owned(), false),
+            ],
+        );
+        assert_eq!(gone.folders, 1);
+        assert_eq!(gone.files, 1);
+        assert!(gone.kept.is_empty());
+        assert_eq!(shell.did, vec!["rmdir /data/dir", "rm /data/f.txt"]);
     }
 
     /// The wording says what happened, including that nothing did.

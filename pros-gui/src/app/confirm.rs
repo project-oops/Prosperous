@@ -48,6 +48,9 @@ impl App {
                 ),
             );
         }
+        if offer == crate::listing::Offer::DeleteThere {
+            Self::target_delete_commands(ui, &self.state.files.library_path, &what);
+        }
         ui.small("nothing here undoes this");
         ui.horizontal(|ui| {
             if ui
@@ -83,6 +86,49 @@ impl App {
             }
         });
         ui.separator();
+    }
+
+    /// Shows the shell commands that will be run on the target to remove the selection.
+    fn target_delete_commands(
+        ui: &mut egui::Ui,
+        library_path: &str,
+        what: &[crate::listing::Entry],
+    ) {
+        let root = library_path.trim_end_matches('/');
+        ui.add_space(4.0);
+        ui.label("command to execute on target shell (shsrv):");
+        if what.len() == 1 {
+            if let Some(entry) = what.first() {
+                let path = format!("{root}/{}", entry.name);
+                let cmd = pros_core::remove::force_command(&path, entry.folder_there())
+                    .unwrap_or_else(|_| {
+                        if entry.folder_there() {
+                            format!("rmdir '{path}'")
+                        } else {
+                            format!("rm -f '{path}'")
+                        }
+                    });
+                ui.monospace(cmd);
+            }
+        } else {
+            egui::ScrollArea::vertical()
+                .id_salt("to-delete-shsrv")
+                .max_height(80.0)
+                .show(ui, |ui| {
+                    for entry in what {
+                        let path = format!("{root}/{}", entry.name);
+                        let cmd = pros_core::remove::force_command(&path, entry.folder_there())
+                            .unwrap_or_else(|_| {
+                                if entry.folder_there() {
+                                    format!("rmdir '{path}'")
+                                } else {
+                                    format!("rm -f '{path}'")
+                                }
+                            });
+                        ui.monospace(cmd);
+                    }
+                });
+        }
     }
 
     /// A file somebody dropped that nothing describes, and what can be done with it.
